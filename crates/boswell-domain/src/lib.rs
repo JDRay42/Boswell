@@ -37,5 +37,5 @@ pub use claim::{Claim, ClaimId};
 pub use confidence::ConfidenceInterval;
 pub use namespace::Namespace;
 pub use provenance::ProvenanceEntry;
-pub use relationship::Relationship;
+pub use relationship::{Relationship, RelationshipType};
 pub use tier::Tier;

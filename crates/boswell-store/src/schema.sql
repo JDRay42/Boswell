@@ -15,7 +15,6 @@ CREATE TABLE IF NOT EXISTS claims (
     -- Base confidence interval (from provenance aggregation)
     base_lower REAL NOT NULL CHECK (base_lower >= 0.0 AND base_lower <= 1.0),
     base_upper REAL NOT NULL CHECK (base_upper >= 0.0 AND base_upper <= 1.0),
-    CHECK (base_lower <= base_upper),
     
     -- Tier and timestamps
     tier TEXT NOT NULL CHECK (tier IN ('ephemeral', 'task', 'project', 'permanent')),
@@ -29,12 +28,15 @@ CREATE TABLE IF NOT EXISTS claims (
     -- Metadata for semantic search quality
     content_hash TEXT,  -- For exact duplicate detection
     
-    -- Indexes for common query patterns
-    CREATE INDEX IF NOT EXISTS idx_claims_namespace ON claims(namespace);
-    CREATE INDEX IF NOT EXISTS idx_claims_tier ON claims(tier);
-    CREATE INDEX IF NOT EXISTS idx_claims_created_at ON claims(created_at);
-    CREATE INDEX IF NOT EXISTS idx_claims_content_hash ON claims(content_hash);
+    -- Table-level constraint to ensure confidence interval is valid
+    CHECK (base_lower <= base_upper)
 );
+
+-- Indexes for common query patterns on claims
+CREATE INDEX IF NOT EXISTS idx_claims_namespace ON claims(namespace);
+CREATE INDEX IF NOT EXISTS idx_claims_tier ON claims(tier);
+CREATE INDEX IF NOT EXISTS idx_claims_created_at ON claims(created_at);
+CREATE INDEX IF NOT EXISTS idx_claims_content_hash ON claims(content_hash);
 
 -- Relationships table (pairwise only, per ADR-002)
 CREATE TABLE IF NOT EXISTS relationships (
@@ -94,7 +96,6 @@ CREATE TABLE IF NOT EXISTS confidence_cache (
     -- Cached effective confidence (after all adjustments)
     effective_lower REAL NOT NULL CHECK (effective_lower >= 0.0 AND effective_lower <= 1.0),
     effective_upper REAL NOT NULL CHECK (effective_upper >= 0.0 AND effective_upper <= 1.0),
-    CHECK (effective_lower <= effective_upper),
     
     -- When this cache entry was computed
     computed_at INTEGER NOT NULL,
@@ -102,6 +103,9 @@ CREATE TABLE IF NOT EXISTS confidence_cache (
     -- Cache invalidation tracking
     -- This increases when relationships change, signaling recomputation needed
     version INTEGER NOT NULL DEFAULT 0,
+    
+    -- Table-level constraints
+    CHECK (effective_lower <= effective_upper),
     
     -- Foreign key
     FOREIGN KEY (claim_id) REFERENCES claims(id) ON DELETE CASCADE
