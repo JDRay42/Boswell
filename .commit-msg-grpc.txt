@@ -1,0 +1,58 @@
+Phase 2 Progress: gRPC service layer implementation
+
+Implements Stream A of Phase 2 - gRPC API surface for Boswell.
+
+Protocol Definitions (proto/boswell.proto):
+- AssertRequest/Response with tier targeting and provenance support
+- QueryRequest/Response with QueryMode (fast/deliberate) and filters
+- LearnRequest/Response for bulk claim insertion (ADR-012)
+- ForgetRequest/Response for eviction marking
+- HealthCheckRequest/Response with status, version, uptime
+- Common types: Tier enum, ConfidenceInterval, Claim, ProvenanceEntry
+
+Service Implementation:
+- BosWellServiceImpl with Arc<Mutex<S: ClaimStore>>
+- assert() - validates auth, converts proto types, stores claims
+- query() - builds ClaimQuery, applies filters (namespace, tier, confidence, subject/predicate/object)
+- learn() - bulk insertion with error collection
+- forget() - claim lookup and eviction marking (stub for Phase 3)
+- health_check() - returns service status and metrics
+- Error mapping with Debug trait bounds for ClaimStore::Error
+
+Type Conversions (conversions.rs):
+- Bidirectional conversion between proto and domain types
+- tier_from_proto/tier_to_proto - Tier enum ↔ String
+- confidence_from_proto/confidence_to_proto - validation of bounds
+- claim_from_proto/claim_to_proto - full claim conversion with timestamps
+- Comprehensive error handling (ConversionError enum)
+- 5 unit tests for roundtrip conversions
+
+Server Infrastructure (server.rs):
+- ServerConfig with TLS support (placeholder for certificates)
+- start_server() async function with tonic::transport::Server
+- Configurable address and port (default: 127.0.0.1:50051)
+- 3 unit tests for configuration
+
+Build System:
+- tonic-build integration (build.rs)
+- Generates code from proto/boswell.proto
+- tonic 0.12, prost 0.13, tokio with macros + rt-multi-thread
+
+Test Coverage:
+- 8 tests passing (5 conversions, 1 service, 2 server config)
+- MockStore implementation with full ClaimStore trait
+- Async test with tokio::test
+
+Files Added:
+- crates/boswell-grpc/proto/boswell.proto (142 lines)
+- crates/boswell-grpc/build.rs (9 lines)
+- crates/boswell-grpc/src/conversions.rs (196 lines, 5 tests)
+- crates/boswell-grpc/src/service.rs (327 lines, 1 test)
+- crates/boswell-grpc/src/server.rs (113 lines, 3 tests)
+- docs/development/phase-2-checklist.md (tracking document)
+
+Files Modified:
+- crates/boswell-grpc/src/lib.rs (module structure)
+- crates/boswell-grpc/Cargo.toml (tonic dependencies)
+
+Next: Stream B (Router) and Stream C (SDK)

@@ -1,0 +1,158 @@
+syntax = "proto3";
+
+package boswell.v1;
+
+// BosWell gRPC Service
+// 
+// Provides core operations for asserting, querying, learning, and forgetting claims.
+// Implements ADR-012 (learn operation), ADR-008 (gatekeeper pattern).
+service BosWellService {
+    // Assert a single claim into the knowledge base
+    rpc Assert(AssertRequest) returns (AssertResponse);
+    
+    // Query claims from the knowledge base
+    rpc Query(QueryRequest) returns (QueryResponse);
+    
+    // Learn multiple claims in bulk (ADR-012)
+    rpc Learn(LearnRequest) returns (LearnResponse);
+    
+    // Mark a claim for eviction/forgetting
+    rpc Forget(ForgetRequest) returns (ForgetResponse);
+    
+    // Health check for instance status
+    rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+// ========== Common Types ==========
+
+// Tier in the claim lifecycle
+enum Tier {
+    TIER_UNSPECIFIED = 0;
+    TIER_EPHEMERAL = 1;
+    TIER_TASK = 2;
+    TIER_PROJECT = 3;
+    TIER_PERMANENT = 4;
+}
+
+// Confidence interval [lower, upper] per ADR-003
+message ConfidenceInterval {
+    double lower = 1;  // Range: [0.0, 1.0]
+    double upper = 2;  // Range: [0.0, 1.0]
+}
+
+// A claim - the fundamental unit of knowledge
+message Claim {
+    string id = 1;                        // ULID string
+    string namespace = 2;                 // Organizational namespace (ADR-006)
+    string subject = 3;                   // Subject entity
+    string predicate = 4;                 // Relationship/predicate
+    string object = 5;                    // Object entity
+    ConfidenceInterval confidence = 6;    // Confidence interval
+    Tier tier = 7;                       // Lifecycle tier
+}
+
+// Provenance entry tracking claim origin
+message ProvenanceEntry {
+    string source = 1;      // Source identifier (e.g., "user", "extractor", "llm:gpt-4")
+    int64 timestamp = 2;    // Unix timestamp in milliseconds
+    string metadata = 3;    // Optional JSON metadata
+}
+
+// ========== Assert Operation ==========
+
+message AssertRequest {
+    string namespace = 1;
+    string subject = 2;
+    string predicate = 3;
+    string object = 4;
+    ConfidenceInterval confidence = 5;
+    Tier tier = 6;                            // Optional tier targeting
+    repeated ProvenanceEntry provenance = 7;  // Provenance chain
+    string auth_token = 8;                    // Authentication token
+}
+
+message AssertResponse {
+    string claim_id = 1;                      // ULID of created/existing claim
+    bool is_duplicate = 2;                    // True if claim already existed
+    string message = 3;                       // Optional status message
+}
+
+// ========== Query Operation ==========
+
+enum QueryMode {
+    QUERY_MODE_UNSPECIFIED = 0;
+    QUERY_MODE_FAST = 1;        // Fast path: no confidence recomputation
+    QUERY_MODE_DELIBERATE = 2;  // Deliberate: recompute confidence with support networks
+}
+
+message QueryFilter {
+    optional string namespace = 1;
+    optional string subject = 2;
+    optional string predicate = 3;
+    optional string object = 4;
+    optional Tier tier = 5;
+    optional double min_confidence = 6;  // Minimum confidence midpoint
+}
+
+message QueryRequest {
+    QueryFilter filter = 1;
+    QueryMode mode = 2;
+    int32 limit = 3;                     // Maximum results (default: 100)
+    string auth_token = 4;
+}
+
+message QueryResponse {
+    repeated Claim claims = 1;
+    int32 total_count = 2;               // Total matching claims (may exceed limit)
+    string message = 3;
+}
+
+// ========== Learn Operation (ADR-012) ==========
+
+message LearnRequest {
+    repeated Claim claims = 1;           // Batch of claims to insert
+    bool skip_duplicates = 2;            // Skip duplicate detection for performance
+    string auth_token = 3;
+}
+
+message LearnResponse {
+    int32 inserted_count = 1;
+    int32 duplicate_count = 2;
+    int32 error_count = 3;
+    repeated string errors = 4;          // Error messages for failed insertions
+    string message = 5;
+}
+
+// ========== Forget Operation ==========
+
+message ForgetRequest {
+    string claim_id = 1;                 // Claim to mark for eviction
+    string reason = 2;                   // Optional eviction reason
+    string auth_token = 3;
+}
+
+message ForgetResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+// ========== Health Check ==========
+
+message HealthCheckRequest {
+    // Empty for now
+}
+
+message HealthCheckResponse {
+    enum Status {
+        STATUS_UNSPECIFIED = 0;
+        STATUS_HEALTHY = 1;
+        STATUS_DEGRADED = 2;
+        STATUS_UNHEALTHY = 3;
+    }
+    
+    Status status = 1;
+    string version = 2;
+    int64 uptime_seconds = 3;
+    int64 claim_count = 4;
+    string message = 5;
+}

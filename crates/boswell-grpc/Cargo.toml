@@ -7,11 +7,10 @@ rust-version.workspace = true
 [dependencies]
 boswell-domain = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
-
-# gRPC dependencies (to be added)
-# tonic = "0.12"
-# prost = "0.13"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
+tonic = "0.12"
+prost = "0.13"
+prost-types = "0.13"
 
 [build-dependencies]
-# tonic-build = "0.12"
+tonic-build = "0.12"
