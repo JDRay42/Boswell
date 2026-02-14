@@ -1,0 +1,17 @@
+[package]
+name = "boswell-grpc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+boswell-domain = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+# gRPC dependencies (to be added)
+# tonic = "0.12"
+# prost = "0.13"
+
+[build-dependencies]
+# tonic-build = "0.12"

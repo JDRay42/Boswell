@@ -1,0 +1,11 @@
+[package]
+name = "boswell-gatekeeper"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+boswell-domain = { workspace = true }
+boswell-llm = { workspace = true }
+boswell-store = { workspace = true }
+thiserror = { workspace = true }

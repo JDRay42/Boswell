@@ -1,0 +1,15 @@
+[package]
+name = "boswell-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+boswell-domain = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# SQLite and vector index dependencies (to be added)
+# rusqlite = { version = "0.32", features = ["bundled"] }
+# hnsw_rs = "0.3"
+# ort = "2.0"  # ONNX Runtime for embeddings

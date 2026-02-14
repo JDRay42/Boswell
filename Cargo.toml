@@ -1,0 +1,61 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/boswell-domain",
+    "crates/boswell-store",
+    "crates/boswell-llm",
+    "crates/boswell-grpc",
+    "crates/boswell-router",
+    "crates/boswell-sdk",
+    "crates/boswell-extractor",
+    "crates/boswell-gatekeeper",
+    "crates/boswell-janitor",
+    "crates/boswell-synthesizer",
+    "crates/boswell-mcp",
+    "crates/boswell-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+authors = ["Boswell Contributors"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/your-org/boswell"
+
+[workspace.dependencies]
+# Internal crates
+boswell-domain = { path = "crates/boswell-domain" }
+boswell-store = { path = "crates/boswell-store" }
+boswell-llm = { path = "crates/boswell-llm" }
+boswell-grpc = { path = "crates/boswell-grpc" }
+boswell-router = { path = "crates/boswell-router" }
+boswell-sdk = { path = "crates/boswell-sdk" }
+boswell-extractor = { path = "crates/boswell-extractor" }
+boswell-gatekeeper = { path = "crates/boswell-gatekeeper" }
+boswell-janitor = { path = "crates/boswell-janitor" }
+boswell-synthesizer = { path = "crates/boswell-synthesizer" }
+boswell-mcp = { path = "crates/boswell-mcp" }
+
+# Common dependencies (version centralization)
+thiserror = "2.0"
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+ulid = { version = "1.0" }
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+
+[profile.test]
+opt-level = 1

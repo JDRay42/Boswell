@@ -1,0 +1,12 @@
+[package]
+name = "boswell-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+boswell-domain = { workspace = true }
+boswell-sdk = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

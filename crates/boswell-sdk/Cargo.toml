@@ -1,0 +1,10 @@
+[package]
+name = "boswell-sdk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+boswell-domain = { workspace = true }
+boswell-grpc = { workspace = true }
+thiserror = { workspace = true }

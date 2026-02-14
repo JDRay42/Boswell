@@ -1,0 +1,52 @@
+# Rust
+/target/
+**/target/
+**/*.rs.bk
+*.pdb
+Cargo.lock
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local config
+*.local.toml
+.env
+.env.local
+
+# Test artifacts
+*.profraw
+*.profdata
+
+# Certificates and keys (security)
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# SQLite databases (local development)
+*.db
+*.db-shm
+*.db-wal
+
+# HNSW index files
+*.hnsw
+
+# ONNX models (large files - should be downloaded separately)
+*.onnx
+
+# Logs
+*.log
+logs/
+
+# Build outputs
+dist/
+build/
