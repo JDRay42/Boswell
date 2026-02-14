@@ -33,8 +33,8 @@ impl Tier {
         }
     }
 
-    /// Parse a tier from a string
-    pub fn from_str(s: &str) -> Option<Self> {
+    /// Parse a tier from a string (internal use)
+    pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "ephemeral" => Some(Tier::Ephemeral),
             "task" => Some(Tier::Task),
@@ -62,6 +62,14 @@ impl Tier {
             Tier::Project => Some(Tier::Task),
             Tier::Permanent => Some(Tier::Project),
         }
+    }
+}
+
+impl std::str::FromStr for Tier {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or_else(|| format!("Invalid tier: {}", s))
     }
 }
 

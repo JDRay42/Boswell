@@ -16,38 +16,33 @@ Establish domain core, storage layer, and LLM integration without external API s
 - [x] Define trait interfaces (ClaimStore, LlmProvider, Extractor)
 - [x] Add initial unit tests (10 tests passing)
 - [x] XML documentation for public types
+- [x] Add `ulid` crate dependency
+- [x] Update `ClaimId` to use proper ULID generation
+- [x] Add `ClaimId::new()` for generating new IDs
+- [x] Add `ClaimId::from_string()` for parsing ULID strings
+- [x] Format `ClaimId` Display as proper ULID (not hex)
+- [x] Add property tests for ULID chronological ordering
+- [x] Create `confidence_computation.rs` module
+- [x] Implement recursive support network traversal
+- [x] Add source diversity weighting logic
+- [x] Add circular relationship detection and prevention (via stale confidence only)
+- [x] Define `BOOST_FACTOR` and `PENALTY_FACTOR` constants
+- [x] Implement caching strategy for computed confidence
+- [x] Add comprehensive unit tests for formula edge cases
+- [x] Add `proptest` tests for confidence interval invariants
+- [x] Add `proptest` tests for namespace depth validation
+- [x] Add `proptest` tests for relationship strength bounds
+- [x] Add `proptest` tests for confidence formula convergence
+- [x] Verify ULID ordering properties hold under all conditions
+- [x] Ensure 100% Rustdoc coverage (run `cargo doc --no-deps`)
+- [x] Add module-level documentation for all modules
+- [x] Add usage examples in docs for key types
+- [x] Document confidence formula with examples
+- [x] All clippy warnings resolved
 
 ### 🔲 Remaining Tasks
 
-#### ULID Integration
-- [ ] Add `ulid` crate dependency
-- [ ] Update `ClaimId` to use proper ULID generation
-- [ ] Add `ClaimId::new()` for generating new IDs
-- [ ] Add `ClaimId::from_string()` for parsing ULID strings
-- [ ] Format `ClaimId` Display as proper ULID (not hex)
-- [ ] Add property tests for ULID chronological ordering
-
-#### Confidence Formula Implementation (ADR-007)
-- [ ] Create `confidence_computation.rs` module
-- [ ] Implement recursive support network traversal
-- [ ] Add source diversity weighting logic
-- [ ] Add circular relationship detection and prevention
-- [ ] Define `BOOST_FACTOR` and `PENALTY_FACTOR` constants
-- [ ] Implement caching strategy for computed confidence
-- [ ] Add comprehensive unit tests for formula edge cases
-
-#### Property-Based Tests
-- [ ] Add `proptest` tests for confidence interval invariants
-- [ ] Add `proptest` tests for namespace depth validation
-- [ ] Add `proptest` tests for relationship strength bounds
-- [ ] Add `proptest` tests for confidence formula convergence
-- [ ] Verify ULID ordering properties hold under all conditions
-
-#### Documentation
-- [ ] Ensure 100% Rustdoc coverage (run `cargo doc --no-deps`)
-- [ ] Add module-level documentation for all modules
-- [ ] Add usage examples in docs for key types
-- [ ] Document confidence formula with examples
+#### None for Contributor A - Domain Core Complete! ✨
 
 **Deliverable:** `boswell-domain` crate compiles with 100% doc coverage, passes property tests
 
@@ -55,16 +50,16 @@ Establish domain core, storage layer, and LLM integration without external API s
 
 ## Contributor B: Storage Layer (`boswell-store`)
 
-### 🔲 All Tasks Remaining
+### ✅ Completed
+- [x] Design and document complete SQLite schema
+  - [x] `claims` table with ULID primary key
+  - [x] `relationships` table (pairwise only, per ADR-002)
+  - [x] `provenance` table
+  - [x] `confidence_cache` table for fast-path values
+  - [x] Indexes for common query patterns
+- [x] Create schema SQL file in `src/schema.sql`
 
-#### SQLite Schema Design
-- [ ] Design and document complete SQLite schema
-  - [ ] `claims` table with ULID primary key
-  - [ ] `relationships` table (pairwise only, per ADR-002)
-  - [ ] `provenance` table
-  - [ ] `confidence_cache` table for fast-path values
-  - [ ] Indexes for common query patterns
-- [ ] Create schema SQL file in `src/schema.sql`
+### 🔲 Remaining Tasks
 
 #### Database Implementation
 - [ ] Add `rusqlite` dependency with "bundled" feature

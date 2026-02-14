@@ -10,8 +10,9 @@ license.workspace = true
 path = "src/lib.rs"
 
 [dependencies]
-# Domain layer has ZERO external dependencies per ADR-004
-# All functionality must be pure Rust standard library only
+# ULID for claim identifiers (per ADR-011)
+# This is an external dependency but provides a fundamental primitive
+ulid = "1.1"
 
 [dev-dependencies]
 proptest = "1.5"

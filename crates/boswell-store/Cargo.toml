@@ -9,7 +9,15 @@ boswell-domain = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 
-# SQLite and vector index dependencies (to be added)
-# rusqlite = { version = "0.32", features = ["bundled"] }
+# SQLite database
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# HNSW vector index (to be integrated)
 # hnsw_rs = "0.3"
-# ort = "2.0"  # ONNX Runtime for embeddings
+
+# ONNX Runtime for embeddings (to be integrated)
+# ort = { version = "2.0", features = ["download-binaries"] }
+
+# Serialization for embeddings
+serde = "1.0"
+serde_json = "1.0"

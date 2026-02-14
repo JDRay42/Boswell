@@ -25,6 +25,7 @@
 
 pub mod claim;
 pub mod confidence;
+pub mod confidence_computation;
 pub mod namespace;
 pub mod provenance;
 pub mod relationship;

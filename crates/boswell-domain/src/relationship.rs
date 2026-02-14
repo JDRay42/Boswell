@@ -52,7 +52,7 @@ impl Relationship {
         strength: f64,
         created_at: u64,
     ) -> Self {
-        assert!(strength >= 0.0 && strength <= 1.0, "Strength must be in [0, 1]");
+        assert!((0.0..=1.0).contains(&strength), "Strength must be in [0, 1]");
         
         Self {
             from_claim,
