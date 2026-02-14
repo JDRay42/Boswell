@@ -118,7 +118,7 @@ The entity or concept the claim is about. Examples: "Acme Corp", "Washington Sta
 
 The relationship or property being asserted. Examples: "requires", "is located in", "supports concurrent reads".
 
-#### `direct_object` — string
+#### `object` — string
 
 The value or target of the assertion. Examples: "registered agent for LLCs", "Pacific Northwest", "true".
 

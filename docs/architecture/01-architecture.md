@@ -9,7 +9,7 @@ Boswell follows Clean Architecture (also known as Hexagonal Architecture or Port
 - **Adapters implement traits defined by the domain.** The SQLite storage adapter, gRPC transport adapter, and LLM provider adapters all implement traits (ports) that the domain defines. They are interchangeable without touching domain code.
 - **Dependencies point inward.** Infrastructure depends on the domain. The domain never depends on infrastructure.
 
-This architecture is particularly well-suited to an open source project. Contributors can work on an LLM provider adapter without understanding Claim Store internals, or add a new Janitor policy without touching the gRPC layer. The boundaries act as guardrails for contributors who do not have full context of the system.
+This architecture is particularly well-suited to a multi-developer project. Contributors can work on an LLM provider adapter without understanding Claim Store internals, or add a new Janitor policy without touching the gRPC layer. The boundaries act as guardrails for contributors who do not have full context of the system.
 
 ```mermaid
 graph TB
@@ -66,57 +66,160 @@ graph TB
 
 ## System Overview
 
-Boswell consists of six subsystems coordinated through well-defined interfaces:
+Boswell consists of client applications (MCP servers, SDKs) that interact with one or more Boswell instances through a well-defined gRPC API. A Router is always present to provide session management and instance registry. This ensures a single, consistent authentication model and avoids duplicating security-critical token management logic across instances.
+
+### Client Interaction Flow
 
 ```mermaid
-graph TB
-    subgraph Router["Router (multi-instance only)"]
-        TC[Topic Classifier]
-        FQ[Federated Queries]
-        SI[Summary Index]
-        XS[Cross-domain Synthesizer]
-    end
+sequenceDiagram
+    participant Client as MCP Server / SDK
+    participant Router
+    participant InstA as Instance A
+    participant InstB as Instance B
+    participant EX as Extractor
+    participant CS as Claim Store
 
-    subgraph InstanceA["Instance A (e.g., Development)"]
-        API_A[gRPC API Surface]
-        CS_A[Claim Store<br/>SQLite + Vector Sidecar]
-        EX_A[Extractor]
-        SY_A[Synthesizer]
-        GK_A[Gatekeeper]
-        JN_A["Janitor(s)"]
-        LLM_A[LLM Provider Layer]
+    Note over Client: Multi-instance deployment
 
-        API_A --> CS_A
-        API_A --> EX_A
-        API_A --> GK_A
-        EX_A --> CS_A
-        SY_A --> CS_A
-        GK_A --> CS_A
-        JN_A --> CS_A
-        EX_A --> LLM_A
-        SY_A --> LLM_A
-        GK_A --> LLM_A
-        JN_A --> LLM_A
-    end
+    Client->>Router: SessionRequest (mTLS handshake)
+    Router-->>Client: SessionResponse {<br/>  instances: [<br/>    {id: "dev", endpoint: "mini:9001", capabilities: [...], token: "dev_..."},<br/>    {id: "personal", endpoint: "mini:9002", capabilities: [...], token: "personal_..."}<br/>  ]<br/>}
 
-    subgraph InstanceB["Instance B (e.g., Personal)"]
-        API_B[gRPC API Surface]
-        CS_B[Claim Store]
-    end
+    Note over Client: Client selects target instance(s)<br/>based on routing strategy
 
-    subgraph InstanceC["Instance C (e.g., Professional)"]
-        API_C[gRPC API Surface]
-        CS_C[Claim Store]
-    end
+    Client->>InstA: Assert {claims: [...], tier: "task", advocacy: {...}}
+    InstA-->>Client: {total: 5, new: 3, corroborated: 2,<br/>actual_tiers: ["task", "task", "ephemeral", "task", "task"],<br/>namespace: "dev/task-123"}
 
-    Client[MCP Server / SDK Client] --> Router
-    Client -.->|direct with token| API_A
-    Router --> API_A
-    Router --> API_B
-    Router --> API_C
+    Client->>InstB: Query {namespace: "personal/*"}
+    InstB-->>Client: Results
+
+    Client->>InstA: Extract {text_block, tier: "project"}
+    InstA->>EX: Process text block
+    EX->>CS: Store extracted claims
+    EX-->>InstA: Extraction complete
+    InstA-->>Client: {total: 12, new: 9, corroborated: 3,<br/>namespaces: [...], description: "...",<br/>actual_tiers: ["project": 8, "task": 3, "ephemeral": 1]}
 ```
 
-Each instance is a self-contained Boswell deployment with its own Claim Store, Extractor, Synthesizer, Gatekeeper, Janitor(s), and LLM Provider configuration. The Router coordinates across instances but is not required for single-instance deployments.
+**Key points:**
+
+- **Router is only for session establishment.** After receiving the instance list, clients communicate directly with instances.
+- **Client makes all routing decisions.** The SDK determines which instance to target based on namespace, user configuration, or interactive selection.
+- **Tier targeting on write.** Clients can specify target tier (ephemeral, task, project) and advocacy scores. The Gatekeeper evaluates tier-crossing requests and the response indicates where claims were actually stored.
+- **Clients interact only with the instance API surface.** Background subsystems (Synthesizer, Gatekeeper, Janitor) operate autonomously.
+- **Extract operation is client-initiated.** Clients send large text blocks to the Extractor, which generates structured claims and stores them in the Claim Store.
+
+### Instance Architecture
+
+Each Boswell instance handles client operations and runs background maintenance processes. The following sequence diagram shows how different operations flow through the instance:
+
+```mermaid
+sequenceDiagram
+    participant Client as MCP Server / SDK
+    participant API as gRPC API Surface
+    participant CS as Claim Store
+    participant EX as Extractor
+    participant GK as Gatekeeper
+    participant LLM as LLM Provider
+    participant SY as Synthesizer (background)
+    participant JN as Janitor (background)
+
+    Note over Client,LLM: Client-Initiated Operations
+
+    rect rgb(240, 248, 255)
+        Note over Client,GK: Assert Operation
+        Client->>API: Assert {claims: [...], tier: "task", advocacy: {...}}
+        alt Tier = ephemeral or omitted
+            API->>CS: Store claims immediately
+            CS-->>API: Storage results
+        else Tier = task or project
+            API->>GK: Evaluate tier request
+            GK->>CS: Check existing claims
+            GK->>LLM: Evaluate novelty, quality
+            LLM-->>GK: Evaluation
+            GK->>CS: Store at accepted/downgraded tier
+            CS-->>API: Storage results
+        end
+        API-->>Client: {total, new, corroborated,<br/>actual_tiers, namespace}
+    end
+
+    rect rgb(255, 248, 240)
+        Note over Client,CS: Query Operation (fast mode)
+        Client->>API: Query {namespace: "dev/*"}
+        API->>CS: Semantic + structured search
+        CS-->>API: Matching claims
+        API-->>Client: Results
+    end
+
+    rect rgb(240, 255, 240)
+        Note over Client,LLM: Extract Operation
+        Client->>API: Extract {text_block}
+        API->>EX: Process text block
+        EX->>LLM: Extract discrete claims
+        LLM-->>EX: Structured claims
+        loop For each extracted claim
+            EX->>CS: Check for duplicates
+            alt New claim
+                EX->>CS: Store with provenance
+            else Duplicate exists
+                EX->>CS: Add corroboration
+            end
+        end
+        EX-->>API: Extraction results
+        API-->>Client: {total, new, corroborated,<br/>namespaces, description}
+    end
+
+    rect rgb(255, 240, 255)
+        Note over Client,LLM: Promote Operation<br/>(used for project → persistent<br/>and post-write tier increases)
+        Client->>API: Promote {claim_id, target_tier, advocacy: {...}}
+        API->>GK: Evaluate for promotion
+        GK->>CS: Fetch related claims
+        CS-->>GK: Context
+        GK->>LLM: Assess novelty, quality, consistency
+        LLM-->>GK: Evaluation
+        alt Accepted at target tier
+            GK->>CS: Promote claim
+            GK->>CS: Record reasoning
+        else Downgraded to lower tier
+            GK->>CS: Promote to lower tier
+            GK->>CS: Record reasoning
+        else Rejected (stays at current tier)
+            GK->>CS: Record reasoning
+        end
+        GK-->>API: Result
+        API-->>Client: {actual_tier, reasoning}
+    end
+
+    Note over SY,JN: Background Processes (autonomous)
+
+    rect rgb(248, 248, 248)
+        Note over SY,CS: Synthesizer (periodic)
+        loop Synthesis pass
+            SY->>CS: Read claim clusters
+            SY->>LLM: Identify patterns
+            LLM-->>SY: Inferred claims
+            SY->>CS: Store inferred claims<br/>with derived_from links
+        end
+    end
+
+    rect rgb(245, 245, 245)
+        Note over JN,CS: Janitor (scheduled)
+        loop Maintenance cycle
+            JN->>CS: Decay stale claims
+            JN->>CS: Purge forgotten claims
+            JN->>CS: Compact storage
+        end
+    end
+```
+
+**Key characteristics:**
+
+- **Client operations are synchronous.** Assert, Query, Extract, and Promote block until complete. Clients never interact directly with Extractor, Gatekeeper, or background subsystems.
+- **Tier targeting on write.** Claims can target ephemeral (default), task, or project tiers. Ephemeral writes are immediate. Task/project writes trigger Gatekeeper evaluation, which may accept, downgrade, or reject to ephemeral. All writes succeed; the tier is determined by the Gatekeeper.
+- **Extract operation is client-initiated but LLM-backed.** Clients send large text blocks; the Extractor uses the LLM to generate structured claims. These claims can also target specific tiers.
+- **Gatekeeper evaluates tier-crossing requests.** Triggered when claims target task/project tier on write, or when promotion to persistent is requested. Not on a schedule.
+- **Synthesizer and Janitor run autonomously.** No client interaction. They operate on schedules or triggers independent of client operations.
+- **All subsystems interact with Claim Store.** It's the single source of truth for all claim data.
+
+Each instance is a self-contained Boswell deployment with its own Claim Store, Extractor, Synthesizer, Gatekeeper, Janitor(s), and LLM Provider configuration. The Router provides session management and instance registry for all deployments, ensuring consistent authentication and token management regardless of the number of instances.
 
 ## Subsystem Specifications
 
@@ -126,34 +229,111 @@ Each instance is a self-contained Boswell deployment with its own Claim Store, E
 
 **Storage Architecture:**
 
+The Claim Store uses a dual-storage design: SQLite as the authoritative source of truth, and an HNSW vector index as a derived projection for semantic search.
+
+#### Write Path
+
 ```mermaid
-graph LR
-    subgraph QueryEngine["Dual-Mode Query Engine"]
-        FM[Fast Mode<br/>Deterministic]
-        DM[Deliberate Mode<br/>LLM-Assisted]
-    end
+sequenceDiagram
+    participant API as API Surface
+    participant SQLite
+    participant Embed as Embedding Model
+    participant HNSW as HNSW Vector Index
 
-    subgraph Storage["Storage Layer"]
-        SQLite[(SQLite<br/>WAL Mode<br/>Source of Truth)]
-        HNSW[(HNSW Vector Index<br/>Memory-Mapped<br/>Derived Projection)]
-    end
-
-    Write[Assert / Learn / Extract] --> SQLite
-    SQLite -->|post-write hook| HNSW
-
-    FM -->|structured queries,<br/>point lookups| SQLite
-    FM -->|semantic search| HNSW
-    HNSW -->|candidate IDs| SQLite
-
-    DM -->|claim retrieval| SQLite
-    DM -->|semantic search| HNSW
-    DM -->|confidence evaluation| LLM[LLM Provider]
-
-    SQLite -.->|rebuild if corrupted| HNSW
+    API->>SQLite: Store claim with<br/>provenance, tier, namespace
+    SQLite->>SQLite: Transaction commit<br/>(ACID guarantees)
+    SQLite-->>API: Claim stored
+    
+    Note over SQLite,HNSW: Post-write hook
+    
+    SQLite->>Embed: Generate embedding<br/>from claim content
+    Embed-->>SQLite: Vector (384 or 768 dims)
+    SQLite->>HNSW: Update index<br/>{claim_id, vector}
+    HNSW-->>SQLite: Index updated
 ```
+
+#### Read Path: Fast Mode Query
+
+```mermaid
+sequenceDiagram
+    participant API as API Surface
+    participant HNSW as HNSW Vector Index
+    participant Embed as Embedding Model
+    participant SQLite
+
+    alt Semantic Search
+        API->>Embed: Generate query embedding
+        Embed-->>API: Query vector
+        API->>HNSW: Nearest neighbor search
+        HNSW-->>API: Candidate claim IDs
+        API->>SQLite: Resolve full claim data<br/>for candidate IDs
+        SQLite-->>API: Complete claims
+    else Point Lookup / Structured Query
+        API->>SQLite: Direct index query<br/>(by subject, namespace, etc.)
+        SQLite-->>API: Matching claims
+    else Temporal Query
+        API->>SQLite: Range scan on ULID<br/>(claims since timestamp)
+        SQLite-->>API: Recent claims
+    end
+    
+    Note over API: Return results with<br/>precomputed confidence
+```
+
+#### Read Path: Deliberate Mode Query
+
+```mermaid
+sequenceDiagram
+    participant API as API Surface
+    participant HNSW as HNSW Vector Index
+    participant SQLite
+    participant LLM as LLM Provider
+
+    API->>HNSW: Semantic search
+    HNSW-->>API: Candidate claim IDs
+    API->>SQLite: Resolve full claims + context
+    SQLite-->>API: Claims with relationships
+    
+    API->>LLM: Evaluate claims in query context:<br/>- Assess confidence<br/>- Detect contradictions<br/>- Synthesize narrative
+    LLM-->>API: Query-contextual evaluation +<br/>reasoning narrative
+    
+    Note over API: Return results with contextual<br/>confidence + synthesis
+```
+
+#### Maintenance: Vector Index Rebuild
+
+```mermaid
+sequenceDiagram
+    participant Janitor
+    participant SQLite
+    participant Embed as Embedding Model
+    participant HNSW as HNSW Vector Index
+
+    Note over Janitor: Triggered by corruption detection<br/>or embedding model change
+
+    Janitor->>HNSW: Clear existing index
+    HNSW-->>Janitor: Cleared
+    
+    loop For each claim in SQLite
+        Janitor->>SQLite: Read claim content
+        SQLite-->>Janitor: Claim data
+        Janitor->>Embed: Generate embedding
+        Embed-->>Janitor: Vector
+        Janitor->>HNSW: Insert {claim_id, vector}
+    end
+    
+    Janitor->>HNSW: Finalize index
+    HNSW-->>Janitor: Index ready
+    
+    Note over Janitor: Estimated throughput:<br/>500-1000 claims/sec<br/>(bge-small-en-v1.5)
+```
+
+**Key architectural points:**
 
 - **Primary store: SQLite (WAL mode).** Single file, ACID transactions, source of truth for all claim data. WAL (Write-Ahead Logging) mode provides concurrent reads with serialized writes. The expected write concurrency profile (dozens of agents at peak, handful typical) is well within SQLite's capacity in WAL mode.
 - **Vector sidecar: HNSW index (memory-mapped).** A purpose-built vector index holding only claim IDs and their embedding vectors. Used exclusively for semantic search. This is a **derived projection** — if corrupted or lost, it is fully rebuildable from the SQLite database by re-reading claim embeddings. It is not a second source of truth.
+- **Embeddings generated locally.** Using ONNX models (`bge-small-en-v1.5` at 384 dimensions or `nomic-embed-text` at 768 dimensions). No network calls for this high-frequency operation.
+- **Fast mode (default):** Deterministic confidence computation from cached/precomputed values. Point lookups and structured queries served directly from SQLite indexes. Semantic search served from the HNSW sidecar with SQLite resolution of full claim data. Target latency: sub-millisecond for point lookups, low milliseconds for semantic search.
+- **Deliberate mode (on demand):** Invokes an LLM to evaluate claim confidence in the context of the specific query, assess contradictions, and produce a reasoning narrative alongside the results. This is more powerful than the fast path because the evaluation is **query-contextual** — the same claim may receive different confidence treatment depending on what the agent is trying to do with it. The deliberate path may also return a synthesis narrative: "here's what we know, here's where the weak spots are, here's what contradicts what."
 
 **Rationale for two-engine design:** A single engine that serves structured queries, semantic search, and event history well does not exist at the embedded/local scale. SQLite excels at structured queries and is adequate for event history (the ULID-based primary key enables efficient range scans for temporal queries). Vector search at scale (millions of claims) requires a purpose-built index with memory-mapped access for performance. The two-engine approach keeps each access pattern optimally served while maintaining a single source of truth.
 
@@ -163,11 +343,6 @@ graph LR
 - At 500 GB usable storage: ~100-200 million claims.
 - The HNSW vector index is memory-mapped; the OS pages in actively-queried regions. 16 GB of RAM comfortably serves semantic search over millions of claims.
 - This represents capacity well beyond what any individual would accumulate in years of heavy use.
-
-**Dual-mode query engine:**
-
-- **Fast mode (default):** Deterministic confidence computation from cached/precomputed values. Point lookups and structured queries served directly from SQLite indexes. Semantic search served from the HNSW sidecar with SQLite resolution of full claim data. Target latency: sub-millisecond for point lookups, low milliseconds for semantic search.
-- **Deliberate mode (on demand):** Triggered by a parameter on the Query operation. Invokes an LLM to evaluate claim confidence in the context of the specific query, assess contradictions, and produce a reasoning narrative alongside the results. This is more powerful than the fast path because the evaluation is **query-contextual** — the same claim may receive different confidence treatment depending on what the agent is trying to do with it. The deliberate path may also return a synthesis narrative: "here's what we know, here's where the weak spots are, here's what contradicts what."
 
 ### 2. Extractor
 
@@ -198,14 +373,14 @@ sequenceDiagram
     end
 
     EX-->>API: Extraction complete
-    API-->>Agent: Resulting claim IDs
+    API-->>Agent: {total, new, corroborated,<br/>namespaces, description}
 ```
 
-- Fully LLM-backed. The input text is sent to the configured LLM provider with instructions to extract discrete claims in the Boswell claim format.
-- **Synchronous operation.** The Extract call blocks until all claims are produced. Resulting claims are not available until the function is complete. There is no partial or streaming result model.
+- **Fully LLM-backed.** The input text is sent to the configured LLM provider with instructions to extract discrete claims in the Boswell claim format.
+- **Synchronous operation.** The Extract call blocks until all claims are produced. Extraction results (summary with counts, namespaces, and description) are returned when the operation completes. There is no partial or streaming result model.
 - **Duplicate handling via corroboration.** If two agents submit the same text block (or different texts that yield semantically identical claims), the resulting duplicate claims are treated as corroboration. A new provenance entry is appended to the existing claim rather than creating a duplicate. This is analogous to "it must be true because everyone is saying it" — not necessarily true, but a signal of collective assessment, weighted appropriately in the confidence model.
-- Extracted claims enter at the tier and namespace specified by the calling agent, subject to Gatekeeper evaluation for any subsequent promotion.
-- Provenance records on extracted claims carry `source_type: extraction` with a hash of the source text for deduplication and traceability.
+- **Tier targeting.** Extracted claims can target a specific tier (ephemeral, task, or project). Default is ephemeral. Tier-crossing requests (task or project) trigger Gatekeeper evaluation. The Gatekeeper may accept the target tier, downgrade to a lower tier, or reject to ephemeral.
+- **Provenance records on extracted claims** carry `source_type: extraction` with a hash of the source text for deduplication and traceability.
 
 ### 3. Synthesizer
 
@@ -213,46 +388,66 @@ sequenceDiagram
 
 **Design:**
 
-- LLM-backed. The Synthesizer reads claims, identifies patterns, and produces new claims with `source_type: inference` in their provenance and `derived_from` relationships linking back to the constituent claims.
+- **LLM-backed.** The Synthesizer reads claims, identifies patterns, and produces new claims with `source_type: inference` in their provenance and `derived_from` relationships linking back to the constituent claims.
 - Runs as a **background process**, not triggered by API calls. Configurable schedule and scope (which namespaces to examine, how frequently).
 - **Resolves the hyperedge question.** The claim model uses only pairwise relationships. The compound relationship "Claims A, B, and C together imply Claim D" is represented as Claim D with three `derived_from` edges and three provenance entries. The Synthesizer process handles the complexity; the schema stays simple.
 - **Abstraction layers emerge organically.** First-order claims are extracted from sources or asserted by agents. The Synthesizer produces second-order claims from combinations. Over time, it discovers patterns across second-order claims and produces third-order abstractions. Cross-domain pattern recognition — "this software architecture pattern resembles this biological system" — happens naturally through iterative synthesis passes.
 
+**Synthesis Workflow:**
+
 ```mermaid
-graph BT
-    subgraph First["First-Order Claims (from sources/agents)"]
-        A["Claim A<br/>(extracted)"]
-        B["Claim B<br/>(extracted)"]
-        C["Claim C<br/>(asserted)"]
-        D["Claim D<br/>(extracted)"]
-        E["Claim E<br/>(asserted)"]
+sequenceDiagram
+    participant SY as Synthesizer
+    participant CS as Claim Store
+    participant LLM as LLM Provider
+
+    Note over SY: Triggered by schedule<br/>(e.g., hourly, daily)
+
+    rect rgb(245, 250, 255)
+        Note over SY,LLM: Pass 1: Synthesize from first-order claims
+        SY->>CS: Query claims in target namespace<br/>(filtered by tier, recency, confidence)
+        CS-->>SY: Claim clusters [A, B], [C, D, E]
+        
+        loop For each cluster
+            SY->>LLM: Analyze claims for patterns<br/>"Do these claims together imply<br/>a higher-order insight?"
+            LLM-->>SY: Inferred claim or null
+            
+            alt Pattern found
+                SY->>CS: Store inferred claim with:<br/>- source_type: inference<br/>- derived_from: [A, B]<br/>- provenance entries linking sources<br/>- tier: same as constituents or lower
+                Note over SY,CS: New claim: "AB"
+            else No pattern
+                Note over SY: Skip cluster
+            end
+        end
     end
 
-    subgraph Second["Second-Order Claims (Synthesizer pass 1)"]
-        AB["Claim AB<br/>(inferred from A+B)"]
-        CDE["Claim CDE<br/>(inferred from C+D+E)"]
+    rect rgb(255, 250, 245)
+        Note over SY,LLM: Pass 2: Synthesize from second-order claims
+        SY->>CS: Query recently synthesized claims
+        CS-->>SY: Second-order claims [AB], [CDE]
+        
+        SY->>LLM: Analyze for cross-pattern insights<br/>"Do these inferred claims reveal<br/>a deeper abstraction?"
+        LLM-->>SY: Third-order insight or null
+        
+        alt Higher abstraction found
+            SY->>CS: Store insight claim with:<br/>- source_type: inference<br/>- derived_from: [AB, CDE]<br/>- tier: same or lower than constituents
+            Note over SY,CS: New claim: "ABCDE"<br/>(pattern emerges across domains)
+        end
     end
 
-    subgraph Third["Third-Order Abstractions (Synthesizer pass N)"]
-        ABCDE["Insight<br/>(pattern across AB + CDE)"]
+    rect rgb(250, 255, 245)
+        Note over SY,LLM: Pass N: Iterative refinement
+        Note over SY: Subsequent passes examine<br/>higher-order claims for even<br/>deeper patterns and abstractions
     end
-
-    A -->|derived_from| AB
-    B -->|derived_from| AB
-    C -->|derived_from| CDE
-    D -->|derived_from| CDE
-    E -->|derived_from| CDE
-    AB -->|derived_from| ABCDE
-    CDE -->|derived_from| ABCDE
 ```
 
-- Synthesized claims' confidence intervals are naturally wider (more uncertain) than their constituents. Uncertainty propagates outward through inference chains, which is epistemically correct.
+**Key aspects of synthesis:**
 
-**Cross-domain Synthesizer (Router-level):**
-
-- In a multi-instance deployment, a separate Synthesizer can run at the Router level, pulling high-confidence persistent-tier claims from each instance and looking for cross-domain connections.
-- This Synthesizer does not need access to ephemeral or task-level noise — only the distilled, durable knowledge from each instance.
-- Cross-domain insights can be pushed back to relevant instances or stored in a shared insights space at the Router level.
+- **Synthesized claims enter at the same tier or lower than their constituents.** If all input claims are at task tier, the inferred claim enters at task tier. If inputs are mixed (some task, some ephemeral), the synthesized claim enters at the lower tier (ephemeral). This prevents automatically elevating speculative inferences.
+- **Confidence intervals are wider (more uncertain) for synthesized claims.** Uncertainty propagates outward through inference chains, which is epistemically correct.
+- **Synthesis is scoped by namespace.** The Synthesizer can target specific namespaces (e.g., "acme/project-x/*") or run across multiple namespaces to find cross-domain patterns.
+- **Provenance preserves the full chain.** A third-order claim has `derived_from` links to second-order claims, which in turn link to first-order claims. The entire reasoning chain is traceable.
+- **Failed synthesis attempts are not stored.** If the LLM returns "no pattern found," the cluster is skipped. No noise accumulates from failed inference attempts.
 
 ### 4. Janitor(s)
 
@@ -273,13 +468,25 @@ graph BT
 
 ### 5. Gatekeeper
 
-**Responsibility:** Evaluates claims submitted for tier promotion. Ensures that no edge agent has unilateral authority to decide what knowledge persists long-term.
+**Responsibility:** Evaluates claims targeting higher tiers to ensure that no edge agent has unilateral authority to decide what knowledge persists at task, project, or persistent tiers.
 
 **Design:**
 
-- **LLM-backed, event-driven.** Triggered when claims are submitted for promotion (e.g., task completion, explicit agent request), not on a schedule.
+- **LLM-backed, event-driven.** Triggered when claims target tiers above ephemeral (on write) or when explicit promotion is requested (from project to persistent).
 - **Exists at every tier boundary.** The Gatekeeper at ephemeral → task can be more permissive (low stakes, easy cleanup). The Gatekeeper at project → persistent should be the most skeptical (protecting long-term memory from noise).
 - **Different Gatekeepers can use different LLM configurations.** The ephemeral → task Gatekeeper might run a fast local model. The project → persistent Gatekeeper might use a frontier model for nuanced evaluation.
+
+**Tier Assignment Rules:**
+
+1. **Default is ephemeral.** Claims without an explicit tier target are stored immediately at ephemeral tier. No Gatekeeper evaluation.
+2. **Agents can target task or project tier on write.** Assert and Extract operations accept `target_tier` and `advocacy` parameters. Targeting task or project triggers Gatekeeper evaluation.
+3. **Advocacy scores required for higher tiers.** Agent must express `advocacy: {importance: 0.8, confidence: 0.9}` indicating how important they believe the claim is and how confident they are in its accuracy.
+4. **Gatekeeper can accept, downgrade, or reject.** 
+   - **Accept:** Claim stored at target tier.
+   - **Downgrade:** Claim stored at a lower tier (e.g., agent requested project, Gatekeeper puts it at task).
+   - **Reject to ephemeral:** Claim stored at ephemeral with reasoning recorded.
+5. **No direct writes to persistent.** Agents can target up to project tier. Persistent tier always requires explicit promotion from project tier (most deliberate curation).
+6. **Rejection doesn't fail the write.** All claims are stored; the Gatekeeper determines the tier. The response indicates where the claim landed and why.
 
 **Evaluation process:**
 
@@ -291,8 +498,8 @@ sequenceDiagram
     participant LLM as LLM Provider
     participant CS as Claim Store
 
-    Agent->>API: Submit claims with advocacy tuples
-    API->>GK: Evaluate for promotion
+    Agent->>API: Assert/Extract with<br/>{tier: "project", advocacy: {importance, confidence}}
+    API->>GK: Evaluate tier request
 
     loop For each claim
         GK->>CS: Fetch existing claims at target tier
@@ -300,168 +507,113 @@ sequenceDiagram
         GK->>LLM: Evaluate novelty, quality, consistency
         LLM-->>GK: Assessment
 
-        alt Accepted
-            GK->>CS: Promote claim to target tier
+        alt Accepted at target tier
+            GK->>CS: Store claim at target tier
             GK->>CS: Record reasoning as provenance
-        else Rejected
+        else Downgraded to lower tier
+            GK->>CS: Store claim at lower tier
             GK->>CS: Record reasoning as provenance
-            Note over GK,CS: Claim stays at current tier<br/>with existing TTL
+            Note over GK,CS: e.g., agent requested project,<br/>Gatekeeper puts at task
+        else Rejected to ephemeral
+            GK->>CS: Store claim at ephemeral
+            GK->>CS: Record reasoning as provenance
         end
     end
 
-    GK-->>API: Promotion results
-    API-->>Agent: Accepted/rejected per claim
+    GK-->>API: Results per claim<br/>{actual_tier, reasoning}
+    API-->>Agent: Storage results
 ```
 
-1. Agent submits claims with advocacy scores: a tuple `[perceived_importance, confidence]` expressing how important the agent believes the claim is and how confident the agent is in its accuracy.
-2. Gatekeeper evaluates each claim against existing claims at the target tier — checking for redundancy, contradiction, and novelty.
-3. Gatekeeper considers the agent's advocacy but is **not bound by it**. High advocacy from the agent is a signal, not an instruction.
-4. Gatekeeper accepts, modifies, or rejects each claim for promotion.
-5. Gatekeeper's reasoning is recorded as a provenance entry on the claim for future reference.
+1. Agent submits claims with optional tier target and advocacy scores: `{importance, confidence}` expressing how important the agent believes the claim is and how confident they are in its accuracy.
+2. If tier is omitted or set to ephemeral, claim is stored immediately without Gatekeeper evaluation.
+3. If tier is task or project, Gatekeeper evaluates each claim against existing claims at the target tier — checking for redundancy, contradiction, and novelty.
+4. Gatekeeper considers the agent's advocacy but is **not bound by it**. High advocacy from the agent is a signal, not an instruction.
+5. Gatekeeper accepts at target tier, downgrades to a lower tier, or rejects to ephemeral. **The write always succeeds**; the Gatekeeper determines where the claim lands.
+6. Gatekeeper's reasoning is recorded as a provenance entry on the claim for future reference.
 
-**Rejected claims are not deleted.** They remain at their current tier with their existing TTL. If the TTL expires without further advocacy or corroboration, the Janitor sweeps them normally. If new evidence surfaces and another agent independently submits the same knowledge, the Gatekeeper has context from the prior evaluation.
+**All claims are stored, tier determines TTL and scope.** Even "rejected" claims are stored at ephemeral tier with the Gatekeeper's reasoning. If the TTL expires without further advocacy or corroboration, the Janitor sweeps them normally. If new evidence surfaces and another agent independently submits the same knowledge, the Gatekeeper has context from the prior evaluation.
 
 **Defense against confidence bubbles.** If a swarm of agents all hallucinate the same incorrect claim and submit it with high advocacy scores, the Gatekeeper evaluates it against established knowledge and can reject despite high advocacy. The broader context acts as a check on swarm groupthink.
 
 ### 6. Router
 
-**Responsibility:** Multi-instance topology management, federated queries, authentication, and token issuance.
+**Responsibility:** Session management and instance registry. The Router responds to session requests from authorized clients with a list of registered instances, their endpoints, capabilities, and health status.
 
 **Design:**
 
-- **Only necessary for multi-instance features.** Federation, cross-domain synthesis, topology management, and ambiguous routing fallback require the Router. A single-instance deployment does not need a Router. However, see Security Model below — the instance itself enforces authentication regardless of whether a Router is present.
-- **Not in the hot path for routine operations.** Clients receive the full instance topology at session start and route operations directly to instances. The Router handles session initiation, ambiguous routing fallback, federated queries, and cross-domain synthesis.
-- **Network-accessible from the start.** gRPC API with TLS and authentication, even for single-instance deployments, since the instance may live on a different machine than the agents using it.
+- **Always present in all deployments.** The Router serves as the single source of session management and token issuance, avoiding duplication of security-critical code in instances. In single-instance deployments, it simply returns a single-element instance list.
+- **Not in the hot path for any operations.** After the initial session handshake, the client SDK routes all operations directly to instances. The Router is only contacted for session establishment and registry refresh.
+- **Serves only authorized clients.** Session requests are authenticated via mTLS. Only registered clients receive the instance list.
 
 **Trust Model:**
 
-Instance-level authentication (mTLS on every connection) is described in the Security Model section above and applies regardless of whether a Router is present. The following describes the additional trust mechanisms specific to the Router's role in multi-instance deployments.
+The Router handles session establishment, but instance-level authentication (mTLS on every connection between Router and instance, and between client and instance) ensures that instances independently verify all incoming connections. This is described in detail in the Security Model section.
 
-- **Instance registration is manual and deliberate.** Adding a new instance to the Router is an explicit administrative action. No automatic discovery of unknown instances. This is a security-first design — the Router is a high-value target and must not trust unverified instances.
+- **Instance registration is manual and deliberate.** Adding a new instance to the Router requires explicit administrative action and configuration file update. There is no automatic discovery mechanism.
 - **Identity is cryptographic.** Each instance has a keypair. The public key (fingerprint) is registered with the Router. Mutual TLS (mTLS) ensures both sides verify identity on every connection.
-- **Discovery of registered instances is automatic and resilient.** The Router maintains a registry of known instances with their fingerprints and endpoints. It periodically health-checks all known endpoints and tracks availability. If an instance becomes unreachable (power outage, network issue), the Router continues operating with reduced scope and re-integrates the instance automatically when it becomes available again.
-- **Retry backoff on unreachable instances.** Exponential backoff starting at ~30 seconds, ceiling at ~5 minutes, so recovery is detected within a reasonable window without hammering dead endpoints.
 
 **Instance Registry:**
 
 Each instance entry contains:
 
-- Cryptographic fingerprint (identity, never changes without explicit administrative action)
-- One or more endpoints (an instance may be reachable at different addresses depending on network context — LAN IP at home, VPN address when remote)
-- Trust score: `float (0.0-1.0)`, defaults to 1.0. Mechanism for degrading trust is a future implementation detail, but the field exists from the start. Claims from lower-trust instances have their effective confidence scaled accordingly in federated queries.
-- Expertise profile: a set of topic descriptors, keywords, or semantic signatures that describe what the instance stores. Examples: `[programming, software architecture, devops, databases]` for a development instance, `[cooking, family, important dates, health]` for a personal instance. Used by the Topic Classifier (see below) to route incoming claims to the correct instance without requiring agents to understand the instance topology.
-- Scope permissions: whether the instance participates in federated queries, cross-domain synthesis, or is direct-access only.
-- Health state: `healthy`, `degraded`, `unreachable`, `untrusted` (fingerprint mismatch — alert condition).
+- **instance_id:** Unique identifier for the instance
+- **Cryptographic fingerprint:** Identity verification, never changes without explicit administrative action
+- **One or more endpoints:** An instance may be reachable at different addresses depending on network context (LAN IP at home, VPN address when remote)
+- **Capabilities:** Array of supported operations (e.g., `["assert", "query", "extract", "learn", "reflect", "forget"]`). Some instances may have restricted capability sets.
+- **Health status:** Tracked by periodic health checks. States: `healthy`, `degraded`, `unreachable`. Included in session responses so clients can make informed routing decisions.
 
-```mermaid
-stateDiagram-v2
-    [*] --> healthy: Registered & verified
-    healthy --> degraded: Slow responses
-    healthy --> unreachable: Connection lost
-    healthy --> untrusted: Fingerprint mismatch
+**Health Tracking:**
 
-    degraded --> healthy: Performance recovers
-    degraded --> unreachable: Connection lost
+The Router periodically health-checks registered instances to maintain current status:
+- Successful response within timeout → `healthy`
+- Slow response or partial failure → `degraded`
+- Connection failure or timeout → `unreachable`
 
-    unreachable --> healthy: Reconnected & verified
-    unreachable --> untrusted: Reconnected but<br/>fingerprint mismatch
-
-    untrusted --> [*]: Manual re-registration required
-
-    note right of untrusted: ALERT CONDITION<br/>Possible compromise
-```
-
-**Topology changes are logged.** "Instance 'professional' became reachable at 14:32:07 via vps-1.example.com:9001" provides audit trail and diagnostic value.
-
-**Federated Queries:**
-
-```mermaid
-sequenceDiagram
-    participant MCP as MCP Server
-    participant Router
-    participant SI as Summary Index
-    participant A as Instance A
-    participant B as Instance B
-    participant C as Instance C (unreachable)
-    participant LLM as LLM Provider
-
-    MCP->>Router: Federated query<br/>{topic: "project deadlines"}
-    Router->>SI: Which instances likely relevant?
-    SI-->>Router: Instance A, Instance B, Instance C
-
-    par Fan out to instances
-        Router->>A: Query
-        A-->>Router: Results from A
-    and
-        Router->>B: Query
-        B-->>Router: Results from B
-    and
-        Router->>C: Query
-        Note over C: Unreachable
-        C--xRouter: Timeout
-    end
-
-    Router->>LLM: Merge results from A and B<br/>(different confidence scales,<br/>different embedding models)
-    LLM-->>Router: Merged, reconciled results
-
-    Router-->>MCP: Results + coverage note:<br/>"2 of 3 instances responded"
-```
-
-- The Router supports a federated query mode that fans out to multiple instances, collects results, and merges them.
-- Merging results from different instances (potentially with different confidence scales and embedding models) requires LLM assistance — this is where the Router's LLM integration earns its keep.
-- Results from federated queries include transparency about coverage: "3 of 5 instances currently unreachable, results may be incomplete."
-
-**Summary Index:**
-
-- The Router can maintain a lightweight shared index of topic signatures, namespace registries, and high-confidence persistent claims from each instance.
-- Used to route queries efficiently — determining which instances are likely to have relevant knowledge before fanning out, avoiding unnecessary queries to irrelevant instances.
-- Stale federation awareness: when a previously-unreachable instance returns, the cross-domain Synthesizer prioritizes scanning it for changes.
-
-**Topic Classifier (Claim Routing):**
-
-In a multi-instance deployment, agents should not need to understand the instance topology to store knowledge. Routing is handled in two tiers:
-
-- **Client-side (simple matches):** The client SDK receives instance expertise profiles in the session response and matches routing hints or namespace prefixes locally. A routing hint of "coding" matching an instance with expertise "programming" is resolved entirely in the SDK — no network call, no LLM.
-- **Router fallback (ambiguous cases):** When the SDK cannot confidently match a claim to an instance (no routing hint, no clear namespace match, or the claim spans multiple domains), it sends the operation to the Router. The Router's Topic Classifier analyzes the claim's subject, predicate, and raw expression against registered expertise profiles. Classification can be LLM-assisted (lightweight analysis) or embedding-similarity-based (comparing the claim's embedding against expertise profile signatures).
-- **Cross-domain claims** — claims relevant to multiple domains (e.g., "the project deadline conflicts with the family vacation") — require a routing policy. Options include: duplicating the claim into multiple instances, selecting a primary instance and creating a reference in others, or flagging for the user. The routing policy is configurable.
-- The Topic Classifier removes the need for agents to understand instance topology. Agents interact with the Router as a single endpoint; the Router handles placement.
+Health status is reported in session responses. Clients are responsible for handling unreachable instances (retry logic, alternate routing, user notification).
 
 **Portable Encrypted Configuration:**
 
-- The Router's configuration file contains the full registry: instance fingerprints, endpoints, trust scores, scope permissions.
+- The Router's configuration file contains the full registry: instance fingerprints, endpoints, and capabilities.
 - **Encrypted at rest** using `age` (a modern encryption tool with a mature Rust crate). Passphrase-based encryption — no key files to manage separately.
 - **Decrypted in memory at startup.** The Router prompts for the passphrase, decrypts in memory, and never writes plaintext to disk. Re-encrypts before writing any modifications.
-- **Portable by design.** The user can store the encrypted config file in iCloud, a USB drive, or any other accessible location. From any machine with the Router binary and the passphrase, the user can spin up a Router that connects to their entire memory network (or whatever subset is reachable from that location).
+- **Portable by design.** The user can store the encrypted config file in iCloud, a USB drive, or any other accessible location. From any machine with the Router binary and the passphrase, the user can spin up a Router that connects to their instance network.
 - **Config versioning.** A sequence number in the config allows detecting which copy is most recent when copies exist in multiple locations.
 - **Config sync is manual and deliberate.** No automatic synchronization — this prevents propagation of a compromised config.
 - Inner format: TOML or JSON (human-readable when decrypted, easy to inspect and hand-edit).
 
 **Token Issuance:**
 
-- When an agent requests access through the Router, the Router issues a short-lived, scoped token valid for specific instances.
-- Agents can use the token to communicate directly with the instance, removing the Router from the hot path for individual reads and writes.
-- Instances validate tokens against the Router's signing key.
-- If the Router is compromised: revoke its CA, no instance trusts anyone until trust is manually re-established.
-- If an instance is compromised: remove its registration, it's immediately cut off from everything else.
+- When an agent requests access through the Router, the Router issues one session token per registered instance.
+- Agents use the instance-specific tokens to communicate directly with instances, removing the Router from the operational path.
+- Each instance validates its own tokens against the Router's signing key.
 
-**The Router itself should run on the user's trusted machine** (not a remote server) since it holds the topology, keys, and token-issuing authority. Its configuration is file-based and version-controllable for audit trail of trust changes.
+**The Router itself should run on the user's trusted machine** (not a remote server) since it holds the instance registry, keys, and token-issuing authority. Its configuration is file-based and version-controllable for audit trail of trust changes.
 
 ## API Surface
 
-All operations are exposed via gRPC. The API supports both direct instance access (agent → instance) and routed access (agent → Router → instance).
+All operations are exposed via gRPC. The API supports both direct instance access (agent → instance) and multi-instance access (agent → Router for session, then agent → instances for operations).
 
-In routed access mode, operations carry an optional **routing hint** — a transient field indicating which domain the claim or query pertains to (e.g., "development", "cooking"). This hint is used by the Router's Topic Classifier to place claims in the correct instance or direct queries to the right instance. The routing hint is **not persisted** on the claim; it serves only as a routing instruction. If omitted, the Topic Classifier determines placement automatically. Routing hints are per-operation, not per-session — the session is a pure authentication context.
+The client SDK is responsible for all routing decisions. Based on the instance list received during session establishment, the SDK determines which instance to target for each operation. Routing strategies are implementation-specific and may include: namespace-based routing, user configuration, or interactive selection.
 
 | Operation | Description | Sync/Async | LLM Required |
 |---|---|---|---|
-| **Assert** | Submit one or more claims with provenance and confidence. Supports batches. | Synchronous | No |
+| **Assert** | Submit one or more claims with provenance and confidence. Supports optional tier targeting (ephemeral, task, project) with advocacy scores. Tier-crossing requests trigger Gatekeeper evaluation. | Synchronous (may involve Gatekeeper) | Task/project tiers only |
 | **Query** | Retrieve claims by structure, semantics, or time. Supports fast (default) and deliberate modes. | Synchronous | Deliberate mode only |
 | **Challenge** | Register a contradiction against an existing claim | Synchronous | No |
-| **Promote/Demote** | Request tier migration for a claim. Promotion triggers Gatekeeper evaluation. | Synchronous (may involve Gatekeeper) | Promotion only |
-| **Extract** | Submit a text block for claim extraction | Synchronous (blocking) | Yes |
-| **Learn** | Bulk-load pre-formatted claims directly into the Claim Store ("I know kung fu") | Synchronous | No |
+| **Promote** | Request tier migration for an existing claim. Primarily used for project → persistent promotion. Triggers Gatekeeper evaluation. | Synchronous (involves Gatekeeper) | Yes |
+| **Extract** | Submit a text block for claim extraction. Supports optional tier targeting like Assert. | Synchronous (blocking, may involve Gatekeeper) | Yes (extraction + tier evaluation if needed) |
+| **Learn** | Bulk-load pre-formatted claims directly into the Claim Store. Supports tier targeting. | Synchronous (may involve Gatekeeper) | Task/project tiers only |
 | **Reflect** | Request a synthesized summary of knowledge about a topic | Synchronous | Yes |
 | **Forget** | Request eviction of a claim (transitions to `forgotten` status for eventual purging) | Synchronous | No |
+
+**Tier Targeting on Write:**
+
+Operations that write claims (Assert, Extract, Learn) accept optional `target_tier` and `advocacy` parameters:
+- **Default behavior:** Claims without a specified tier are stored at ephemeral. No Gatekeeper evaluation, immediate storage.
+- **Targeting task or project:** Including `target_tier: "task"` or `target_tier: "project"` with `advocacy: {importance, confidence}` triggers Gatekeeper evaluation. The Gatekeeper may accept the target tier, downgrade to a lower tier, or reject to ephemeral. **The write always succeeds**; the response indicates where the claim was actually stored.
+- **Persistent tier:** Cannot be targeted directly. Claims must be promoted from project tier using the Promote operation.
+
+This model balances agent intent (agents know when something is important) with systematic oversight (Gatekeeper prevents noise accumulation at higher tiers).
 
 ### Batch Writes and Cross-Domain Routing
 
@@ -469,7 +621,7 @@ Assert (and Learn) accept batches of one or more claims per call. An agent compl
 
 **In single-instance mode:** The instance accepts the entire batch regardless of domain mix — there's nowhere else for claims to go. Routing hints are ignored.
 
-**In multi-instance mode:** The client SDK groups claims by target instance using the expertise profiles received at session start, then sends sub-batches directly to each instance in parallel.
+**In multi-instance mode:** The client SDK groups claims by target instance using its routing strategy, then sends sub-batches directly to each instance in parallel.
 
 ```mermaid
 sequenceDiagram
@@ -490,16 +642,23 @@ sequenceDiagram
     Note over MCP: SDK aggregates results
 ```
 
-If the SDK cannot confidently route a claim (no routing hint, ambiguous content), it falls back to the Router for classification of those specific claims.
-
-**Partial success model:** Batches are **not atomic** across instances. If claims routed to Instance A succeed but Instance B is unreachable, the client receives partial success with clear per-claim reporting:
+**Partial success model:** Batches are **not atomic** across instances. If claims routed to Instance A succeed but Instance B is unreachable, the client receives partial success with per-instance reporting:
 
 ```json
 {
   "results": [
-    { "claim_id": "01ABC...", "status": "ok", "instance": "development" },
-    { "claim_id": "01ABD...", "status": "failed", "instance": "personal", "reason": "instance_unreachable" },
-    { "claim_id": "01ABE...", "status": "ok", "instance": "development" }
+    { 
+      "instance": "development", 
+      "status": "ok",
+      "summary": { "total": 2, "new": 2, "corroborated": 0 },
+      "namespace": "acme/dev/task-123"
+    },
+    { 
+      "instance": "personal", 
+      "status": "failed",
+      "reason": "instance_unreachable",
+      "claims_not_stored": 1
+    }
   ]
 }
 ```
@@ -512,9 +671,10 @@ The Learn operation enables direct loading of correctly-formatted claim data wit
 
 Parameters include:
 
-- **Trust level:** Initial confidence for loaded claims. Can be set high ("these are curated, trust them") or moderate ("load these but let the system validate over time").
+- **Target tier:** Which tier to target (ephemeral, task, project). Default is ephemeral. Targeting task or project triggers Gatekeeper evaluation with the trust level serving as advocacy confidence.
+- **Trust level:** Initial confidence for loaded claims, also used as advocacy confidence for Gatekeeper evaluation. Can be set high ("these are curated, trust them") or moderate ("load these but let the system validate over time").
 - **Conflict policy:** How to handle claims that contradict existing claims — flag immediately, load quietly and let the Janitor sort it out, or reject the conflicting subset.
-- **Namespace targeting:** Which scope tier and namespace the claims land in.
+- **Namespace targeting:** Which namespace the claims land in.
 
 ### Query Operation Details
 
@@ -558,19 +718,19 @@ Embedding model selection is a per-instance configuration decision with the high
 
 ## Security Model
 
-Security is enforced at the **instance level**, not the Router level. Every Boswell instance requires authenticated connections regardless of deployment mode. The Router adds topology management and federation on top of this, but a single instance with no Router is still fully secured.
+Security operates at two levels: the **Router** handles all session establishment and token issuance, and each **instance** validates tokens and enforces authorization on operations. This separation ensures consistent authentication logic across all deployments.
 
 ### Connection Protocol
 
-The MCP server (or any client) does not know or care whether it is connecting to a Router or a direct instance. The connection protocol is identical in both cases:
+All clients connect to the Router for session establishment. Instances never handle session requests directly:
 
 1. Client connects to its configured Boswell endpoint.
 2. mTLS handshake — mutual identity verification.
 3. Client sends a **session request** (empty beyond identity — no operational context).
-4. The endpoint responds with a **session token**, a **mode** indicator, and an **instances array** describing available instances with their endpoints, expertise profiles, and health states.
-5. The client SDK uses this topology to route operations directly to the appropriate instance. Namespace, routing hints, and tier targeting are properties of individual operations, not the session.
+4. The endpoint responds with an **instances array** describing available instances with their endpoints, capabilities, health status, and **instance-specific session tokens**.
+5. The client SDK uses this instance list to route operations directly to the appropriate instance, including the instance-specific token with each operation. Namespace and tier targeting are properties of individual operations, not the session.
 
-The session is purely an authentication and topology discovery context. The client receives everything it needs to route operations independently.
+The session is purely an authentication and instance registry retrieval context. The client receives everything it needs to route operations independently.
 
 ```mermaid
 sequenceDiagram
@@ -581,35 +741,33 @@ sequenceDiagram
     Endpoint-->>Client: Certificate verified
 
     Client->>Endpoint: SessionRequest {}
-    Endpoint-->>Client: SessionResponse {<br/>  token: "abc123",<br/>  mode: "router" | "instance",<br/>  instances: [<br/>    { id, endpoint, expertise, health },<br/>    ...<br/>  ]<br/>}
+    Endpoint-->>Client: SessionResponse {<br/>  instances: [<br/>    { instance_id, endpoint, capabilities, token },<br/>    ...<br/>  ]<br/>}
 
-    Note over Client,Endpoint: Client now has full topology.<br/>Routes operations directly to instances.
+    Note over Client,Endpoint: Client now has instance list with per-instance tokens.<br/>Routes operations directly to instances.
 ```
 
 **Session response in multi-instance mode:**
 
 ```json
 {
-  "token": "xyz789",
-  "mode": "router",
   "instances": [
     {
       "instance_id": "development",
       "endpoint": "mini:9001",
-      "expertise": ["programming", "devops", "databases"],
-      "health": "healthy"
+      "capabilities": ["assert", "query", "challenge", "promote", "demote", "extract", "learn", "reflect", "forget"],
+      "token": "dev_xyz789_abc123"
     },
     {
       "instance_id": "personal",
       "endpoint": "mini:9002",
-      "expertise": ["cooking", "family", "important-dates"],
-      "health": "healthy"
+      "capabilities": ["assert", "query", "challenge", "promote", "demote", "extract", "learn", "reflect", "forget"],
+      "token": "personal_def456_ghi789"
     },
     {
       "instance_id": "professional",
       "endpoint": "vps-1:9001",
-      "expertise": ["clients", "contracts", "meetings"],
-      "health": "unreachable"
+      "capabilities": ["assert", "query", "learn", "reflect", "forget"],
+      "token": "prof_jkl012_mno345"
     }
   ]
 }
@@ -619,37 +777,36 @@ sequenceDiagram
 
 ```json
 {
-  "token": "abc123",
-  "mode": "instance",
   "instances": [
     {
       "instance_id": "development",
       "endpoint": "self:9001",
-      "expertise": [],
-      "health": "healthy"
+      "capabilities": ["assert", "query", "challenge", "promote", "demote", "extract", "learn", "reflect", "forget"],
+      "token": "dev_abc123_xyz789"
     }
   ]
 }
 ```
 
-Same shape — one entry in the array, no expertise filtering needed.
+Same shape — one entry in the array, one token for that instance.
 
-The difference between deployment modes is invisible to the client:
+The client interaction is identical regardless of the number of instances:
 
-#### Sequence: Single Instance (No Router)
+#### Sequence: Single Instance
 
 ```mermaid
 sequenceDiagram
     participant MCP as MCP Server
+    participant Router
     participant Inst as Boswell Instance
 
-    MCP->>Inst: mTLS handshake
-    Inst-->>MCP: Certificate verified
+    MCP->>Router: mTLS handshake
+    Router-->>MCP: Certificate verified
 
-    MCP->>Inst: SessionRequest {}
-    Inst-->>MCP: SessionResponse {<br/>  token, mode: "instance",<br/>  instances: [self]<br/>}
+    MCP->>Router: SessionRequest {}
+    Router-->>MCP: SessionResponse {<br/>  instances: [{instance_id, endpoint, capabilities, token}]<br/>}
 
-    Note over MCP,Inst: Only one instance. All operations go here.
+    Note over MCP,Router: Router returns single-element list<br/>with instance-specific token.
 
     MCP->>Inst: boswell_query (token)<br/>{namespace: "development/*", deliberate: false}
     Inst-->>MCP: Results
@@ -658,7 +815,7 @@ sequenceDiagram
     Inst-->>MCP: Ack
 ```
 
-#### Sequence: Multi-Instance via Router
+#### Sequence: Multi-Instance
 
 ```mermaid
 sequenceDiagram
@@ -671,20 +828,20 @@ sequenceDiagram
     Router-->>MCP: Certificate verified
 
     MCP->>Router: SessionRequest {}
-    Router-->>MCP: SessionResponse {<br/>  token, mode: "router",<br/>  instances: [A, B, ...]<br/>}
+    Router-->>MCP: SessionResponse {<br/>  instances: [<br/>    {instance_id, endpoint, capabilities, token},<br/>    ...<br/>  ]<br/>}
 
-    Note over MCP,Router: Client SDK now routes<br/>operations directly to instances.
+    Note over MCP,Router: Client SDK decides routing<br/>based on instance list.<br/>Each instance has its own token.
 
-    MCP->>A: boswell_assert (token)<br/>{claims: [...], routing_hint: "coding"}
+    MCP->>A: boswell_assert (token)<br/>{claims: [...]}
     A-->>MCP: Ack
 
     MCP->>B: boswell_query (token)<br/>{namespace: "personal/*"}
     B-->>MCP: Results
 ```
 
-The client SDK matches routing hints and namespace prefixes against the expertise profiles and endpoints received at session start. Simple matches (routing_hint "coding" → instance with expertise "programming") are resolved locally by the SDK with no LLM involvement. For ambiguous claims that don't clearly match any instance, the SDK can fall back to the Router for classification.
+The client SDK makes all routing decisions based on the list of available instances. The SDK can use various strategies: namespace-based routing, user configuration, or interactive prompting when ambiguous.
 
-**Topology staleness:** The topology received at session start can become stale during a long session — an unreachable instance may recover, or a healthy instance may go down. The client is responsible for handling connection failures with retries. If retries to a known endpoint persistently fail (or succeed for a previously-unreachable instance), the client can re-fetch the topology from the Router by issuing a new session request. There is no push-based topology update mechanism.
+**Instance availability:** The client is responsible for handling connection failures with retries. If an instance becomes unreachable, the client can attempt reconnection or query the Router for an updated instance list by issuing a new session request.
 
 #### Uniform API Shape
 
@@ -692,8 +849,7 @@ The session request and all subsequent operation calls have **identical structur
 
 - The MCP server has one code path. No `if router then ... else ...` branching.
 - Swapping between single-instance and multi-instance deployment is a configuration change (the endpoint URL), not a code change.
-- A single instance accepts routing hints on operations even though it doesn't need them for routing. The slight payload overhead is negligible; the simplification is significant.
-- The session is stateless beyond authentication and initial topology. No routing decisions are baked into the session.
+- The session is stateless beyond authentication and initial instance list. No routing decisions are baked into the session.
 
 ### Instance Authentication
 
@@ -709,13 +865,20 @@ Clients are registered with an instance through the same manual trust process us
 
 This applies to every type of client: MCP servers, Router processes, direct SDK connections, and any future integration. Each gets its own keypair and explicit registration.
 
-### Single-Instance Deployment Security
+### Session Management
 
-In single-instance mode, the instance speaks the same session protocol as the Router (see sequence diagrams above). The MCP server connects, authenticates, receives a token and endpoint, and proceeds. The instance returns itself as the target endpoint. Operational context (namespace, routing hints) is carried on each individual operation, not the session. No Router is present, but the instance is fully authenticated.
+The Router is the single source of truth for session management and token issuance in all deployment modes:
 
-### Multi-Instance Deployment Security
+- **Single-instance deployments:** The Router issues one session token for the instance and returns a single-element instance list containing the lone instance with its token. The overhead is minimal (one additional process), but the architectural benefit is significant: no duplication of security-critical session management code.
+- **Multi-instance deployments:** The Router issues one session token per instance and returns the full instance list with each instance's token. The client SDK routes operations directly to instances using the appropriate instance-specific token.
 
-In multi-instance mode, the Router handles the session handshake and returns the full instance topology (see sequence diagrams above). The client SDK then routes operations directly to instances using the session token. The Router's token must be accepted by all registered instances. For ambiguous routing and federated queries, the client falls back to the Router. The session token is scoped to allow direct client-to-instance communication without the Router proxying every call.
+In both cases, each session token is scoped to its specific instance. This provides granular security: token compromise affects only one instance, and the Router can grant different permissions per instance. Operational context (namespace, tier) is carried on each individual operation, not the session.
+
+### Instance Token Validation
+
+Each instance validates its own session tokens on every operation but does not issue them. The Router's public key is registered with each instance, allowing instances to cryptographically verify their tokens. Each token is instance-specific and signed by the Router.
+
+If a token is compromised, only that specific instance is affected. The Router can revoke individual instance tokens without affecting other instances or requiring certificate changes. This provides granular security and audit capabilities.
 
 ### Certificate and Key Management
 
@@ -733,33 +896,46 @@ LLMs do not make network calls directly. When an LLM decides to use a tool, it e
 
 ### Integration Architecture
 
+This shows the complete flow from LLM tool invocation through to Boswell operations:
+
 ```mermaid
-graph TB
-    LLM["LLM (Claude, GPT, local model)"]
-    LLM -->|"Emits structured tool call:<br/>boswell_query({ subject: '...', deliberate: true })"| Host
+sequenceDiagram
+    participant LLM as LLM (Claude, GPT)
+    participant Host as Host Application
+    participant MCP as MCP Server / SDK
+    participant Router
+    participant Inst as Instance
 
-    Host["Host Application / Agent Framework"]
-    Host -->|"Intercepts tool call,<br/>delegates to integration layer"| IL
-
-    subgraph IL["Boswell Integration Layer"]
-        MCP["MCP Server<br/>(for MCP-capable clients)"]
-        SDK["Client SDK<br/>(for custom frameworks)"]
-    end
-
-    subgraph Boswell["Boswell Deployment"]
-        Router["Router<br/>(session + fallback routing)"]
-        InstA["Instance A"]
-        InstB["Instance B"]
-    end
-
-    MCP -->|"session handshake"| Router
-    MCP -->|"direct operations"| InstA
-    MCP -->|"direct operations"| InstB
-    SDK -->|"session handshake"| Router
-    SDK -->|"direct operations"| InstA
-    SDK -->|"direct operations"| InstB
-    MCP -.->|"ambiguous routing<br/>fallback"| Router
+    Note over LLM,Host: Initial setup
+    Host->>MCP: Initialize with Boswell endpoint config
+    MCP->>Router: SessionRequest (mTLS)
+    Router-->>MCP: SessionResponse {instances: [{..., token}]}
+    
+    Note over LLM,Inst: Operation flow
+    
+    LLM->>Host: Tool call: boswell_query({<br/>  subject: "authentication patterns",<br/>  namespace: "dev/*",<br/>  deliberate: true<br/>})
+    
+    Host->>MCP: Intercept & forward tool call
+    
+    Note over MCP: SDK selects target instance<br/>based on namespace routing
+    
+    MCP->>Inst: Query (token, params)
+    Inst->>Inst: Execute query
+    Inst-->>MCP: Results {claims: [...], confidence: [...]}
+    
+    MCP-->>Host: Format as tool result
+    Host-->>LLM: Return structured result as context
+    
+    Note over LLM: LLM receives context,<br/>continues reasoning
 ```
+
+**Key Flow:**
+
+1. **Initialization** - Host application starts MCP server/SDK, which establishes session with Router and receives instance list with tokens
+2. **Tool Invocation** - LLM emits structured tool call (JSON), host intercepts it
+3. **Routing** - MCP/SDK determines target instance based on namespace or other routing strategy
+4. **Execution** - Direct gRPC call to instance using instance-specific token
+5. **Response** - Instance returns results, MCP/SDK formats them, host provides to LLM as context
 
 ### Components
 
@@ -770,10 +946,10 @@ MCP (Model Context Protocol) is the emerging standard for exposing tools to LLM-
 The Boswell MCP server:
 
 - Runs locally as a standalone process.
-- Holds a registered client certificate for authenticating to the Router or directly to an instance via mTLS.
-- On session start, receives the full instance topology (endpoints, expertise profiles, health states) and routes operations directly to instances.
+- Holds a registered client certificate for authenticating to the Router (for session establishment) and to instances (for operations) via mTLS.
+- On session start, receives the full instance list (endpoints and capabilities) from the Router and routes operations directly to instances.
 - Exposes all Boswell operations (Assert, Query, Challenge, Promote/Demote, Extract, Learn, Reflect, Forget) as MCP tools.
-- Handles gRPC communication to instances internally, with Router fallback for ambiguous routing.
+- Handles gRPC communication to instances internally.
 - Requires zero custom integration code from the user. They add one MCP configuration entry and Boswell tools appear in their LLM client.
 
 This is the highest-leverage integration for adoption. A user installs Boswell, starts the service, adds an MCP config entry, and their Claude or Cursor session immediately has persistent memory.
@@ -802,8 +978,7 @@ Example (abbreviated):
             "direct_object": { "type": "string", "description": "The value or target" },
             "raw_expression": { "type": "string", "description": "Natural language form of the claim" },
             "namespace": { "type": "string", "description": "Target namespace for the claim" },
-            "tier": { "type": "string", "enum": ["ephemeral", "task", "project", "persistent"] },
-            "routing_hint": { "type": "string", "description": "Optional domain hint for Router placement (transient, not persisted)" }
+            "tier": { "type": "string", "enum": ["ephemeral", "task", "project", "persistent"] }
           },
           "required": ["subject", "predicate", "direct_object", "raw_expression"]
         }
@@ -840,15 +1015,15 @@ A JavaScript/TypeScript wrapper for web-based and Node.js agent frameworks. Supp
 
 ### Single Instance (Minimum Viable)
 
-A single Boswell instance on the user's machine. The MCP server (or other clients) connects directly via gRPC with mTLS. No Router needed. The instance enforces authentication independently — client certificates must be registered with the instance. Suitable for individual use with a small number of agents.
+A single Boswell instance on the user's machine with a Router process for session management. The MCP server (or other clients) connects to the Router, receives a session token and single-element instance list, then communicates directly with the instance. The Router's overhead is negligible (< 1MB memory, near-zero CPU when idle), but ensures consistent security architecture. Suitable for individual use with a small number of agents.
 
 ### Multi-Instance Local
 
-Multiple Boswell instances on one or more machines on a local network. Router runs on the user's primary machine. Instances and the Router are manually registered with each other. MCP server authenticates to the Router, which authenticates to instances. Suitable for domain-isolated memory (development, personal, professional) with optional federation.
+Multiple Boswell instances on one or more machines on a local network. Router runs on the user's primary machine. Instances and the Router are manually registered with each other. MCP server authenticates to the Router to receive the instance list, then communicates directly with instances. Suitable for domain-isolated memory (development, personal, professional).
 
 ### Multi-Instance Distributed
 
-Instances spread across local machines and remote servers (VPS, cloud). Router manages the topology with resilient health-checking. Encrypted portable config enables spinning up a Router from any location. The trust model (mTLS at every connection, manual registration at every trust boundary) ensures security across untrusted networks.
+Instances spread across local machines and remote servers (VPS, cloud). Router manages the instance registry. Encrypted portable config enables spinning up a Router from any location. The trust model (mTLS at every connection, manual registration at every trust boundary) ensures security across untrusted networks.
 
 ## Quality Assurance Strategy
 
