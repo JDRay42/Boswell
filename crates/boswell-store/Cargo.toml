@@ -12,8 +12,8 @@ anyhow = { workspace = true }
 # SQLite database
 rusqlite = { version = "0.32", features = ["bundled"] }
 
-# HNSW vector index (to be integrated)
-# hnsw_rs = "0.3"
+# HNSW vector index for semantic search (ADR-005)
+hnsw_rs = "0.3"
 
 # ONNX Runtime for embeddings (to be integrated)
 # ort = { version = "2.0", features = ["download-binaries"] }
@@ -21,3 +21,6 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # Serialization for embeddings
 serde = "1.0"
 serde_json = "1.0"
+
+[dev-dependencies]
+tempfile = "3.10"

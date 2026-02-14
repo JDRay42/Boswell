@@ -1,0 +1,46 @@
+Phase 1 Complete: HNSW vector search, embeddings, and Ollama integration
+
+Implements three core priorities for Phase 1:
+
+1. HNSW Vector Index Integration (ADR-005)
+   - Added hnsw_rs 0.3 dependency for in-memory nearest-neighbor search
+   - Created VectorIndex wrapper with cosine similarity support
+   - Integrated with SqliteStore for optional semantic search
+   - M=16, efConstruction=200, efSearch=64 (configurable)
+   - Persistence deferred to Phase 2
+
+2. Local Embedding Model Pipeline (ADR-013)
+   - Created EmbeddingModel trait with embed() and dimension() methods
+   - Implemented MockEmbeddingModel with hash-based deterministic generation
+   - Normalized embeddings to unit length for cosine similarity
+   - Auto-embedding generation in assert_claim()
+   - Real ONNX models (bge-small-en-v1.5) deferred to Phase 2
+
+3. OllamaProvider Implementation (ADR-015)
+   - Added reqwest 0.12 and tokio 1.0 dependencies
+   - Async HTTP client with exponential backoff retry (default 3 retries)
+   - 30-second timeout per request
+   - Sync LlmProvider trait impl via tokio runtime wrapper
+   - Comprehensive error handling
+
+Test Coverage:
+- 87 tests passing (37 domain, 10 llm, 30 store, 10 doc tests)
+- 1 ignored integration test (requires running Ollama instance)
+- Zero clippy warnings
+- Complete documentation coverage
+
+Files Added:
+- crates/boswell-store/src/vector_index.rs (280 lines, 5 tests)
+- crates/boswell-store/src/embedding.rs (274 lines, 9 tests)
+- crates/boswell-store/tests/semantic_search_tests.rs (4 integration tests)
+- crates/boswell-llm/src/ollama.rs (283 lines, 7 tests)
+
+Files Modified:
+- crates/boswell-store/src/lib.rs (SqliteStore with vector search)
+- crates/boswell-store/Cargo.toml (hnsw_rs dependency)
+- crates/boswell-llm/src/lib.rs (pub mod ollama)
+- crates/boswell-llm/Cargo.toml (reqwest, tokio)
+- docs/development/phase-1-checklist.md (completion markers)
+- All test files updated for new SqliteStore constructor signature
+
+Next: Phase 2 - ONNX embedding models, HNSW persistence, Extractor

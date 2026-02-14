@@ -10,7 +10,7 @@
 //! # Providers
 //!
 //! - `MockProvider`: Deterministic mock for testing
-//! - `OllamaProvider`: Local Ollama API integration (to be implemented)
+//! - `OllamaProvider`: Local Ollama API integration
 //!
 //! # Examples
 //!
@@ -25,10 +25,14 @@
 
 #![warn(missing_docs)]
 
+pub mod ollama;
+
 use boswell_domain::traits::LlmProvider as LlmProviderTrait;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
+
+pub use ollama::OllamaProvider;
 
 /// Errors that can occur during LLM operations
 #[derive(Error, Debug)]

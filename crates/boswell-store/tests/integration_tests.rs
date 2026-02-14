@@ -8,13 +8,13 @@ use boswell_store::SqliteStore;
 
 #[test]
 fn test_store_initialization() {
-    let store = SqliteStore::new(":memory:");
+    let store = SqliteStore::new(":memory:", false, 0);
     assert!(store.is_ok(), "Store should initialize successfully");
 }
 
 #[test]
 fn test_assert_and_get_claim() {
-    let mut store = SqliteStore::new(":memory:").unwrap();
+    let mut store = SqliteStore::new(":memory:", false, 0).unwrap();
     
     let claim_id = ClaimId::new();
     let claim = Claim {
@@ -51,7 +51,7 @@ fn test_assert_and_get_claim() {
 
 #[test]
 fn test_duplicate_detection() {
-    let mut store = SqliteStore::new(":memory:").unwrap();
+    let mut store = SqliteStore::new(":memory:", false, 0).unwrap();
     
     let claim_id = ClaimId::new();
     let claim = Claim {
@@ -76,7 +76,7 @@ fn test_duplicate_detection() {
 
 #[test]
 fn test_query_claims_by_namespace() {
-    let mut store = SqliteStore::new(":memory:").unwrap();
+    let mut store = SqliteStore::new(":memory:", false, 0).unwrap();
     
     // Add claims in different namespaces
     for i in 0..5 {
@@ -110,7 +110,7 @@ fn test_query_claims_by_namespace() {
 
 #[test]
 fn test_query_claims_by_tier() {
-    let mut store = SqliteStore::new(":memory:").unwrap();
+    let mut store = SqliteStore::new(":memory:", false, 0).unwrap();
     
     let tiers = ["ephemeral", "task", "project", "permanent"];
     
@@ -143,7 +143,7 @@ fn test_query_claims_by_tier() {
 
 #[test]
 fn test_query_claims_by_confidence() {
-    let mut store = SqliteStore::new(":memory:").unwrap();
+    let mut store = SqliteStore::new(":memory:", false, 0).unwrap();
     
     // Add claims with different confidence levels
     for i in 0..5 {
@@ -178,7 +178,7 @@ fn test_query_claims_by_confidence() {
 
 #[test]
 fn test_query_claims_with_limit() {
-    let mut store = SqliteStore::new(":memory:").unwrap();
+    let mut store = SqliteStore::new(":memory:", false, 0).unwrap();
     
     // Add 10 claims
     for i in 0..10 {
@@ -208,7 +208,7 @@ fn test_query_claims_with_limit() {
 
 #[test]
 fn test_add_and_get_relationships() {
-    let mut store = SqliteStore::new(":memory:").unwrap();
+    let mut store = SqliteStore::new(":memory:", false, 0).unwrap();
     
     // Create and store two claims
     let claim1_id = ClaimId::new();
@@ -266,7 +266,7 @@ fn test_add_and_get_relationships() {
 
 #[test]
 fn test_relationship_types() {
-    let mut store = SqliteStore::new(":memory:").unwrap();
+    let mut store = SqliteStore::new(":memory:", false, 0).unwrap();
     
     let claim1_id = ClaimId::new();
     let claim2_id = ClaimId::new();
@@ -317,7 +317,7 @@ fn test_relationship_types() {
 
 #[test]
 fn test_ulid_temporal_ordering() {
-    let mut store = SqliteStore::new(":memory:").unwrap();
+    let mut store = SqliteStore::new(":memory:", false, 0).unwrap();
     
     // Create claims with different times (via their ULIDs)
     let mut claim_ids = Vec::new();
@@ -358,7 +358,7 @@ fn test_ulid_temporal_ordering() {
 
 #[test]
 fn test_get_nonexistent_claim() {
-    let store = SqliteStore::new(":memory:").unwrap();
+    let store = SqliteStore::new(":memory:", false, 0).unwrap();
     
     let nonexistent_id = ClaimId::new();
     let result = store.get_claim(nonexistent_id).unwrap();
@@ -368,7 +368,7 @@ fn test_get_nonexistent_claim() {
 
 #[test]
 fn test_stale_at_field() {
-    let mut store = SqliteStore::new(":memory:").unwrap();
+    let mut store = SqliteStore::new(":memory:", false, 0).unwrap();
     
     let claim_id = ClaimId::new();
     let claim = Claim {

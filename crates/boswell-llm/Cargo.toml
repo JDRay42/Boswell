@@ -11,5 +11,6 @@ anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
-# HTTP client for LLM providers (to be added)
-# reqwest = { version = "0.12", features = ["json"] }
+# HTTP client for LLM providers
+reqwest = { version = "0.12", features = ["json"] }
+tokio = { version = "1.0", features = ["full"] }

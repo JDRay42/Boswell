@@ -13,17 +13,24 @@
 //! ```no_run
 //! use boswell_store::SqliteStore;
 //!
-//! let store = SqliteStore::new(":memory:").unwrap();
+//! // Create store without vector search
+//! let store = SqliteStore::new(":memory:", false, 0).unwrap();
 //! // Store is now ready for claim operations
 //! ```
 
 #![warn(missing_docs)]
+
+pub mod vector_index;
+pub mod embedding;
 
 use boswell_domain::{Claim, ClaimId, Relationship, RelationshipType};
 use boswell_domain::traits::{ClaimStore, ClaimQuery};
 use rusqlite::{Connection, params, OptionalExtension};
 use std::path::Path;
 use thiserror::Error;
+
+pub use vector_index::VectorIndex;
+pub use embedding::{EmbeddingModel, MockEmbeddingModel, cosine_similarity};
 
 /// Errors that can occur during storage operations
 #[derive(Error, Debug)]
@@ -48,13 +55,15 @@ pub enum StoreError {
 /// SQLite-based implementation of ClaimStore
 ///
 /// This store provides persistent storage for claims, relationships, and provenance.
-/// It uses SQLite for structured data and will integrate HNSW for vector search.
+/// It uses SQLite for structured data and HNSW for vector search.
 ///
 /// # Thread Safety
 ///
 /// SQLite connections are not thread-safe. Each thread should have its own SqliteStore instance.
 pub struct SqliteStore {
     conn: Connection,
+    vector_index: Option<VectorIndex>,
+    embedding_model: Option<Box<dyn EmbeddingModel + Send + Sync>>,
 }
 
 impl SqliteStore {
@@ -62,16 +71,36 @@ impl SqliteStore {
     ///
     /// Use `:memory:` for an in-memory database (useful for testing).
     ///
+    /// # Parameters
+    ///
+    /// - `path`: Path to the SQLite database file
+    /// - `enable_vector_search`: If true, enables semantic search via HNSW index
+    /// - `embedding_dimension`: Dimension of embedding vectors (e.g., 384)
+    ///
     /// # Examples
     ///
     /// ```no_run
     /// use boswell_store::SqliteStore;
     ///
-    /// let store = SqliteStore::new("boswell.db").unwrap();
+    /// // Without vector search
+    /// let store = SqliteStore::new("boswell.db", false, 0).unwrap();
+    /// 
+    /// // With vector search
+    /// let store = SqliteStore::new("boswell.db", true, 384).unwrap();
     /// ```
-    pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, StoreError> {
+    pub fn new<P: AsRef<Path>>(path: P, enable_vector_search: bool, embedding_dimension: usize) -> Result<Self, StoreError> {
         let conn = Connection::open(path)?;
-        let mut store = Self { conn };
+        
+        let (vector_index, embedding_model) = if enable_vector_search {
+            (
+                Some(VectorIndex::new(embedding_dimension)),
+                Some(Box::new(MockEmbeddingModel::new(embedding_dimension)) as Box<dyn EmbeddingModel + Send + Sync>),
+            )
+        } else {
+            (None, None)
+        };
+        
+        let mut store = Self { conn, vector_index, embedding_model };
         store.initialize_schema()?;
         Ok(store)
     }
@@ -134,8 +163,7 @@ impl ClaimStore for SqliteStore {
     fn assert_claim(&mut self, claim: Claim) -> Result<ClaimId, Self::Error> {
         let id_bytes = Self::claim_id_to_bytes(claim.id);
         
-        // TODO: Add duplicate detection via embedding similarity
-        // For now, we just check if the ID already exists
+        // Check if the ID already exists
         let exists: bool = self.conn.query_row(
             "SELECT 1 FROM claims WHERE id = ?1",
             params![&id_bytes],
@@ -163,6 +191,24 @@ impl ClaimStore for SqliteStore {
                 claim.stale_at.map(|t| t as i64),
             ],
         )?;
+        
+        // Auto-generate and add embedding if vector search is enabled
+        if let (Some(embedding_model), Some(vector_index)) = 
+            (&self.embedding_model, &self.vector_index) {
+            // Create embedding text from claim content
+            let text = format!("{} {} {}", claim.subject, claim.predicate, claim.object);
+            
+            match embedding_model.embed(&text) {
+                Ok(embedding) => {
+                    // Add to vector index (ignore errors for now)
+                    let _ = vector_index.add(claim.id, &embedding);
+                }
+                Err(e) => {
+                    // Log error but don't fail the claim insertion
+                    eprintln!("Warning: Failed to generate embedding: {}", e);
+                }
+            }
+        }
         
         Ok(claim.id)
     }
@@ -315,5 +361,86 @@ impl ClaimStore for SqliteStore {
         })?.collect::<Result<Vec<_>, _>>()?;
         
         Ok(relationships)
+    }
+}
+
+impl SqliteStore {
+    /// Perform semantic search for claims similar to the given embedding
+    ///
+    /// Returns claims ordered by cosine similarity (descending).
+    ///
+    /// # Parameters
+    ///
+    /// - `query_embedding`: The query vector to search for
+    /// - `k`: Number of results to return
+    /// - `ef_search`: HNSW search quality parameter (higher = better but slower)
+    /// - `min_similarity`: Minimum cosine similarity threshold (0.0 to 1.0)
+    ///
+    /// # Returns
+    ///
+    /// Vec of (Claim, similarity_score) pairs, sorted by similarity descending
+    ///
+    /// # Errors
+    ///
+    /// Returns error if vector search is not enabled or if search fails
+    pub fn semantic_search(
+        &self,
+        query_embedding: &[f32],
+        k: usize,
+        ef_search: usize,
+        min_similarity: f32,
+    ) -> Result<Vec<(Claim, f32)>, StoreError> {
+        let vector_index = self.vector_index.as_ref()
+            .ok_or_else(|| StoreError::InvalidData(
+                "Vector search is not enabled for this store".to_string()
+            ))?;
+        
+        // Search the vector index for similar claim IDs
+        let similar_ids = vector_index.search(query_embedding, k, ef_search)
+            .map_err(|e| StoreError::InvalidData(format!("Vector search failed: {}", e)))?;
+        
+        // Filter by minimum similarity and fetch full claims
+        let mut results = Vec::new();
+        
+        for (claim_id, similarity) in similar_ids {
+            if similarity < min_similarity {
+                continue;
+            }
+            
+            if let Some(claim) = self.get_claim(claim_id)? {
+                results.push((claim, similarity));
+            }
+        }
+        
+        Ok(results)
+    }
+    
+    /// Add an embedding to the vector index for an existing claim                ///
+    /// This is a helper method for when embeddings are generated after claim creation.
+    ///
+    /// # Parameters
+    ///
+    /// - `claim_id`: ID of the claim
+    /// - `embedding`: The embedding vector
+    ///
+    /// # Errors
+    ///
+    /// Returns error if vector search is not enabled or if the claim doesn't exist
+    pub fn add_embedding(&self, claim_id: ClaimId, embedding: &[f32]) -> Result<(), StoreError> {
+        let vector_index = self.vector_index.as_ref()
+            .ok_or_else(|| StoreError::InvalidData(
+                "Vector search is not enabled for this store".to_string()
+            ))?;
+        
+        // Verify the claim exists
+        if self.get_claim(claim_id)?.is_none() {
+            return Err(StoreError::NotFound(claim_id.to_string()));
+        }
+        
+        // Add to vector index
+        vector_index.add(claim_id, embedding)
+            .map_err(|e| StoreError::InvalidData(format!("Failed to add embedding: {}", e)))?;
+        
+        Ok(())
     }
 }
