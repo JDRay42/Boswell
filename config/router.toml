@@ -1,0 +1,21 @@
+# Boswell Router Configuration
+# 
+# Example configuration for Phase 2 single-instance deployment
+
+# HTTP server bind address
+bind_address = "127.0.0.1"
+
+# HTTP server port
+bind_port = 8080
+
+# JWT secret for token signing (CHANGE THIS IN PRODUCTION!)
+jwt_secret = "change-this-secret-in-production-use-strong-random-key"
+
+# Token expiry in seconds (default: 3600 = 1 hour)
+token_expiry_secs = 3600
+
+# Registered gRPC service instances
+[[instances]]
+id = "default"
+endpoint = "http://localhost:50051"
+expertise = ["*"]  # Wildcard: handles all namespaces

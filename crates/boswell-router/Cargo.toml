@@ -4,9 +4,23 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
+[[bin]]
+name = "boswell-router"
+path = "src/main.rs"
+
 [dependencies]
 boswell-domain = { workspace = true }
 boswell-grpc = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
-serde = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+serde = { workspace = true, features = ["derive"] }
+axum = "0.7"
+jsonwebtoken = "9.3"
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+[dev-dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+tower = "0.4"
+serde_json = "1.0"
