@@ -7,17 +7,20 @@
 //! ```no_run
 //! use boswell_sdk::{BoswellClient, QueryFilter};
 //!
-//! let mut client = BoswellClient::new("http://localhost:8080");
-//! client.connect().expect("Failed to connect");
+//! #[tokio::main]
+//! async fn main() {
+//!     let mut client = BoswellClient::new("http://localhost:8080");
+//!     client.connect().await.expect("Failed to connect");
 //!
-//! let claim_id = client.assert(
-//!     "personal",
-//!     "John",
-//!     "knows",
-//!     "Rust",
-//!     Some(0.95),
-//!     None
-//! ).expect("Failed to assert claim");
+//!     let claim_id = client.assert(
+//!         "personal",
+//!         "John",
+//!         "knows",
+//!         "Rust",
+//!         Some(0.95),
+//!         None
+//!     ).await.expect("Failed to assert claim");
+//! }
 //! ```
 
 #![warn(missing_docs)]

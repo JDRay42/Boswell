@@ -7,7 +7,9 @@ Rust client library for interacting with Boswell instances via the Router.
 - **Session Management**: Automatic session establishment with Router
 - **gRPC Operations**: Wraps gRPC calls with type-safe Rust APIs
 - **Error Handling**: Comprehensive error types for different failure modes
-- **Synchronous API**: Blocking interface (async support in Phase 3)
+- **Async API**: Fully asynchronous using tokio runtime
+- **Connection Pooling**: HTTP connection pooling for efficient Router communication
+- **Auto-Reconnection**: Automatic session renewal on authentication failures
 
 ## Usage
 
@@ -15,31 +17,36 @@ Rust client library for interacting with Boswell instances via the Router.
 use boswell_sdk::{BoswellClient, QueryFilter};
 use boswell_domain::Tier;
 
-// Create and connect client
-let mut client = BoswellClient::new("http://localhost:8080");
-client.connect()?;
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Create and connect client
+    let mut client = BoswellClient::new("http://localhost:8080");
+    client.connect().await?;
 
-// Assert a claim
-let claim_id = client.assert(
-    "workspace",
-    "document.pdf",
-    "contains",
-    "financial_data",
-    Some(0.92),
-    Some(Tier::Project),
-)?;
+    // Assert a claim
+    let claim_id = client.assert(
+        "workspace",
+        "document.pdf",
+        "contains",
+        "financial_data",
+        Some(0.92),
+        Some(Tier::Project),
+    ).await?;
 
-// Query claims
-let claims = client.query(QueryFilter {
-    namespace: Some("workspace".to_string()),
-    ..Default::default()
-})?;
+    // Query claims
+    let claims = client.query(QueryFilter {
+        namespace: Some("workspace".to_string()),
+        ..Default::default()
+    }).await?;
 
-// Learn multiple claims
-let response = client.learn(claims)?;
+    // Learn multiple claims in batch
+    let response = client.learn(claims).await?;
 
-// Forget claims
-client.forget(vec![claim_id])?;
+    // Forget claims
+    client.forget(vec![claim_id]).await?;
+
+    Ok(())
+}
 ```
 
 ## Architecture

@@ -33,6 +33,7 @@ pub struct BoswellClient {
     session_token: Option<String>,
     instance_endpoint: Option<String>,
     grpc_client: Option<BosWellServiceClient<Channel>>,
+    http_client: reqwest::Client,
 }
 
 impl BoswellClient {
@@ -43,13 +44,18 @@ impl BoswellClient {
             session_token: None,
             instance_endpoint: None,
             grpc_client: None,
+            http_client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .pool_max_idle_per_host(10)
+                .build()
+                .expect("Failed to build HTTP client"),
         }
     }
 
     /// Establish session with Router and connect to gRPC instance
-    pub fn connect(&mut self) -> Result<(), SdkError> {
+    pub async fn connect(&mut self) -> Result<(), SdkError> {
         // Establish session with Router
-        let session_response = establish_session(&self.router_endpoint)?;
+        let session_response = establish_session(&self.http_client, &self.router_endpoint).await?;
 
         self.session_token = Some(session_response.token);
 
@@ -64,18 +70,14 @@ impl BoswellClient {
         self.instance_endpoint = Some(instance.endpoint.clone());
 
         // Connect to gRPC instance
-        self.connect_grpc(&instance.endpoint)?;
+        self.connect_grpc(&instance.endpoint).await?;
 
         Ok(())
     }
 
     /// Connect to gRPC instance
-    fn connect_grpc(&mut self, endpoint: &str) -> Result<(), SdkError> {
-        let runtime = tokio::runtime::Runtime::new()
-            .map_err(|e| SdkError::ConnectionError(format!("Failed to create runtime: {}", e)))?;
-
-        let channel = runtime
-            .block_on(async { Channel::from_shared(endpoint.to_string()) })
+    async fn connect_grpc(&mut self, endpoint: &str) -> Result<(), SdkError> {
+        let channel = Channel::from_shared(endpoint.to_string())
             .map_err(|e| SdkError::ConnectionError(format!("Invalid endpoint: {}", e)))?
             .connect_lazy();
 
@@ -84,8 +86,13 @@ impl BoswellClient {
         Ok(())
     }
 
+    /// Reconnect after auth failure
+    async fn reconnect(&mut self) -> Result<(), SdkError> {
+        self.connect().await
+    }
+
     /// Assert a claim
-    pub fn assert(
+    pub async fn assert(
         &mut self,
         namespace: &str,
         subject: &str,
@@ -94,138 +101,158 @@ impl BoswellClient {
         confidence: Option<f64>,
         tier: Option<Tier>,
     ) -> Result<ClaimId, SdkError> {
-        let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
-        let token = self.session_token.as_ref().ok_or(SdkError::NotConnected)?;
+        let mut retried = false;
+        
+        loop {
+            let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
+            let token = self.session_token.as_ref().ok_or(SdkError::NotConnected)?;
 
-        let confidence_interval = confidence.map(|c| ConfidenceInterval {
-            lower: c,
-            upper: c,
-        });
+            let confidence_interval = confidence.map(|c| ConfidenceInterval {
+                lower: c,
+                upper: c,
+            });
 
-        let tier_i32 = tier
-            .map(|t| grpc_tier_from_domain_tier(t))
-            .unwrap_or(GrpcTier::Unspecified as i32);
+            let tier_i32 = tier
+                .map(|t| grpc_tier_from_domain_tier(t))
+                .unwrap_or(GrpcTier::Unspecified as i32);
 
-        let request = AssertRequest {
-            namespace: namespace.to_string(),
-            subject: subject.to_string(),
-            predicate: predicate.to_string(),
-            object: object.to_string(),
-            confidence: confidence_interval,
-            tier: tier_i32,
-            provenance: vec![],
-            auth_token: token.clone(),
-        };
-
-        let runtime = tokio::runtime::Runtime::new()
-            .map_err(|e| SdkError::ConnectionError(format!("Failed to create runtime: {}", e)))?;
-
-        let response: AssertResponse = runtime
-            .block_on(async { client.assert(request).await })
-            .map(|r| r.into_inner())
-            .map_err(|e| {
-                // Check if it's an auth error
-                if matches!(e.code(), tonic::Code::Unauthenticated) {
-                    SdkError::AuthError("Session expired or invalid".to_string())
-                } else {
-                    SdkError::from(e)
-                }
-            })?;
-
-        ClaimId::from_string(&response.claim_id)
-            .map_err(|e| SdkError::GrpcError(format!("Invalid claim ID: {}", e)))
-    }
-
-    /// Query claims
-    pub fn query(&mut self, filter: QueryFilter) -> Result<Vec<Claim>, SdkError> {
-        let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
-        let token = self.session_token.as_ref().ok_or(SdkError::NotConnected)?;
-
-        let grpc_filter = GrpcQueryFilter {
-            namespace: filter.namespace,
-            subject: filter.subject,
-            predicate: filter.predicate,
-            object: filter.object,
-            min_confidence: filter.min_confidence,
-            tier: filter.tier.map(grpc_tier_from_domain_tier),
-        };
-
-        let request = QueryRequest {
-            filter: Some(grpc_filter),
-            mode: GrpcQueryMode::Fast as i32,
-            limit: 100,
-            auth_token: token.clone(),
-        };
-
-        let runtime = tokio::runtime::Runtime::new()
-            .map_err(|e| SdkError::ConnectionError(format!("Failed to create runtime: {}", e)))?;
-
-        let response: QueryResponse = runtime
-            .block_on(async { client.query(request).await })
-            .map(|r| r.into_inner())
-            .map_err(SdkError::from)?;
-
-        // Convert gRPC claims to domain claims
-        let claims: Result<Vec<Claim>, _> = response
-            .claims
-            .into_iter()
-            .map(|c| grpc_claim_to_domain(&c))
-            .collect();
-
-        claims.map_err(|e| SdkError::GrpcError(format!("Failed to convert claim: {}", e)))
-    }
-
-    /// Learn multiple claims in batch
-    pub fn learn(&mut self, claims: Vec<Claim>) -> Result<LearnResponse, SdkError> {
-        let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
-        let token = self.session_token.as_ref().ok_or(SdkError::NotConnected)?;
-
-        let grpc_claims: Vec<_> = claims.into_iter().map(domain_claim_to_grpc).collect();
-
-        let request = LearnRequest {
-            claims: grpc_claims,
-            skip_duplicates: false,
-            auth_token: token.clone(),
-        };
-
-        let runtime = tokio::runtime::Runtime::new()
-            .map_err(|e| SdkError::ConnectionError(format!("Failed to create runtime: {}", e)))?;
-
-        let response: LearnResponse = runtime
-            .block_on(async { client.learn(request).await })
-            .map(|r| r.into_inner())
-            .map_err(SdkError::from)?;
-
-        Ok(response)
-    }
-
-    /// Forget (evict) claims
-    pub fn forget(&mut self, claim_ids: Vec<ClaimId>) -> Result<bool, SdkError> {
-        let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
-        let token = self.session_token.as_ref().ok_or(SdkError::NotConnected)?;
-
-        let runtime = tokio::runtime::Runtime::new()
-            .map_err(|e| SdkError::ConnectionError(format!("Failed to create runtime: {}", e)))?;
-
-        // Execute forget operations sequentially
-        for claim_id in claim_ids {
-            let request = ForgetRequest {
-                claim_id: claim_id.to_string(),
-                reason: String::new(),
+            let request = AssertRequest {
+                namespace: namespace.to_string(),
+                subject: subject.to_string(),
+                predicate: predicate.to_string(),
+                object: object.to_string(),
+                confidence: confidence_interval,
+                tier: tier_i32,
+                provenance: vec![],
                 auth_token: token.clone(),
             };
 
-            let response: ForgetResponse = runtime
-                .block_on(async { client.forget(request).await })
-                .map(|r| r.into_inner())
-                .map_err(SdkError::from)?;
-
-            if !response.success {
-                return Ok(false);
+            match client.assert(request).await {
+                Ok(r) => {
+                    let assert_response: AssertResponse = r.into_inner();
+                    return ClaimId::from_string(&assert_response.claim_id)
+                        .map_err(|e| SdkError::GrpcError(format!("Invalid claim ID: {}", e)));
+                }
+                Err(e) if matches!(e.code(), tonic::Code::Unauthenticated) && !retried => {
+                    // Session expired - try to reconnect once
+                    self.reconnect().await?;
+                    retried = true;
+                }
+                Err(e) => return Err(SdkError::from(e)),
             }
         }
+    }
 
-        Ok(true)
+    /// Query claims
+    pub async fn query(&mut self, filter: QueryFilter) -> Result<Vec<Claim>, SdkError> {
+        let mut retried = false;
+        
+        loop {
+            let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
+            let token = self.session_token.as_ref().ok_or(SdkError::NotConnected)?;
+
+            let grpc_filter = GrpcQueryFilter {
+                namespace: filter.namespace.clone(),
+                subject: filter.subject.clone(),
+                predicate: filter.predicate.clone(),
+                object: filter.object.clone(),
+                min_confidence: filter.min_confidence,
+                tier: filter.tier.map(grpc_tier_from_domain_tier),
+            };
+
+            let request = QueryRequest {
+                filter: Some(grpc_filter),
+                mode: GrpcQueryMode::Fast as i32,
+                limit: 100,
+                auth_token: token.clone(),
+            };
+
+            match client.query(request).await {
+                Ok(r) => {
+                    let query_response: QueryResponse = r.into_inner();
+                    
+                    // Convert gRPC claims to domain claims
+                    let claims: Result<Vec<Claim>, _> = query_response
+                        .claims
+                        .into_iter()
+                        .map(|c| grpc_claim_to_domain(&c))
+                        .collect();
+
+                    return claims.map_err(|e| SdkError::GrpcError(format!("Failed to convert claim: {}", e)));
+                }
+                Err(e) if matches!(e.code(), tonic::Code::Unauthenticated) && !retried => {
+                    // Session expired - try to reconnect once
+                    self.reconnect().await?;
+                    retried = true;
+                }
+                Err(e) => return Err(SdkError::from(e)),
+            }
+        }
+    }
+
+    /// Learn multiple claims in batch
+    pub async fn learn(&mut self, claims: Vec<Claim>) -> Result<LearnResponse, SdkError> {
+        let mut retried = false;
+        
+        loop {
+            let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
+            let token = self.session_token.as_ref().ok_or(SdkError::NotConnected)?;
+
+            let grpc_claims: Vec<_> = claims.iter().map(|c| domain_claim_to_grpc(c.clone())).collect();
+
+            let request = LearnRequest {
+                claims: grpc_claims,
+                skip_duplicates: false,
+                auth_token: token.clone(),
+            };
+
+            match client.learn(request).await {
+                Ok(r) => return Ok(r.into_inner()),
+                Err(e) if matches!(e.code(), tonic::Code::Unauthenticated) && !retried => {
+                    // Session expired - try to reconnect once
+                    self.reconnect().await?;
+                    retried = true;
+                }
+                Err(e) => return Err(SdkError::from(e)),
+            }
+        }
+    }
+
+    /// Forget (evict) claims
+    pub async fn forget(&mut self, claim_ids: Vec<ClaimId>) -> Result<bool, SdkError> {
+        let mut retried = false;
+        
+        'retry: loop {
+            let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
+            let token = self.session_token.as_ref().ok_or(SdkError::NotConnected)?;
+
+            // Execute forget operations sequentially
+            for claim_id in &claim_ids {
+                let request = ForgetRequest {
+                    claim_id: claim_id.to_string(),
+                    reason: String::new(),
+                    auth_token: token.clone(),
+                };
+
+                match client.forget(request).await {
+                    Ok(r) => {
+                        let forget_response: ForgetResponse = r.into_inner();
+                        if !forget_response.success {
+                            return Ok(false);
+                        }
+                    }
+                    Err(e) if matches!(e.code(), tonic::Code::Unauthenticated) && !retried => {
+                        // Session expired - try to reconnect once
+                        self.reconnect().await?;
+                        retried = true;
+                        continue 'retry;
+                    }
+                    Err(e) => return Err(SdkError::from(e)),
+                }
+            }
+
+            return Ok(true);
+        }
     }
 }
 

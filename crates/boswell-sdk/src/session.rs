@@ -35,26 +35,29 @@ pub struct SessionResponse {
 }
 
 /// Establish a session with the Router
-pub fn establish_session(router_endpoint: &str) -> Result<SessionResponse, SdkError> {
+pub async fn establish_session(
+    http_client: &reqwest::Client,
+    router_endpoint: &str,
+) -> Result<SessionResponse, SdkError> {
     let url = format!("{}/session/establish", router_endpoint);
     
     let request = EstablishSessionRequest {
         user_id: Some("default-user".to_string()),
     };
 
-    let client = reqwest::blocking::Client::new();
-    let response = client
+    let response = http_client
         .post(&url)
         .json(&request)
-        .send()?;
+        .send()
+        .await?;
 
     if !response.status().is_success() {
         let status = response.status();
-        let error_text = response.text().unwrap_or_else(|_| "Unknown error".to_string());
+        let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
         return Err(SdkError::RouterError(format!("HTTP {}: {}", status, error_text)));
     }
 
-    let session_response: SessionResponse = response.json()?;
+    let session_response: SessionResponse = response.json().await?;
     
     // Validate we have at least one instance
     if session_response.instances.is_empty() {

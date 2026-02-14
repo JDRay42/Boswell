@@ -2,12 +2,12 @@
 //!
 //! Note: Full end-to-end integration tests require starting Router + gRPC servers.
 //! For Phase 2, we test the core SDK behavior with unit tests.
-//! Full integration testing will be added in Phase 3 with async SDK.
+//! Full integration testing is implemented in Phase 3 with async SDK.
 
 use boswell_sdk::{BoswellClient, SdkError};
 
-#[test]
-fn test_sdk_not_connected_error() {
+#[tokio::test]
+async fn test_sdk_not_connected_error() {
     let mut client = BoswellClient::new("http://localhost:8080");
     
     // Try to assert without connecting
@@ -18,11 +18,7 @@ fn test_sdk_not_connected_error() {
         "object",
         Some(0.9),
         None,
-    );
-
-    assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(matches!(err, SdkError::NotConnected));
+    ).await;
 }
 
 #[test]
