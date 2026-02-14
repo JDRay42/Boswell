@@ -90,9 +90,9 @@ Based on the shipped models running on modern hardware (M4 Mac Mini or equivalen
 
 These are batch operations. Run overnight or during a maintenance window.
 
-### Multi-Instance Mitigation
+### Graceful Degradation
 
-In a multi-instance deployment, the Router's topology shows the reindexing instance as unreachable. Other instances continue operating normally. Federated queries return partial results with transparency about which instances responded. The system degrades gracefully — reindexing one instance does not affect the others.
+The Router marks the reindexing instance as unreachable. In multi-instance deployments, other instances continue operating normally. Federated queries return partial results with transparency about which instances responded. In single-instance deployments, the Router returns unavailability responses until reindexing completes. The system degrades gracefully — reindexing one instance does not affect the others.
 
 ## ONNX Runtime
 
@@ -122,7 +122,7 @@ The embedding model is used by:
 - **Claim Store** — embeds incoming claims during Assert/Learn, embeds query text during semantic Query.
 - **Extractor** — embeds extracted claims before passing them to the Claim Store.
 - **Duplicate detection** — compares incoming claim embeddings against the HNSW index.
-- **Router (optional)** — if using embedding-similarity-based topic classification, the Router needs its own embedding model for comparing claims against expertise profile signatures.
+- **Router** — if using embedding-similarity-based topic classification, the Router needs its own embedding model for comparing claims against expertise profile signatures.
 
 The embedding model is **not** used by:
 - **Synthesizer** — works with claims already in the store (already embedded).

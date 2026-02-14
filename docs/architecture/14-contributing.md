@@ -166,7 +166,7 @@ The `tests/` directory at the repo root contains end-to-end tests that spin up a
 - Extract from text, verify claims were created.
 - Challenge a claim, verify status transition.
 - Promote a claim, verify Gatekeeper evaluation.
-- Federated query across two instances (requires Router).
+- Federated query across two instances via Router.
 
 ## CI Pipeline
 

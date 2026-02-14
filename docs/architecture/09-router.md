@@ -1,64 +1,85 @@
 # Boswell — Router
 
-The Router manages multi-instance deployments. It is the topology authority, session issuer, and fallback classifier. It is not required for single-instance deployments.
+The Router is the session management and instance registry authority for all Boswell deployments. It is **always present**, even in single-instance configurations, where it adds minimal overhead (<1MB memory, near-zero CPU). The Router responds to session requests from authorized clients with a list of registered instances, their endpoints, capabilities, health status, and instance-specific tokens.
 
 ## Responsibility
 
-- Maintain the instance registry (endpoints, expertise profiles, health states, trust scores).
-- Issue session tokens and deliver topology to clients.
-- Serve as fallback for operations the client SDK cannot route.
-- Execute federated queries across instances.
-- Host the cross-domain Synthesizer (optional).
-- Manage the portable encrypted configuration.
+The Router is the single source of truth for:
+
+- **Instance registry:** Maintains the list of registered instances with their cryptographic fingerprints, endpoints, capabilities, and health states.
+- **Session token issuance:** Issues one token per instance in response to authenticated session requests. Each token is scoped to a specific instance.
+- **Health tracking:** Periodically checks instance health and reports current health status in session responses.
+- **Configuration management:** Stores the encrypted, portable configuration file containing all registry data.
+
+**What the Router is NOT:**
+
+- **Not a proxy.** After session establishment, clients route all operations directly to instances. The Router is not in the hot path.
+- **Not automatic discovery.** Instance registration is manual and deliberate. Adding a new instance requires explicit administrative action.
+- **Not a centralized data store.** The Router holds no claim data — only metadata about instances.
 
 ## Architecture
 
+### Session Establishment Flow
+
 ```mermaid
-graph TB
-    subgraph Clients["Client Layer"]
-        MCP["MCP Server / SDK"]
-    end
+sequenceDiagram
+    participant Client as Client SDK / MCP Server
+    participant Router
+    participant InstanceA as Instance A
+    participant InstanceB as Instance B
 
-    subgraph Router["Router Process"]
-        SM["Session Manager<br/>(mTLS + token issuance)"]
-        IR["Instance Registry<br/>(topology authority)"]
-        TC["Topic Classifier<br/>(fallback routing)"]
-        FQ["Federated Query Engine"]
-        XS["Cross-Domain Synthesizer<br/>(optional)"]
-        HM["Health Monitor"]
-    end
+    Note over Router: Encrypted config loaded in memory<br/>(instance registry, keypairs)
 
-    subgraph Instances["Instance Layer"]
-        A["Instance A<br/>(development)"]
-        B["Instance B<br/>(personal)"]
-        C["Instance C<br/>(professional)"]
-    end
+    Client->>Router: SessionRequest<br/>(mTLS authentication)
+    Router->>Router: Verify client identity
+    Router->>Router: Generate tokens:<br/>- token_A for Instance A<br/>- token_B for Instance B
+    
+    Router-->>Client: SessionResponse {<br/>  instances: [<br/>    {id: "A", endpoint: "host:9001", capabilities: [...], token: "token_A", health: "healthy"},<br/>    {id: "B", endpoint: "host:9002", capabilities: [...], token: "token_B", health: "degraded"}<br/>  ]<br/>}
+    
+    Note over Client: Client now has direct access info<br/>for all registered instances
 
-    MCP -->|"session handshake"| SM
-    SM -->|"topology"| IR
-    MCP -->|"ambiguous routing"| TC
-    MCP -->|"federated query"| FQ
-    FQ --> A
-    FQ --> B
-    FQ --> C
-    HM -->|"periodic health check"| A
-    HM -->|"periodic health check"| B
-    HM -->|"periodic health check"| C
-    XS -->|"pull persistent claims"| A
-    XS -->|"pull persistent claims"| B
-    XS -->|"pull persistent claims"| C
+    Client->>InstanceA: Assert(claim, token_A)
+    InstanceA->>InstanceA: Validate token_A
+    InstanceA-->>Client: Success
+
+    Client->>InstanceB: Query(params, token_B)
+    InstanceB->>InstanceB: Validate token_B
+    InstanceB-->>Client: Results
+```
+
+### Health Monitoring Flow
+
+```mermaid
+sequenceDiagram
+    participant Router
+    participant InstanceA as Instance A
+    participant InstanceB as Instance B
+    participant InstanceC as Instance C
+
+    loop Every 60s (configurable)
+        Router->>InstanceA: Health check (gRPC)
+        InstanceA-->>Router: OK (healthy)
+        
+        Router->>InstanceB: Health check (gRPC)
+        InstanceB-->>Router: Slow response (degraded)
+        
+        Router->>InstanceC: Health check (gRPC)
+        Note over Router,InstanceC: Timeout / Connection refused
+        Router->>Router: Mark C as unreachable
+    end
+    
+    Note over Router: Health states included in<br/>next SessionResponse
 ```
 
 ## Not in the Hot Path
 
-The Router is **not a proxy for routine operations**. After the session handshake, clients route operations directly to instances using the topology they received. The Router is only involved in:
+The Router is **not a proxy for routine operations**. After the session handshake, clients route operations directly to instances using the instance-specific tokens and endpoint information they received. The Router is only contacted for:
 
-1. **Session initiation and token refresh.** Authenticate the client, issue a token, return the topology.
-2. **Ambiguous routing fallback.** When the client SDK cannot determine which instance should receive an operation.
-3. **Federated queries.** Queries that span multiple instances.
-4. **Cross-domain synthesis.** Optional background process discovering connections between instances.
+1. **Session establishment:** Initial authentication and token issuance for all registered instances.
+2. **Token refresh:** When tokens expire (default: 1 hour), clients request a new SessionResponse to get fresh tokens.
+3. **Registry updates:** When the client needs to check for new instances or updated health states.
 
-Everything else — Assert, Learn, Extract, Challenge, Promote, Forget — goes directly from client to instance.
+Everything else — Assert, Query, Learn, Extract, Challenge, Promote, Forget — goes directly from client to instance with no Router involvement.
 
 ## Instance Registry
 
@@ -69,58 +90,64 @@ pub struct InstanceEntry {
     pub instance_id: String,
     pub endpoint: String,               // gRPC endpoint (host:port)
     pub fingerprint: Vec<u8>,           // Public key fingerprint for mTLS verification
-    pub expertise: Vec<String>,         // Topic descriptors for routing
+    pub capabilities: Vec<String>,      // Supported operations (e.g., ["assert", "query", "learn"])
     pub health: InstanceHealth,         // Current health state
-    pub trust: f32,                     // Trust score (0.0-1.0, default 1.0)
-    pub permissions: InstancePermissions,
     pub last_health_check: DateTime,
 }
 
-pub struct InstancePermissions {
-    pub federated_query: bool,          // Participates in cross-instance queries
-    pub cross_domain_synthesis: bool,   // Contributes to cross-domain Synthesizer
-    pub direct_access: bool,            // Clients can connect directly (always true currently)
+pub enum InstanceHealth {
+    Healthy,      // Responding normally
+    Degraded,     // Responding slowly or with partial errors
+    Unreachable,  // Not responding to health checks
 }
 ```
 
-### Expertise Profiles
+### Manual Registration
 
-Each instance declares a set of topic descriptors that describe what kinds of knowledge it holds. These are configured during manual instance registration and returned to clients in the session response.
+**Instance registration is manual and deliberate.** There is no automatic discovery mechanism. Adding a new instance requires:
 
-Examples: `["programming", "devops", "databases"]`, `["cooking", "family", "important-dates"]`, `["clients", "contracts", "meetings"]`.
+1. **Administrative action:** Editing the Router's encrypted configuration file.
+2. **Cryptographic identity:** The instance's public key fingerprint must be added to the registry.
+3. **Endpoint configuration:** One or more network endpoints (LAN IP, VPN address, etc.).
+4. **Capability declaration:** The set of operations this instance supports.
 
-The client SDK matches routing hints against these profiles for local routing. The Router's Topic Classifier uses them for fallback classification.
+This deliberate process ensures that only trusted instances join the network. Automatic discovery would create security and trust management challenges.
 
-### Health States
+### Multiple Endpoints
+
+An instance may have multiple endpoints registered to support different network contexts:
+- **LAN address** for when the client is on the same local network
+- **VPN address** for remote access
+- **Public endpoint** (if appropriate for the deployment)
+
+The client SDK can try endpoints in order based on reachability and network context.
+
+### Health States and Transitions
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Healthy
-    Healthy --> Degraded : Health check slow / partial failure
-    Healthy --> Unreachable : Health check fails
-    Degraded --> Healthy : Health check passes
-    Degraded --> Unreachable : Health check fails
-    Unreachable --> Healthy : Health check passes
-    Unreachable --> Untrusted : Manual admin action
-    Untrusted --> [*] : Removed from registry
+    [*] --> Healthy: Instance registered
+    Healthy --> Degraded: Slow response or partial failure
+    Healthy --> Unreachable: 2 consecutive health check failures
+    Degraded --> Healthy: 2 consecutive successful checks
+    Degraded --> Unreachable: 2 consecutive health check failures
+    Unreachable --> Healthy: 2 consecutive successful checks
+    note right of Unreachable: Instance remains in registry<br/>Clients may retry
 ```
 
-| State | Meaning | Client Behavior |
-|---|---|---|
-| Healthy | Responding normally | Route operations normally |
-| Degraded | Responding slowly or with partial errors | Route with caution; expect higher latency |
-| Unreachable | Not responding to health checks | Client should retry; may succeed if transiently down |
-| Untrusted | Manually flagged by admin | Instance removed from topology; clients cannot route to it |
+| State | Meaning | Included in SessionResponse | Client Behavior |
+|---|---|---|---|
+| Healthy | Responding normally within timeout | Yes | Route operations normally |
+| Degraded | Responding slowly or with partial errors | Yes | Route with caution; expect higher latency |
+| Unreachable | Not responding to health checks | Yes | Client should handle gracefully (retry, skip, notify user) |
 
-Health state transitions are automatic (based on health check results) except for `Untrusted`, which requires explicit admin action.
+**Transition rules:**
 
-### Trust Scores
+- **Consecutive check requirement:** Two consecutive failures before marking `Unreachable`, two consecutive successes before marking `Healthy`. This prevents flapping on transient network issues.
+- **Degraded detection:** Single slow response (>80% of timeout) or partial gRPC error triggers `Degraded` state.
+- **All states are reported:** Even `Unreachable` instances remain in the registry and are included in SessionResponse. Clients decide how to handle unreachable instances.
 
-Each instance carries a trust score (default 1.0). This is a forward-looking design — v1 does not modify trust automatically. Future uses:
-
-- Claims from lower-trust instances have their confidence scaled proportionally in federated query results.
-- The cross-domain Synthesizer weights claims from higher-trust instances more heavily.
-- An instance that repeatedly produces claims that get challenged and overturned could have its trust automatically degraded.
+Health state transitions are fully automatic based on health check results. No manual intervention is required unless an administrator wants to remove an instance from the registry entirely.
 
 ## Health Monitor
 
@@ -132,90 +159,120 @@ The Health Monitor periodically pings each registered instance:
 
 Health states are reflected in the topology returned to clients. When a client re-fetches topology (new session request), it gets current health information.
 
-## Topic Classifier (Fallback)
+## Token Issuance and Validation
 
-When the client SDK cannot determine which instance should receive an operation, it forwards the operation to the Router. The Router's Topic Classifier resolves the ambiguity.
+The Router issues **one token per instance** in response to each SessionRequest.
 
-**Classification methods:**
+### Token Structure
 
-1. **Keyword matching.** Compare the claim's subject, predicate, and routing hint against instance expertise profiles. Fast, no LLM.
-2. **Embedding similarity.** Embed the claim's raw_expression and compare against pre-computed expertise profile signatures. Requires a local embedding model at the Router level.
-3. **LLM-assisted.** Send the claim content and available expertise profiles to an LLM for classification. Most nuanced, most expensive.
+Each token is:
+- **Instance-specific:** Scoped to a single instance_id and cannot be used with other instances
+- **Short-lived:** Default expiration is 1 hour (configurable)
+- **Signed by Router:** Instances validate tokens against the Router's signing key
 
-The Router tries methods in order: keyword first, embedding if inconclusive, LLM as last resort.
-
-## Federated Queries
-
-When a client issues a Query with a namespace pattern that spans instances (e.g., `"*"` or a pattern matching multiple instances), the client SDK sends the query to the Router for federated execution.
+### Token Lifecycle Flow
 
 ```mermaid
 sequenceDiagram
-    participant SDK as Client SDK
+    participant Client
     participant Router
-    participant A as Instance A
-    participant B as Instance B
-    participant C as Instance C (unreachable)
+    participant Instance
 
-    SDK->>Router: Federated Query<br/>{namespace: "*", semantic_query: "..."}
-
-    par Fan out to healthy instances
-        Router->>A: Query
-        A-->>Router: Results (5 claims)
-    and
-        Router->>B: Query
-        B-->>Router: Results (3 claims)
-    and
-        Router->>C: Query
-        Note over Router,C: Timeout / connection refused
-    end
-
-    Router->>Router: Merge results<br/>(deduplicate, rank, apply trust weights)
-    Router-->>SDK: Merged results + coverage report<br/>(2 of 3 instances responded)
+    Client->>Router: SessionRequest (mTLS)
+    Router->>Router: Generate token_A for Instance A
+    Router-->>Client: SessionResponse {instances: [{..., token: "token_A"}]}
+    
+    Note over Client: Store token_A
+    
+    Client->>Instance: Assert(claim, token_A)
+    Instance->>Instance: Validate token_A signature<br/>Check expiration
+    Instance-->>Client: Success
+    
+    Note over Client: ~1 hour later, token expires
+    
+    Client->>Instance: Query(params, token_A)
+    Instance->>Instance: Token expired
+    Instance-->>Client: UNAUTHENTICATED error
+    
+    Client->>Router: SessionRequest (refresh)
+    Router-->>Client: SessionResponse {new tokens}
 ```
 
-**Merging rules:**
+### Security Properties
 
-- Results are deduplicated by semantic similarity (same claim in multiple instances via cross-domain Learn).
-- Confidence intervals are scaled by instance trust score.
-- Results are ranked by effective confidence after trust scaling.
-- The coverage report tells the client which instances participated and which were unreachable, so the agent knows the results may be incomplete.
+- **Token compromise is instance-scoped:** If one token leaks, only that single instance is affected. The client must re-authenticate to get fresh tokens.
+- **No shared secrets between instances:** Each instance validates tokens independently using the Router's public key.
+- **Instances never communicate with each other:** All trust relationships are mediated through the Router's registry and mTLS verification.
 
 ## Portable Encrypted Configuration
 
-The Router's configuration — the instance registry, credentials, and settings — is stored in a single encrypted file.
+The Router's configuration — the instance registry, keypairs, and settings — is stored in a single encrypted file.
 
 **Format:**
-- Inner layer: TOML (human-readable when decrypted, easy to inspect and hand-edit).
-- Outer layer: Encrypted with `age` (modern, Rust-native, passphrase-based).
+- **Inner layer:** TOML (human-readable when decrypted, easy to inspect and hand-edit).
+- **Outer layer:** Encrypted with `age` (modern, Rust-native, passphrase-based encryption).
 
-**Workflow:**
+**Startup Flow:**
 
-1. Download the Boswell Router binary (single static binary).
-2. Pull the encrypted config from wherever it's stored (iCloud, USB, cloud storage).
-3. `boswell-router --config ./router.enc`
-4. Router prompts for passphrase, decrypts in memory, never writes plaintext to disk.
-5. Begins health-checking all known instances from wherever you are.
+```mermaid
+sequenceDiagram
+    participant Admin
+    participant Router
+    participant Filesystem
+
+    Admin->>Router: boswell-router --config ./router.enc
+    Router->>Filesystem: Read router.enc
+    Router->>Admin: Prompt for passphrase
+    Admin->>Router: Enter passphrase
+    Router->>Router: Decrypt in memory<br/>(never writes plaintext to disk)
+    Router->>Router: Parse TOML registry
+    Router->>Router: Load instance entries
+    Note over Router: Router starts serving<br/>SessionRequests
+```
 
 **Properties:**
 
-- Config never exists decrypted on disk. Decryption happens in memory at startup. Modifications are re-encrypted before writing.
-- Config includes a version/sequence number for detecting stale copies across multiple storage locations.
-- Config sync is manual and deliberate. No automatic sync — that would be a vector for propagating a compromised config.
+- **Never decrypted on disk:** Decryption happens in memory at startup. The plaintext never touches the filesystem.
+- **Modifications are re-encrypted:** If the admin modifies the registry (adds/removes instances), the Router re-encrypts before writing.
+- **Versioned config:** Contains a sequence number to detect which copy is most recent when copies exist in multiple locations.
+- **Manual sync:** No automatic synchronization. The admin deliberately copies the config between storage locations (iCloud, USB drive, etc.) to prevent propagation of a compromised config.
 
-**Disaster recovery:** As long as you remember your passphrase and can access your config file, you can reconstruct your entire memory network connection topology from any machine. The actual knowledge is durable on the instances themselves. The Router is stateless except for this one config file.
+**Disaster recovery:** With the passphrase and the encrypted config file, you can reconstruct your entire instance network from any machine running the Router binary. The actual knowledge lives on the instances; the Router config just contains the registry metadata.
 
 ## Trait Interface
 
 ```rust
 pub trait Router {
+    /// Authenticate a client and issue instance-specific session tokens
     fn create_session(&self, identity: &ClientIdentity) -> Result<SessionResponse, RouterError>;
-    fn classify(&self, claim: &ClaimInput) -> Result<InstanceId, RouterError>;
-    fn federated_query(&self, request: QueryRequest) -> Result<FederatedQueryResponse, RouterError>;
-    fn get_topology(&self) -> Result<Vec<InstanceInfo>, RouterError>;
+    
+    /// Return current instance registry with health states and endpoints
+    fn get_registry(&self) -> Result<Vec<InstanceInfo>, RouterError>;
+    
+    /// Manually register a new instance (admin operation)
     fn register_instance(&self, entry: InstanceEntry) -> Result<(), RouterError>;
+    
+    /// Remove an instance from the registry (admin operation)
     fn remove_instance(&self, instance_id: &str) -> Result<(), RouterError>;
+    
+    /// Update an instance's endpoints or capabilities (admin operation)
+    fn update_instance(&self, instance_id: &str, updates: InstanceUpdates) -> Result<(), RouterError>;
+}
+
+pub struct SessionResponse {
+    pub instances: Vec<InstanceInfo>,
+}
+
+pub struct InstanceInfo {
+    pub instance_id: String,
+    pub endpoint: String,
+    pub capabilities: Vec<String>,
+    pub token: String,            // Instance-specific session token
+    pub health: InstanceHealth,
 }
 ```
+
+Note that the Router trait does not include routing, classification, or query operations. Those are handled by the client SDK and instances directly.
 
 ## Configuration
 
@@ -227,14 +284,44 @@ pub trait Router {
 | `health_check_timeout` | `5s` | Timeout for individual health check |
 | `failure_threshold` | `2` | Consecutive failures before marking unreachable |
 | `recovery_threshold` | `2` | Consecutive successes before marking healthy |
-| `classification_method` | `keyword,embedding,llm` | Ordered list of classification methods to try |
-| `classification_llm_provider` | (optional) | LLM provider for fallback classification |
-| `cross_domain_synthesis` | `false` | Enable cross-domain Synthesizer at Router level |
+| `degraded_threshold` | `80%` | Percentage of timeout that triggers degraded state (e.g., 4s response on 5s timeout) |
+| `token_ttl` | `1h` | Time-to-live for issued session tokens |
+| `signing_key_path` | (in encrypted config) | Private key for signing session tokens |
 
 ## Deployment
 
-The Router is a single static binary with no runtime dependencies (other than the encrypted config file). It can run on any machine that has network access to at least one registered instance.
+The Router is a single static binary with no runtime dependencies (other than the encrypted config file). It runs on any machine that has network access to at least one registered instance.
 
-**Recommended deployment:** Run on your primary machine (not a remote server) since the Router holds the topology and token-issuing authority. Its config file is the highest-value target in the system.
+### Single-Instance Mode
 
-**Resource requirements:** Minimal. The Router holds no claim data — only the registry and in-flight federated query state. Memory usage scales with the number of registered instances, not the number of claims.
+**The Router is present even in single-instance deployments.** This ensures consistent session management and security patterns across all deployment models.
+
+- **Minimal overhead:** <1MB memory footprint, near-zero CPU usage
+- **Simple registry:** Contains only one instance entry
+- **Consistent API:** Clients use the same SessionRequest/SessionResponse flow regardless of deployment size
+
+### Multi-Instance Mode
+
+The Router scales efficiently to multiple instances:
+
+- **Memory usage:** Approximately 100KB per registered instance (mostly for health state and endpoint tracking)
+- **CPU usage:** Health checks every 60 seconds per instance (lightweight gRPC ping)
+- **Network usage:** Minimal — only health checks and session establishment
+
+### Recommended Deployment
+
+**Run the Router on your primary trusted machine** (not a remote server). The Router holds:
+- The instance registry and cryptographic identities
+- The token-issuing signing key
+- The encrypted configuration (highest-value target in the system)
+
+Running it on your own machine (desktop, laptop) gives you direct control over the most security-sensitive component.
+
+### Resource Requirements
+
+- **Memory:** <1MB for single instance, ~1MB + (100KB × number of instances)
+- **CPU:** Near-zero except during session establishment and health checks
+- **Disk:** Only the encrypted config file (~10-50KB depending on registry size)
+- **Network:** Outbound connections to instances for health checks; inbound gRPC listener for session requests
+
+The Router holds **no claim data** — only metadata about instances. Memory and CPU usage are independent of the number of claims in your system.

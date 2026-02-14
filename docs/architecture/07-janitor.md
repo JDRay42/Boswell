@@ -14,22 +14,37 @@ Janitors are background maintenance processes that keep the claim graph healthy.
 ## Janitor Types
 
 ```mermaid
-graph TB
-    subgraph Janitors["Janitor Processes"]
-        SJ["Staleness Janitor<br/>Schedule: hourly<br/>Type: deterministic"]
-        CJ["Contradiction Janitor<br/>Schedule: every 12 hours<br/>Type: LLM-assisted"]
-        TJ["Tier Migration Janitor<br/>Schedule: on task/project completion<br/>Type: deterministic + LLM"]
-        GC["GC Janitor<br/>Schedule: nightly<br/>Type: deterministic"]
-        CR["Confidence Recomputation<br/>Schedule: every 4 hours<br/>Type: deterministic"]
-    end
+sequenceDiagram
+    participant SJ as Staleness Janitor<br/>(hourly)
+    participant CJ as Contradiction Janitor<br/>(every 12h)
+    participant TJ as Tier Migration Janitor<br/>(task/project completion)
+    participant CR as Confidence Recomputation<br/>(every 4h)
+    participant GC as GC Janitor<br/>(nightly)
+    participant CS as Claim Store
 
-    CS[(Claim Store)]
-
-    SJ --> CS
-    CJ --> CS
-    TJ --> CS
-    GC --> CS
-    CR --> CS
+    Note over SJ,GC: Janitors run independently on their own schedules
+    
+    SJ->>CS: Query claims past staleness_at
+    CS-->>SJ: Return stale claims
+    SJ->>CS: Apply decay to confidence intervals
+    
+    CJ->>CS: Query recently modified claims
+    CS-->>CJ: Return candidates
+    CJ->>CS: Query semantic neighbors
+    CS-->>CJ: Return similar claims
+    CJ->>CS: Create contradicts relationships
+    
+    TJ->>CS: Query claims matching demotion triggers
+    CS-->>TJ: Return candidates
+    TJ->>CS: Update tier and record demotion
+    
+    CR->>CS: Query claims with invalidated confidence
+    CS-->>CR: Return claims needing recomputation
+    CR->>CS: Update confidence intervals
+    
+    GC->>CS: Query forgotten claims past retention
+    CS-->>GC: Return expired claims
+    GC->>CS: Hard delete and vacuum
 ```
 
 ### Staleness Janitor

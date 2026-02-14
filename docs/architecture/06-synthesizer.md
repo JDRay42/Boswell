@@ -100,28 +100,35 @@ When a constituent claim's confidence changes (challenge, corroboration, stalene
 
 ### Cross-Domain Synthesizer (Router Level)
 
-In multi-instance deployments, a separate Synthesizer can run at the Router level:
+The Router is present in all Boswell deployments. In multi-instance configurations, a separate Synthesizer can run at the Router level:
 
 ```mermaid
-graph TB
-    subgraph Dev["Development Instance"]
-        D1["High-confidence<br/>persistent claims"]
-    end
-    subgraph Personal["Personal Instance"]
-        P1["High-confidence<br/>persistent claims"]
-    end
-    subgraph Professional["Professional Instance"]
-        PR1["High-confidence<br/>persistent claims"]
-    end
+sequenceDiagram
+    participant XS as Cross-Domain<br/>Synthesizer
+    participant Dev as Development<br/>Instance
+    participant Personal as Personal<br/>Instance
+    participant Prof as Professional<br/>Instance
+    participant LLM as LLM Provider
 
-    XS["Cross-Domain Synthesizer<br/>(Router level)"]
+    XS->>Dev: Pull high-confidence persistent claims
+    Dev-->>XS: Persistent tier claims
+    XS->>Personal: Pull high-confidence persistent claims
+    Personal-->>XS: Persistent tier claims
+    XS->>Prof: Pull high-confidence persistent claims
+    Prof-->>XS: Persistent tier claims
 
-    D1 -->|"pull persistent tier"| XS
-    P1 -->|"pull persistent tier"| XS
-    PR1 -->|"pull persistent tier"| XS
+    XS->>LLM: Analyze for cross-domain insights
+    LLM-->>XS: Cross-domain connections
 
-    XS -->|"cross-domain insight"| Dev
-    XS -->|"cross-domain insight"| Personal
+    alt Insight relevant to Development
+        XS->>Dev: Push cross-domain insight
+    end
+    alt Insight relevant to Personal
+        XS->>Personal: Push cross-domain insight
+    end
+    alt Insight relevant to Professional
+        XS->>Prof: Push cross-domain insight
+    end
 ```
 
 - Pulls only high-confidence, persistent-tier claims from each instance. No ephemeral or task-level noise.

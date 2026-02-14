@@ -36,7 +36,7 @@ graph LR
 
 **Tables:**
 
-- **claims** — Core claim data: id (ULID, primary key), subject, predicate, direct_object, raw_expression, embedding (BLOB), confidence lower_bound, confidence upper_bound, computation_log, valid_from, valid_until, ttl, staleness_at, tier, namespace, promotion_flags, created_at, last_accessed, access_count, last_modified, status.
+- **claims** — Core claim data: id (ULID, primary key), subject, predicate, object, raw_expression, embedding (BLOB), confidence lower_bound, confidence upper_bound, computation_log, valid_from, valid_until, ttl, staleness_at, tier, namespace, promotion_flags, created_at, last_accessed, access_count, last_modified, status.
 - **provenance** — One-to-many with claims: claim_id (FK), source_type, source_id, timestamp, confidence_contribution, context.
 - **relationships** — Pairwise: source_claim_id, target_claim_id, relation_type, strength, metadata. Indexed both directions for traversal.
 - **event_log** — Append-only audit trail: event_id (ULID), event_type (assert, challenge, promote, demote, forget, corroborate, status_change), claim_id, timestamp, actor_id, details (JSON).
@@ -100,7 +100,7 @@ Before inserting a new claim, the Claim Store checks for semantic duplicates:
 
 1. Embed the incoming claim's `raw_expression`.
 2. Query the HNSW index for nearest neighbors above a configurable similarity threshold (default: 0.95).
-3. For each candidate, compare structural fields (subject, predicate, direct_object) as a secondary check.
+3. For each candidate, compare structural fields (subject, predicate, object) as a secondary check.
 4. If a match is found: append a new provenance entry to the existing claim (corroboration). Do not create a duplicate.
 5. If no match: insert the new claim normally.
 

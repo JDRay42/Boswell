@@ -50,7 +50,7 @@ The Extract operation blocks until all claims are produced. There is no partial 
 
 The Extractor sends the text block to the configured LLM provider with a structured prompt that includes:
 
-1. **Claim format specification.** The LLM must produce claims in Boswell's triple-plus-expression format: subject, predicate, direct_object, and raw_expression.
+1. **Claim format specification.** The LLM must produce claims in Boswell's triple-plus-expression format: subject, predicate, object, and raw_expression.
 2. **Extraction guidelines:**
    - Extract discrete, atomic claims. One idea per claim.
    - Preserve nuance in the raw_expression. The triple is for queryability; the raw_expression captures what was actually said.

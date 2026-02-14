@@ -10,7 +10,7 @@ Streaming is supported for operations that may produce incremental results (Refl
 
 ## Session Protocol
 
-Sessions are topology discovery handshakes. They establish authentication and provide the client with the instance topology for direct routing.
+Sessions are authentication handshakes that provide the client with a registry of available instances and per-instance session tokens. The Router handles all session establishment, even in single-instance deployments.
 
 ### SessionRequest
 
@@ -24,30 +24,29 @@ message SessionRequest {}
 
 ```protobuf
 message SessionResponse {
-  string token = 1;                    // Session token for subsequent operations
-  string mode = 2;                     // "router" or "instance"
-  repeated InstanceInfo instances = 3; // Available instances with endpoints and expertise
+  repeated InstanceInfo instances = 1; // Available instances with endpoints, capabilities, and tokens
 }
 
 message InstanceInfo {
   string instance_id = 1;
   string endpoint = 2;
-  repeated string expertise = 3;       // Topic descriptors for client-side routing
-  string health = 4;                   // "healthy", "degraded", "unreachable"
+  repeated string capabilities = 3;    // Available operations for this instance
+  string token = 4;                    // Instance-specific session token
+  string health = 5;                   // "healthy", "degraded", "unreachable"
 }
 ```
 
 **Behavior:**
 
-- In single-instance mode: returns one entry in the instances array with the instance's own endpoint. Expertise may be empty. Mode is `"instance"`.
-- In multi-instance mode (via Router): returns all registered instances with their endpoints, expertise profiles, and current health states. Mode is `"router"`.
-- The token is valid for all instances listed in the response. Instances accept the token based on the issuing authority's signing key.
-- The client SDK uses the expertise profiles to route operations directly to instances. The Router is a fallback for ambiguous routing.
+- In single-instance mode: returns one entry in the instances array with the instance's own endpoint and a token specific to that instance.
+- In multi-instance mode: returns all manually registered instances with their endpoints, capabilities, current health states, and instance-specific tokens.
+- Each token is scoped to its specific instance. Token compromise affects only that instance.
+- The client SDK routes operations directly to instances based on namespace, user configuration, or interactive selection.
 
 ### Token Lifecycle
 
 - Tokens are short-lived. Expiration is configurable (default: 1 hour).
-- The client can re-issue a SessionRequest to refresh the token and receive an updated topology.
+- The client can re-issue a SessionRequest to refresh tokens and receive an updated instance registry.
 - Expired tokens are rejected with an `UNAUTHENTICATED` status. The client must re-authenticate.
 
 ---
@@ -72,7 +71,7 @@ message AssertRequest {
 message ClaimInput {
   string subject = 1;
   string predicate = 2;
-  string direct_object = 3;
+  string object = 3;
   string raw_expression = 4;
   ProvenanceInput provenance = 5;  // Source information for this assertion
   string namespace = 6;            // Per-claim namespace override (optional)
@@ -136,7 +135,7 @@ message QueryRequest {
   // Structural query (point lookup, filtered search)
   string subject = 2;
   string predicate = 3;
-  string direct_object = 4;
+  string object = 4;
 
   // Semantic query (nearest-neighbor)
   string semantic_query = 5;       // Natural language query text, embedded at query time
@@ -173,7 +172,7 @@ message ClaimOutput {
   string claim_id = 1;
   string subject = 2;
   string predicate = 3;
-  string direct_object = 4;
+  string object = 4;
   string raw_expression = 5;
   ConfidenceInterval confidence = 6;
   repeated ProvenanceOutput provenance = 7;

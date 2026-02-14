@@ -117,16 +117,16 @@ adjusted_upper = min(stale_upper × support_boost × contradiction_penalty, 1.0)
 
 Contradictions always compress the interval. Support only expands the upper bound.
 
-### Step 4: Instance Trust Scaling (Federated Queries Only)
+### Step 4: Instance Trust Scaling
 
-When claims are returned via federated query through the Router, the instance trust score scales the interval:
+All queries flow through the Router, even in single-instance deployments. The Router scales confidence intervals based on the source instance's trust score:
 
 ```
 final_lower = adjusted_lower × instance_trust
 final_upper = adjusted_upper × instance_trust
 ```
 
-For direct (non-federated) queries, instance trust is 1.0 (no scaling).
+For queries resolved from the local instance, instance trust is 1.0 (no scaling). For claims retrieved from federated instances, the Router applies the configured trust score for that instance.
 
 ### Complete Formula
 
