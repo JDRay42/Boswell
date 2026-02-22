@@ -8,4 +8,13 @@ rust-version.workspace = true
 boswell-domain = { workspace = true }
 boswell-llm = { workspace = true }
 boswell-store = { workspace = true }
+boswell-gatekeeper = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+toml = { workspace = true }
+
+[dev-dependencies]
+tokio-test = "0.4"
