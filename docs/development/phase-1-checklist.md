@@ -16,12 +16,12 @@ Establish domain core, storage layer, and LLM integration without external API s
 - [x] Define trait interfaces (ClaimStore, LlmProvider, Extractor)
 - [x] Add initial unit tests (10 tests passing)
 - [x] XML documentation for public types
-- [x] Add `ulid` crate dependency
-- [x] Update `ClaimId` to use proper ULID generation
+- [x] Add `uuid` crate dependency (v7 feature)
+- [x] Update `ClaimId` to use UUIDv7 generation
 - [x] Add `ClaimId::new()` for generating new IDs
-- [x] Add `ClaimId::from_string()` for parsing ULID strings
-- [x] Format `ClaimId` Display as proper ULID (not hex)
-- [x] Add property tests for ULID chronological ordering
+- [x] Add `ClaimId::from_string()` for parsing UUIDv7 strings
+- [x] Format `ClaimId` Display as standard UUID hyphenated string
+- [x] Add property tests for UUIDv7 chronological ordering
 - [x] Create `confidence_computation.rs` module
 - [x] Implement recursive support network traversal
 - [x] Add source diversity weighting logic
@@ -207,7 +207,7 @@ cargo doc --no-deps --open
 
 ### Resources
 
-- [ULID crate docs](https://docs.rs/ulid)
+- [uuid crate docs](https://docs.rs/uuid)
 - [rusqlite docs](https://docs.rs/rusqlite)
 - [ONNX Runtime docs](https://docs.rs/ort)
 - ADR-005: SQLite + HNSW architecture

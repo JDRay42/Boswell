@@ -141,13 +141,13 @@ pub trait ClaimStore {
     fn query_semantic(&self, embedding: Vec<f32>, limit: usize, threshold: f32) -> Result<Vec<(Claim, f32)>, StoreError>;
     fn query_temporal(&self, since: Option<DateTime>, until: Option<DateTime>) -> Result<Vec<Claim>, StoreError>;
 
-    fn get_claim(&self, id: &Ulid) -> Result<Option<Claim>, StoreError>;
-    fn update_status(&self, id: &Ulid, status: ClaimStatus) -> Result<(), StoreError>;
-    fn update_confidence(&self, id: &Ulid, interval: ConfidenceInterval) -> Result<(), StoreError>;
+    fn get_claim(&self, id: &Uuid) -> Result<Option<Claim>, StoreError>;
+    fn update_status(&self, id: &Uuid, status: ClaimStatus) -> Result<(), StoreError>;
+    fn update_confidence(&self, id: &Uuid, interval: ConfidenceInterval) -> Result<(), StoreError>;
 
-    fn add_provenance(&self, claim_id: &Ulid, provenance: ProvenanceEntry) -> Result<(), StoreError>;
+    fn add_provenance(&self, claim_id: &Uuid, provenance: ProvenanceEntry) -> Result<(), StoreError>;
     fn add_relationship(&self, rel: Relationship) -> Result<(), StoreError>;
-    fn get_relationships(&self, claim_id: &Ulid, direction: Direction) -> Result<Vec<Relationship>, StoreError>;
+    fn get_relationships(&self, claim_id: &Uuid, direction: Direction) -> Result<Vec<Relationship>, StoreError>;
 
     fn get_namespaces(&self, prefix: &str) -> Result<Vec<String>, StoreError>;
 

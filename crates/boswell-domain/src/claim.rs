@@ -2,17 +2,18 @@
 
 use std::fmt;
 
-/// Unique identifier for a claim based on ULID (per ADR-011)
-/// 
-/// ULIDs provide:
+/// Unique identifier for a claim based on UUIDv7 (per ADR-011)
+///
+/// UUIDv7 provides:
 /// - Chronological sortability for temporal queries
 /// - 128-bit uniqueness
-/// - Lexicographic ordering that matches creation time
+/// - RFC 9562-standard format with broad ecosystem support
+/// - No coordination required for distributed generation
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ClaimId(u128);
 
 impl ClaimId {
-    /// Generate a new ULID-based ClaimId
+    /// Generate a new UUIDv7-based ClaimId
     ///
     /// # Examples
     ///
@@ -23,18 +24,17 @@ impl ClaimId {
     /// assert!(id.value() > 0);
     /// ```
     pub fn new() -> Self {
-        let ulid = ulid::Ulid::new();
-        Self(ulid.0)
+        Self(uuid::Uuid::now_v7().as_u128())
     }
 
-    /// Create a new ClaimId from a raw ULID value
+    /// Create a new ClaimId from a raw u128 value
     ///
     /// This is primarily for storage layer deserialization.
     pub fn from_value(value: u128) -> Self {
         Self(value)
     }
 
-    /// Parse a ClaimId from a ULID string
+    /// Parse a ClaimId from a UUIDv7 string
     ///
     /// # Examples
     ///
@@ -47,19 +47,20 @@ impl ClaimId {
     /// assert_eq!(id, parsed);
     /// ```
     pub fn from_string(s: &str) -> Result<Self, String> {
-        ulid::Ulid::from_string(s)
-            .map(|ulid| Self(ulid.0))
-            .map_err(|e| format!("Invalid ULID string: {}", e))
+        uuid::Uuid::parse_str(s)
+            .map(|u| Self(u.as_u128()))
+            .map_err(|e| format!("Invalid UUIDv7 string: {}", e))
     }
 
-    /// Get the raw ULID value
+    /// Get the raw u128 value
     pub fn value(&self) -> u128 {
         self.0
     }
 
-    /// Get the timestamp component of the ULID (milliseconds since Unix epoch)
+    /// Get the timestamp component of the UUIDv7 (milliseconds since Unix epoch)
     pub fn timestamp(&self) -> u64 {
-        ulid::Ulid(self.0).timestamp_ms()
+        // UUIDv7: top 48 bits are Unix millisecond timestamp
+        (self.0 >> 80) as u64
     }
 }
 
@@ -71,7 +72,7 @@ impl Default for ClaimId {
 
 impl fmt::Display for ClaimId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", ulid::Ulid(self.0))
+        write!(f, "{}", uuid::Uuid::from_u128(self.0))
     }
 }
 
@@ -151,12 +152,12 @@ mod tests {
 
     #[test]
     fn test_claim_id_chronological() {
-        // ULIDs generated in sequence should be chronologically ordered
+        // UUIDv7s generated in sequence should be chronologically ordered
         let id1 = ClaimId::new();
         std::thread::sleep(std::time::Duration::from_millis(2));
         let id2 = ClaimId::new();
-        
-        assert!(id1 < id2, "Earlier ULID should be less than later ULID");
+
+        assert!(id1 < id2, "Earlier UUIDv7 should be less than later UUIDv7");
         assert!(id1.timestamp() <= id2.timestamp(), "Timestamps should be ordered");
     }
 
@@ -164,10 +165,10 @@ mod tests {
     fn test_claim_id_display_and_parse() {
         let id = ClaimId::new();
         let id_str = id.to_string();
-        
-        // ULID strings are 26 characters
-        assert_eq!(id_str.len(), 26);
-        
+
+        // UUIDv7 strings are 36 characters (8-4-4-4-12 with hyphens)
+        assert_eq!(id_str.len(), 36);
+
         // Round-trip through string should preserve ID
         let parsed = ClaimId::from_string(&id_str).unwrap();
         assert_eq!(id, parsed);
@@ -175,7 +176,7 @@ mod tests {
 
     #[test]
     fn test_claim_id_invalid_string() {
-        assert!(ClaimId::from_string("not-a-valid-ulid").is_err());
+        assert!(ClaimId::from_string("not-a-valid-uuid").is_err());
         assert!(ClaimId::from_string("").is_err());
     }
 }
@@ -186,12 +187,12 @@ mod proptests {
     use proptest::prelude::*;
 
     proptest! {
-        /// Property: ULID ordering matches u128 ordering
+        /// Property: UUIDv7 ordering matches u128 ordering
         #[test]
-        fn test_ulid_ordering_property(a: u128, b: u128) {
+        fn test_uuid_ordering_property(a: u128, b: u128) {
             let id_a = ClaimId::from_value(a);
             let id_b = ClaimId::from_value(b);
-            
+
             // Ordering should be consistent with underlying values
             prop_assert_eq!(id_a < id_b, a < b);
             prop_assert_eq!(id_a == id_b, a == b);
@@ -200,26 +201,26 @@ mod proptests {
 
         /// Property: Round-trip through string representation preserves ID
         #[test]
-        fn test_ulid_string_roundtrip(value: u128) {
+        fn test_uuid_string_roundtrip(value: u128) {
             let id = ClaimId::from_value(value);
             let id_str = id.to_string();
-            
+
             match ClaimId::from_string(&id_str) {
                 Ok(parsed) => prop_assert_eq!(id, parsed),
                 Err(e) => return Err(TestCaseError::fail(e)),
             }
         }
 
-        /// Property: Generated ULIDs have valid timestamps
+        /// Property: Generated UUIDv7s have valid timestamps
         #[test]
-        fn test_ulid_timestamp_validity(_n in 0..10) {
+        fn test_uuid_timestamp_validity(_n in 0..10) {
             let id = ClaimId::new();
             let timestamp = id.timestamp();
-            
+
             // Timestamp should be reasonable (after 2020, before 2100)
             let min_timestamp = 1577836800000u64; // 2020-01-01
             let max_timestamp = 4102444800000u64; // 2100-01-01
-            
+
             prop_assert!(timestamp >= min_timestamp && timestamp <= max_timestamp,
                 "Timestamp {} out of reasonable range", timestamp);
         }

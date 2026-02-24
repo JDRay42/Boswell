@@ -11,7 +11,7 @@ erDiagram
     CLAIM ||--o{ PROVENANCE : "has many"
     CLAIM ||--o{ RELATIONSHIP : "has many"
     CLAIM {
-        ulid id PK
+        uuid7 id PK
         string subject
         string predicate
         string direct_object
@@ -41,7 +41,7 @@ erDiagram
         string context
     }
     RELATIONSHIP {
-        ulid target_claim_id FK
+        uuid7 target_claim_id FK
         enum relation_type
         float strength
         string metadata

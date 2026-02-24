@@ -316,10 +316,10 @@ fn test_relationship_types() {
 }
 
 #[test]
-fn test_ulid_temporal_ordering() {
+fn test_uuid_temporal_ordering() {
     let mut store = SqliteStore::new(":memory:", false, 0).unwrap();
-    
-    // Create claims with different times (via their ULIDs)
+
+    // Create claims with different times (via their UUIDv7s)
     let mut claim_ids = Vec::new();
     
     for i in 0..5 {
@@ -343,7 +343,7 @@ fn test_ulid_temporal_ordering() {
         store.assert_claim(claim).unwrap();
     }
     
-    // Query all claims (they should be in insertion order due to ULID ordering)
+    // Query all claims (they should be in insertion order due to UUIDv7 ordering)
     let query = ClaimQuery::default();
     let results = store.query_claims(&query).unwrap();
     
@@ -352,7 +352,7 @@ fn test_ulid_temporal_ordering() {
     // Verify that claim IDs are in ascending order (temporal ordering)
     for i in 0..results.len() - 1 {
         assert!(results[i].id < results[i + 1].id, 
-            "Claims should be ordered by ULID (temporal order)");
+            "Claims should be ordered by UUIDv7 (temporal order)");
     }
 }
 

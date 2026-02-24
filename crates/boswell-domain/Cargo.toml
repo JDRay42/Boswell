@@ -10,9 +10,9 @@ license.workspace = true
 path = "src/lib.rs"
 
 [dependencies]
-# ULID for claim identifiers (per ADR-011)
+# UUIDv7 for claim identifiers (per ADR-011)
 # This is an external dependency but provides a fundamental primitive
-ulid = "1.1"
+uuid = { version = "1", features = ["v7"] }
 
 [dev-dependencies]
 proptest = "1.5"
