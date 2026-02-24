@@ -124,7 +124,7 @@ pub enum TierBoundary {
 }
 
 pub struct PromotionResult {
-    pub claim_id: Ulid,
+    pub claim_id: Uuid,
     pub status: PromotionStatus, // Accepted, Rejected, Deferred
     pub previous_tier: Tier,
     pub current_tier: Tier,

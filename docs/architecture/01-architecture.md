@@ -700,7 +700,7 @@ Additionally, Query supports namespace scoping in three modes:
 | **API Transport** | gRPC via `tonic` | Efficient binary protocol, streaming support (useful for Reflect and deliberate Query), excellent Rust support, built-in TLS. |
 | **Authentication** | Mutual TLS (mTLS) | Cryptographic identity verification at the instance level. Every connection to every instance is authenticated, regardless of deployment mode. No shared secrets. |
 | **Config Encryption** | `age` crate | Modern, passphrase-based encryption, pure Rust, no external dependencies. Replaces PGP with simpler, more secure design. |
-| **Identifiers** | ULID | Universally unique, lexicographically sortable by creation time, no coordination required for generation (ideal for agent swarms), monotonic within same millisecond. Rust crate: `ulid`. |
+| **Identifiers** | UUIDv7 | Universally unique, lexicographically sortable by creation time, no coordination required for generation (ideal for agent swarms). RFC 9562 standard. Rust crate: `uuid` with `v7` feature. |
 | **Embedding Models** | Local via ONNX (e.g., `fastembed` or equivalent) | High-frequency operation (every Assert, Learn, Query), must be fast and free of network/API dependencies. Ships with `bge-small-en-v1.5` (384 dimensions) and `nomic-embed-text` (768 dimensions). User selects at instance creation. |
 | **LLM Integration** | Pluggable provider trait | Each subsystem independently configurable. Supports local models (Ollama, etc.) and API providers (Anthropic, OpenAI, etc.). |
 
