@@ -77,11 +77,11 @@ impl JanitorMetrics {
     /// Generate a summary report of metrics
     pub fn summary(&self) -> String {
         let mut lines = vec![
-            format!("Janitor Metrics Summary"),
-            format!("======================"),
+            "Janitor Metrics Summary".to_string(),
+            "======================".to_string(),
             format!("Sweep cycles: {}", self.sweep_count),
             format!("Total runtime: {}s", self.total_runtime_secs),
-            format!(""),
+            String::new(),
         ];
 
         if !self.deleted.is_empty() {
