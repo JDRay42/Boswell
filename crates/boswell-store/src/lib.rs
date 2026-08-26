@@ -25,6 +25,7 @@ pub mod embedding;
 pub mod ollama_embedding;
 
 use boswell_domain::{Claim, ClaimId, Relationship, RelationshipType};
+use boswell_domain::{decayed_confidence, DecayConfig};
 use boswell_domain::traits::{ClaimStore, ClaimQuery};
 use rusqlite::{Connection, params, OptionalExtension};
 use std::path::Path;
@@ -460,6 +461,10 @@ impl ClaimStore for SqliteStore {
 /// Default HNSW `ef_search` quality parameter for trait-level semantic search.
 const DEFAULT_EF_SEARCH: usize = 64;
 
+/// How long a cached effective-confidence entry is trusted before
+/// [`SqliteStore::get_effective_confidence`] recomputes it on demand (seconds).
+const CONFIDENCE_CACHE_FRESHNESS_SECS: u64 = 300;
+
 impl SqliteStore {
     /// Perform semantic search for claims similar to the given embedding
     ///
@@ -536,8 +541,97 @@ impl SqliteStore {
         // Add to vector index
         vector_index.add(claim_id, embedding)
             .map_err(|e| StoreError::InvalidData(format!("Failed to add embedding: {}", e)))?;
-        
+
         Ok(())
+    }
+
+    /// Recompute and persist age-decayed effective confidence for every claim
+    /// into the `confidence_cache` table (per ADR-007).
+    ///
+    /// This is the "bake" pass the Janitor drives on a schedule: it reads each
+    /// claim's base confidence and writes the decayed value keyed by claim id.
+    /// `now` is a Unix timestamp in seconds. Returns the number of claims cached.
+    pub fn recompute_confidence_cache(
+        &self,
+        config: &DecayConfig,
+        now: u64,
+    ) -> Result<usize, StoreError> {
+        let claims = self.query_claims(&ClaimQuery::default())?;
+
+        let tx = self.conn.unchecked_transaction()?;
+        for claim in &claims {
+            let (lower, upper) =
+                decayed_confidence(claim.confidence, &claim.tier, claim.created_at, now, config);
+            let id_bytes = Self::claim_id_to_bytes(claim.id);
+            tx.execute(
+                "INSERT INTO confidence_cache
+                    (claim_id, effective_lower, effective_upper, computed_at, version)
+                 VALUES (?1, ?2, ?3, ?4, 0)
+                 ON CONFLICT(claim_id) DO UPDATE SET
+                    effective_lower = excluded.effective_lower,
+                    effective_upper = excluded.effective_upper,
+                    computed_at = excluded.computed_at,
+                    version = confidence_cache.version + 1",
+                params![&id_bytes, lower, upper, now as i64],
+            )?;
+        }
+        tx.commit()?;
+
+        Ok(claims.len())
+    }
+
+    /// Get a claim's effective (age-decayed) confidence, using the cache when it
+    /// is fresh and computing on demand otherwise (per ADR-007).
+    ///
+    /// On a cache miss or a stale entry (older than
+    /// [`CONFIDENCE_CACHE_FRESHNESS_SECS`]), the value is recomputed from the
+    /// claim's base confidence and written back. Returns `None` if the claim does
+    /// not exist. `now` is a Unix timestamp in seconds.
+    pub fn get_effective_confidence(
+        &self,
+        claim_id: ClaimId,
+        config: &DecayConfig,
+        now: u64,
+    ) -> Result<Option<(f64, f64)>, StoreError> {
+        let id_bytes = Self::claim_id_to_bytes(claim_id);
+
+        let cached: Option<(f64, f64, i64)> = self
+            .conn
+            .query_row(
+                "SELECT effective_lower, effective_upper, computed_at
+                 FROM confidence_cache WHERE claim_id = ?1",
+                params![&id_bytes],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+
+        if let Some((lower, upper, computed_at)) = cached {
+            let fresh =
+                now.saturating_sub(computed_at as u64) <= CONFIDENCE_CACHE_FRESHNESS_SECS;
+            if fresh {
+                return Ok(Some((lower, upper)));
+            }
+        }
+
+        // Miss or stale: recompute from the claim's base confidence and cache it.
+        let Some(claim) = self.get_claim(claim_id)? else {
+            return Ok(None);
+        };
+        let effective =
+            decayed_confidence(claim.confidence, &claim.tier, claim.created_at, now, config);
+        self.conn.execute(
+            "INSERT INTO confidence_cache
+                (claim_id, effective_lower, effective_upper, computed_at, version)
+             VALUES (?1, ?2, ?3, ?4, 0)
+             ON CONFLICT(claim_id) DO UPDATE SET
+                effective_lower = excluded.effective_lower,
+                effective_upper = excluded.effective_upper,
+                computed_at = excluded.computed_at,
+                version = confidence_cache.version + 1",
+            params![&id_bytes, effective.0, effective.1, now as i64],
+        )?;
+
+        Ok(Some(effective))
     }
 }
 
