@@ -1,7 +1,7 @@
 //! End-to-end integration tests for the Synthesizer using a real SQLite store
 //! and the deterministic MockProvider.
 
-use crate::{Synthesizer, SynthesizerConfig, SynthesisScope};
+use crate::{SynthesisScope, Synthesizer, SynthesizerConfig};
 use boswell_domain::traits::{ClaimQuery, ClaimStore};
 use boswell_domain::{Claim, ClaimId, Relationship, RelationshipType};
 use boswell_llm::MockProvider;
@@ -51,9 +51,30 @@ fn insert(
 
 /// Insert three high-confidence claims sharing a subject → one cluster of size 3.
 fn insert_cluster(store: &mut SqliteStore) {
-    insert(store, "team:atlas", "member:has", "person:alice", "task", (0.9, 0.95));
-    insert(store, "team:atlas", "member:has", "person:bob", "task", (0.9, 0.95));
-    insert(store, "team:atlas", "member:has", "person:carol", "task", (0.9, 0.95));
+    insert(
+        store,
+        "team:atlas",
+        "member:has",
+        "person:alice",
+        "task",
+        (0.9, 0.95),
+    );
+    insert(
+        store,
+        "team:atlas",
+        "member:has",
+        "person:bob",
+        "task",
+        (0.9, 0.95),
+    );
+    insert(
+        store,
+        "team:atlas",
+        "member:has",
+        "person:carol",
+        "task",
+        (0.9, 0.95),
+    );
 }
 
 fn count_task_claims(store: &SqliteStore) -> usize {
@@ -71,7 +92,10 @@ async fn test_pass_creates_insight() {
     let mut store = new_store();
     insert_cluster(&mut store);
 
-    let synthesizer = Synthesizer::new(MockProvider::new(POSITIVE_INSIGHT), SynthesizerConfig::default());
+    let synthesizer = Synthesizer::new(
+        MockProvider::new(POSITIVE_INSIGHT),
+        SynthesizerConfig::default(),
+    );
     let report = synthesizer
         .run_pass(&mut store, SynthesisScope::all("task", 50))
         .await
@@ -101,7 +125,10 @@ async fn test_confidence_propagates_outward() {
     let mut store = new_store();
     insert_cluster(&mut store);
 
-    let synthesizer = Synthesizer::new(MockProvider::new(POSITIVE_INSIGHT), SynthesizerConfig::default());
+    let synthesizer = Synthesizer::new(
+        MockProvider::new(POSITIVE_INSIGHT),
+        SynthesizerConfig::default(),
+    );
     let report = synthesizer
         .run_pass(&mut store, SynthesisScope::all("task", 50))
         .await
@@ -178,9 +205,19 @@ async fn test_dry_run_does_not_persist() {
 async fn test_below_min_cluster_size() {
     let mut store = new_store();
     // Only one claim → no cluster reaches min_cluster_size (3).
-    insert(&mut store, "team:atlas", "member:has", "person:alice", "task", (0.9, 0.95));
+    insert(
+        &mut store,
+        "team:atlas",
+        "member:has",
+        "person:alice",
+        "task",
+        (0.9, 0.95),
+    );
 
-    let synthesizer = Synthesizer::new(MockProvider::new(POSITIVE_INSIGHT), SynthesizerConfig::default());
+    let synthesizer = Synthesizer::new(
+        MockProvider::new(POSITIVE_INSIGHT),
+        SynthesizerConfig::default(),
+    );
     let report = synthesizer
         .run_pass(&mut store, SynthesisScope::all("task", 50))
         .await
@@ -195,13 +232,37 @@ async fn test_low_confidence_insight_rejected() {
     let mut store = new_store();
     // Weak constituents: task tier requires lower >= 0.4, and propagation will
     // push the derived lower bound below the min_insight_confidence bar.
-    insert(&mut store, "team:atlas", "member:has", "person:alice", "task", (0.45, 0.5));
-    insert(&mut store, "team:atlas", "member:has", "person:bob", "task", (0.45, 0.5));
-    insert(&mut store, "team:atlas", "member:has", "person:carol", "task", (0.45, 0.5));
+    insert(
+        &mut store,
+        "team:atlas",
+        "member:has",
+        "person:alice",
+        "task",
+        (0.45, 0.5),
+    );
+    insert(
+        &mut store,
+        "team:atlas",
+        "member:has",
+        "person:bob",
+        "task",
+        (0.45, 0.5),
+    );
+    insert(
+        &mut store,
+        "team:atlas",
+        "member:has",
+        "person:carol",
+        "task",
+        (0.45, 0.5),
+    );
 
     // LLM reports low confidence in the inference.
     let weak_insight = r#"{"insight": true, "subject": "team:atlas", "predicate": "trend:focus", "object": "topic:auth", "confidence_lower": 0.2, "confidence_upper": 0.3, "rationale": "weak"}"#;
-    let synthesizer = Synthesizer::new(MockProvider::new(weak_insight), SynthesizerConfig::default());
+    let synthesizer = Synthesizer::new(
+        MockProvider::new(weak_insight),
+        SynthesizerConfig::default(),
+    );
     let report = synthesizer
         .run_pass(&mut store, SynthesisScope::all("task", 50))
         .await
@@ -219,16 +280,50 @@ async fn test_derivation_depth_limit() {
     let mut store = new_store();
 
     // A base (ephemeral) claim that the candidates were derived from.
-    let base = insert(&mut store, "base:z", "is:a", "thing:origin", "ephemeral", (0.5, 0.6));
+    let base = insert(
+        &mut store,
+        "base:z",
+        "is:a",
+        "thing:origin",
+        "ephemeral",
+        (0.5, 0.6),
+    );
 
     // Three task claims sharing a subject, each already derived_from `base`
     // (so their derivation depth is 1).
-    let c1 = insert(&mut store, "team:atlas", "member:has", "person:alice", "task", (0.9, 0.95));
-    let c2 = insert(&mut store, "team:atlas", "member:has", "person:bob", "task", (0.9, 0.95));
-    let c3 = insert(&mut store, "team:atlas", "member:has", "person:carol", "task", (0.9, 0.95));
+    let c1 = insert(
+        &mut store,
+        "team:atlas",
+        "member:has",
+        "person:alice",
+        "task",
+        (0.9, 0.95),
+    );
+    let c2 = insert(
+        &mut store,
+        "team:atlas",
+        "member:has",
+        "person:bob",
+        "task",
+        (0.9, 0.95),
+    );
+    let c3 = insert(
+        &mut store,
+        "team:atlas",
+        "member:has",
+        "person:carol",
+        "task",
+        (0.9, 0.95),
+    );
     for c in [c1, c2, c3] {
         store
-            .add_relationship(Relationship::new(c, base, RelationshipType::DerivedFrom, 0.9, 1_000))
+            .add_relationship(Relationship::new(
+                c,
+                base,
+                RelationshipType::DerivedFrom,
+                0.9,
+                1_000,
+            ))
             .unwrap();
     }
 
@@ -253,7 +348,10 @@ async fn test_since_filter_excludes_old_claims() {
     let mut store = new_store();
     insert_cluster(&mut store); // created_at = 1_000
 
-    let synthesizer = Synthesizer::new(MockProvider::new(POSITIVE_INSIGHT), SynthesizerConfig::default());
+    let synthesizer = Synthesizer::new(
+        MockProvider::new(POSITIVE_INSIGHT),
+        SynthesizerConfig::default(),
+    );
     let scope = SynthesisScope {
         namespaces: None,
         min_tier: "task".to_string(),
@@ -277,13 +375,34 @@ async fn test_real_llm_synthesis() {
 
     let mut store = new_store();
     // A cluster of related claims that plausibly imply a higher-order insight.
-    insert(&mut store, "team:atlas", "works_on", "topic:oauth", "task", (0.9, 0.95));
-    insert(&mut store, "team:atlas", "works_on", "topic:login-flow", "task", (0.9, 0.95));
-    insert(&mut store, "team:atlas", "works_on", "topic:session-tokens", "task", (0.9, 0.95));
+    insert(
+        &mut store,
+        "team:atlas",
+        "works_on",
+        "topic:oauth",
+        "task",
+        (0.9, 0.95),
+    );
+    insert(
+        &mut store,
+        "team:atlas",
+        "works_on",
+        "topic:login-flow",
+        "task",
+        (0.9, 0.95),
+    );
+    insert(
+        &mut store,
+        "team:atlas",
+        "works_on",
+        "topic:session-tokens",
+        "task",
+        (0.9, 0.95),
+    );
 
     let llm = OllamaProvider::new("http://localhost:11434", "qwen2.5:7b");
-    let synthesizer = Synthesizer::new(llm, SynthesizerConfig::default())
-        .with_model_name("qwen2.5:7b");
+    let synthesizer =
+        Synthesizer::new(llm, SynthesizerConfig::default()).with_model_name("qwen2.5:7b");
 
     let scope = SynthesisScope::all("task", 50);
     let report = synthesizer.run_pass(&mut store, scope).await.unwrap();
@@ -304,5 +423,8 @@ async fn test_real_llm_synthesis() {
     // The LLM must at least have been asked about the cluster. Whether it returns
     // an insight is model-dependent, so we don't hard-assert insights_created.
     assert_eq!(report.claims_examined, 3);
-    assert!(report.clusters_evaluated >= 1, "expected a cluster to be analyzed");
+    assert!(
+        report.clusters_evaluated >= 1,
+        "expected a cluster to be analyzed"
+    );
 }

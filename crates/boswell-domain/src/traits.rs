@@ -6,7 +6,7 @@
 use crate::{Claim, ClaimId, Relationship};
 
 /// Trait for storing and retrieving claims
-/// 
+///
 /// Implemented by the infrastructure layer (boswell-store)
 pub trait ClaimStore {
     /// Error type for store operations
@@ -76,22 +76,22 @@ pub trait ClaimStore {
 pub struct ClaimQuery {
     /// Filter by namespace prefix
     pub namespace: Option<String>,
-    
+
     /// Filter by tier
     pub tier: Option<String>,
-    
+
     /// Filter by minimum confidence
     pub min_confidence: Option<f64>,
-    
+
     /// Semantic search text (if supported)
     pub semantic_text: Option<String>,
-    
+
     /// Maximum results to return
     pub limit: Option<usize>,
 }
 
 /// Trait for LLM provider operations
-/// 
+///
 /// Implemented by the infrastructure layer (boswell-llm)
 pub trait LlmProvider {
     /// Error type for LLM operations
@@ -105,7 +105,7 @@ pub trait LlmProvider {
 }
 
 /// Trait for extracting claims from text
-/// 
+///
 /// Implemented by the application layer (boswell-extractor)
 pub trait Extractor {
     /// Error type for extraction operations

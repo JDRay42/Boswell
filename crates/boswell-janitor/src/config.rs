@@ -209,11 +209,14 @@ mod tests {
     #[test]
     fn test_duration_conversions() {
         let config = JanitorConfig::default();
-        
+
         assert_eq!(config.sweep_interval(), Duration::from_secs(60 * 60));
         assert_eq!(config.ephemeral_ttl(), Duration::from_secs(12 * 3600));
         assert_eq!(config.task_ttl(), Duration::from_secs(24 * 3600));
-        assert_eq!(config.project_stale_threshold(), Duration::from_secs(90 * 86400));
+        assert_eq!(
+            config.project_stale_threshold(),
+            Duration::from_secs(90 * 86400)
+        );
     }
 
     #[test]
@@ -221,7 +224,7 @@ mod tests {
         let config = JanitorConfig::default();
         let serialized = serde_json::to_string(&config).unwrap();
         let deserialized: JanitorConfig = serde_json::from_str(&serialized).unwrap();
-        
+
         assert_eq!(config.ephemeral_ttl_hours, deserialized.ephemeral_ttl_hours);
         assert_eq!(config.task_ttl_hours, deserialized.task_ttl_hours);
         assert_eq!(config.dry_run, deserialized.dry_run);

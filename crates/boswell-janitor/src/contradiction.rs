@@ -237,7 +237,10 @@ where
         let mut by_subject: std::collections::HashMap<&str, Vec<&Claim>> =
             std::collections::HashMap::new();
         for claim in &claims {
-            by_subject.entry(claim.subject.as_str()).or_default().push(claim);
+            by_subject
+                .entry(claim.subject.as_str())
+                .or_default()
+                .push(claim);
         }
 
         let mut pairs = Vec::new();
@@ -261,7 +264,11 @@ where
             }
         }
 
-        debug!("Contradiction candidates: {} claims, {} pairs", examined, pairs.len());
+        debug!(
+            "Contradiction candidates: {} claims, {} pairs",
+            examined,
+            pairs.len()
+        );
         Ok((examined, pairs))
     }
 
@@ -349,7 +356,8 @@ where
     async fn call_llm(&self, prompt: String) -> Result<String, JanitorError> {
         let llm = Arc::clone(&self.llm);
         tokio::task::spawn_blocking(move || {
-            llm.generate(&prompt).map_err(|e| JanitorError::Llm(e.to_string()))
+            llm.generate(&prompt)
+                .map_err(|e| JanitorError::Llm(e.to_string()))
         })
         .await
         .map_err(|e| JanitorError::Llm(format!("Task join error: {}", e)))?
@@ -432,7 +440,10 @@ fn unix_now() -> u64 {
 }
 
 fn elapsed_ms(start: SystemTime) -> u64 {
-    start.elapsed().unwrap_or(Duration::from_secs(0)).as_millis() as u64
+    start
+        .elapsed()
+        .unwrap_or(Duration::from_secs(0))
+        .as_millis() as u64
 }
 
 #[cfg(test)]
@@ -457,12 +468,16 @@ mod tests {
         store.assert_claim(claim).unwrap()
     }
 
-    const YES: &str = r#"{"contradicts": true, "confidence": 0.9, "rationale": "incompatible values"}"#;
+    const YES: &str =
+        r#"{"contradicts": true, "confidence": 0.9, "rationale": "incompatible values"}"#;
     const NO: &str = r#"{"contradicts": false, "confidence": 0.8, "rationale": "unrelated"}"#;
 
     #[test]
     fn test_parse_response() {
-        assert_eq!(parse_response(YES), Some((true, 0.9, "incompatible values".to_string())));
+        assert_eq!(
+            parse_response(YES),
+            Some((true, 0.9, "incompatible values".to_string()))
+        );
         let (c, _, _) = parse_response(NO).unwrap();
         assert!(!c);
         // Markdown-fenced JSON is tolerated.
@@ -482,7 +497,8 @@ mod tests {
         let a = insert(&mut store, "sky:today", "color:blue");
         let b = insert(&mut store, "sky:today", "color:green");
 
-        let janitor = ContradictionJanitor::new(MockProvider::new(YES), ContradictionConfig::default());
+        let janitor =
+            ContradictionJanitor::new(MockProvider::new(YES), ContradictionConfig::default());
         let report = janitor.scan_pass(&mut store).await.unwrap();
 
         assert_eq!(report.pairs_evaluated, 1);
@@ -502,7 +518,8 @@ mod tests {
         insert(&mut store, "sky:today", "color:blue");
         insert(&mut store, "sky:today", "color:green");
 
-        let janitor = ContradictionJanitor::new(MockProvider::new(NO), ContradictionConfig::default());
+        let janitor =
+            ContradictionJanitor::new(MockProvider::new(NO), ContradictionConfig::default());
         let report = janitor.scan_pass(&mut store).await.unwrap();
 
         assert_eq!(report.pairs_evaluated, 1);
@@ -516,7 +533,8 @@ mod tests {
         insert(&mut store, "sky:today", "color:blue");
         insert(&mut store, "sky:today", "color:blue");
 
-        let janitor = ContradictionJanitor::new(MockProvider::new(YES), ContradictionConfig::default());
+        let janitor =
+            ContradictionJanitor::new(MockProvider::new(YES), ContradictionConfig::default());
         let report = janitor.scan_pass(&mut store).await.unwrap();
 
         assert_eq!(report.pairs_evaluated, 0);
@@ -547,10 +565,17 @@ mod tests {
         let b = insert(&mut store, "sky:today", "color:green");
         // Pre-existing relationship → the pair should not be re-evaluated.
         store
-            .add_relationship(Relationship::new(a, b, RelationshipType::Contradicts, 0.9, 1))
+            .add_relationship(Relationship::new(
+                a,
+                b,
+                RelationshipType::Contradicts,
+                0.9,
+                1,
+            ))
             .unwrap();
 
-        let janitor = ContradictionJanitor::new(MockProvider::new(YES), ContradictionConfig::default());
+        let janitor =
+            ContradictionJanitor::new(MockProvider::new(YES), ContradictionConfig::default());
         let report = janitor.scan_pass(&mut store).await.unwrap();
 
         assert_eq!(report.pairs_evaluated, 0);
@@ -587,10 +612,25 @@ mod real_llm_tests {
     async fn test_real_llm_contradiction() {
         let mut store = SqliteStore::new(":memory:", false, 0).unwrap();
         // Two mutually exclusive claims about the same subject/property.
-        let a = insert(&mut store, "location:paris", "capital_of:is", "country:france");
-        let b = insert(&mut store, "location:paris", "capital_of:is", "country:germany");
+        let a = insert(
+            &mut store,
+            "location:paris",
+            "capital_of:is",
+            "country:france",
+        );
+        let b = insert(
+            &mut store,
+            "location:paris",
+            "capital_of:is",
+            "country:germany",
+        );
         // A clearly non-contradictory, unrelated pair sharing the subject.
-        insert(&mut store, "location:paris", "population:approx", "count:2100000");
+        insert(
+            &mut store,
+            "location:paris",
+            "population:approx",
+            "count:2100000",
+        );
 
         let llm = OllamaProvider::new("http://localhost:11434", "qwen2.5:7b");
         let janitor = ContradictionJanitor::new(llm, ContradictionConfig::default());
@@ -598,14 +638,18 @@ mod real_llm_tests {
 
         println!("\n{}", report.summary());
         for c in &report.contradictions {
-            println!("  contradiction: {} <-> {} ({:.2})\n    {}", c.from, c.to, c.confidence, c.rationale);
+            println!(
+                "  contradiction: {} <-> {} ({:.2})\n    {}",
+                c.from, c.to, c.confidence, c.rationale
+            );
         }
 
         // The france/germany pair must be detected as a contradiction and recorded.
         let rels = store.get_relationships(a).unwrap();
         assert!(
-            rels.iter().any(|r| r.relationship_type == RelationshipType::Contradicts
-                && (r.to_claim == b || r.from_claim == b)),
+            rels.iter()
+                .any(|r| r.relationship_type == RelationshipType::Contradicts
+                    && (r.to_claim == b || r.from_claim == b)),
             "expected a recorded contradiction between the france and germany claims"
         );
     }

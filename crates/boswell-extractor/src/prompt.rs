@@ -18,25 +18,25 @@ impl PromptBuilder {
             existing_claims: Vec::new(),
         }
     }
-    
+
     /// Add existing claims as context for deduplication
     pub fn with_existing_claims(mut self, claims: Vec<ClaimSummary>) -> Self {
         self.existing_claims = claims;
         self
     }
-    
+
     /// Build the complete extraction prompt
     pub fn build(&self) -> String {
         let mut prompt = String::new();
-        
+
         // 1. Instruction and format specification
         prompt.push_str(EXTRACTION_INSTRUCTIONS);
         prompt.push_str("\n\n");
-        
+
         // 2. Namespace context
         prompt.push_str(&format!("Target namespace: {}\n", self.namespace));
         prompt.push_str(&format!("Domain: {}\n\n", self.infer_domain()));
-        
+
         // 3. Deduplication hints (if any)
         if !self.existing_claims.is_empty() {
             prompt.push_str("Existing claims in this namespace (avoid duplicating):\n");
@@ -52,26 +52,26 @@ impl PromptBuilder {
             }
             prompt.push('\n');
         }
-        
+
         // 4. The text to analyze
         prompt.push_str("Text to analyze:\n");
         prompt.push_str("---\n");
         prompt.push_str(&self.text);
         prompt.push_str("\n---\n\n");
-        
+
         // 5. Output format reminder
         prompt.push_str(OUTPUT_FORMAT_REMINDER);
-        
+
         prompt
     }
-    
+
     /// Infer the domain from the namespace
     fn infer_domain(&self) -> String {
         let parts: Vec<&str> = self.namespace.split(':').collect();
         if parts.is_empty() {
             return "General knowledge".to_string();
         }
-        
+
         match parts[0] {
             "person" => "Personal information",
             "project" => "Project documentation",
@@ -81,7 +81,8 @@ impl PromptBuilder {
             "medical" => "Medical information",
             "legal" => "Legal documentation",
             _ => "General knowledge",
-        }.to_string()
+        }
+        .to_string()
     }
 }
 
@@ -134,11 +135,8 @@ mod tests {
 
     #[test]
     fn test_prompt_includes_namespace() {
-        let builder = PromptBuilder::new(
-            "Test text".to_string(),
-            "test:namespace".to_string(),
-        );
-        
+        let builder = PromptBuilder::new("Test text".to_string(), "test:namespace".to_string());
+
         let prompt = builder.build();
         assert!(prompt.contains("test:namespace"));
         assert!(prompt.contains("Target namespace:"));
@@ -150,27 +148,23 @@ mod tests {
             "Alice works at Acme Corp".to_string(),
             "test:ns".to_string(),
         );
-        
+
         let prompt = builder.build();
         assert!(prompt.contains("Alice works at Acme Corp"));
     }
 
     #[test]
     fn test_prompt_includes_existing_claims() {
-        let existing = vec![
-            ClaimSummary {
-                subject: "person:bob".to_string(),
-                predicate: "works_at".to_string(),
-                object: "company:acme".to_string(),
-                confidence: (0.9, 0.95),
-            },
-        ];
-        
-        let builder = PromptBuilder::new(
-            "Test text".to_string(),
-            "test:ns".to_string(),
-        ).with_existing_claims(existing);
-        
+        let existing = vec![ClaimSummary {
+            subject: "person:bob".to_string(),
+            predicate: "works_at".to_string(),
+            object: "company:acme".to_string(),
+            confidence: (0.9, 0.95),
+        }];
+
+        let builder = PromptBuilder::new("Test text".to_string(), "test:ns".to_string())
+            .with_existing_claims(existing);
+
         let prompt = builder.build();
         assert!(prompt.contains("Existing claims"));
         assert!(prompt.contains("person:bob"));
@@ -180,11 +174,8 @@ mod tests {
 
     #[test]
     fn test_prompt_includes_instructions() {
-        let builder = PromptBuilder::new(
-            "Test text".to_string(),
-            "test:ns".to_string(),
-        );
-        
+        let builder = PromptBuilder::new("Test text".to_string(), "test:ns".to_string());
+
         let prompt = builder.build();
         assert!(prompt.contains("Extract discrete, atomic claims"));
         assert!(prompt.contains("confidence_lower"));
@@ -193,22 +184,13 @@ mod tests {
 
     #[test]
     fn test_domain_inference() {
-        let builder = PromptBuilder::new(
-            "Test".to_string(),
-            "engineering:project".to_string(),
-        );
+        let builder = PromptBuilder::new("Test".to_string(), "engineering:project".to_string());
         assert_eq!(builder.infer_domain(), "Software engineering");
-        
-        let builder = PromptBuilder::new(
-            "Test".to_string(),
-            "medical:records".to_string(),
-        );
+
+        let builder = PromptBuilder::new("Test".to_string(), "medical:records".to_string());
         assert_eq!(builder.infer_domain(), "Medical information");
-        
-        let builder = PromptBuilder::new(
-            "Test".to_string(),
-            "unknown:type".to_string(),
-        );
+
+        let builder = PromptBuilder::new("Test".to_string(), "unknown:type".to_string());
         assert_eq!(builder.infer_domain(), "General knowledge");
     }
 
@@ -222,12 +204,10 @@ mod tests {
                 confidence: (0.9, 0.95),
             })
             .collect();
-        
-        let builder = PromptBuilder::new(
-            "Test".to_string(),
-            "test:ns".to_string(),
-        ).with_existing_claims(existing);
-        
+
+        let builder = PromptBuilder::new("Test".to_string(), "test:ns".to_string())
+            .with_existing_claims(existing);
+
         let prompt = builder.build();
         // Should only include first 20
         assert!(prompt.contains("entity:0"));

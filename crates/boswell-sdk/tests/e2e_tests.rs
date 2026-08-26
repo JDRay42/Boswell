@@ -8,8 +8,8 @@
 //! 2. Start Router: `cargo run -p boswell-router --config config/router.toml`
 //! 3. Run tests: `cargo test -p boswell-sdk --test e2e_tests -- --ignored`
 
-use boswell_sdk::{BoswellClient, QueryFilter, SdkError};
 use boswell_domain::Tier;
+use boswell_sdk::{BoswellClient, QueryFilter, SdkError};
 
 #[tokio::test]
 async fn test_sdk_not_connected_error() {
@@ -88,7 +88,10 @@ async fn test_e2e_full_flow() {
     let mut client = BoswellClient::new("http://localhost:8080");
 
     // Connect to router
-    client.connect().await.expect("Failed to connect - is Router running?");
+    client
+        .connect()
+        .await
+        .expect("Failed to connect - is Router running?");
 
     // Assert a claim
     let claim_id = client
@@ -115,11 +118,11 @@ async fn test_e2e_full_flow() {
         .expect("Failed to query claims");
 
     assert!(!claims.is_empty());
-    
+
     // Find our claim
     let our_claim = claims.iter().find(|c| c.id == claim_id);
     assert!(our_claim.is_some());
-    
+
     let claim = our_claim.unwrap();
     assert_eq!(claim.namespace, "test_e2e");
     assert_eq!(claim.subject, "Alice");
@@ -143,12 +146,26 @@ async fn test_e2e_batch_operations() {
 
     // Assert multiple claims
     let id1 = client
-        .assert("test_batch", "A", "type", "one", Some(0.9), Some(Tier::Task))
+        .assert(
+            "test_batch",
+            "A",
+            "type",
+            "one",
+            Some(0.9),
+            Some(Tier::Task),
+        )
         .await
         .expect("Failed to assert claim 1");
 
     let id2 = client
-        .assert("test_batch", "B", "type", "two", Some(0.8), Some(Tier::Task))
+        .assert(
+            "test_batch",
+            "B",
+            "type",
+            "two",
+            Some(0.8),
+            Some(Tier::Task),
+        )
         .await
         .expect("Failed to assert claim 2");
 

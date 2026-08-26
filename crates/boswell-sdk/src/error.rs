@@ -57,11 +57,13 @@ impl From<reqwest::Error> for SdkError {
 impl From<tonic::Status> for SdkError {
     fn from(status: tonic::Status) -> Self {
         use tonic::Code;
-        
+
         match status.code() {
             Code::Unauthenticated => SdkError::AuthError(status.message().to_string()),
             Code::PermissionDenied => SdkError::AuthError(status.message().to_string()),
-            Code::Unavailable => SdkError::ConnectionError(format!("gRPC unavailable: {}", status.message())),
+            Code::Unavailable => {
+                SdkError::ConnectionError(format!("gRPC unavailable: {}", status.message()))
+            }
             Code::DeadlineExceeded => SdkError::ConnectionError("Request timeout".to_string()),
             _ => SdkError::GrpcError(format!("{}: {}", status.code(), status.message())),
         }

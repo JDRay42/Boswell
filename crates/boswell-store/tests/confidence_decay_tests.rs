@@ -35,7 +35,10 @@ fn test_recompute_then_read_is_decayed() {
     let n = store.recompute_confidence_cache(&cfg, now).unwrap();
     assert_eq!(n, 1);
 
-    let (lo, hi) = store.get_effective_confidence(id, &cfg, now).unwrap().unwrap();
+    let (lo, hi) = store
+        .get_effective_confidence(id, &cfg, now)
+        .unwrap()
+        .unwrap();
     assert!((lo - 0.4).abs() < 1e-6, "lower was {lo}");
     assert!((hi - 0.45).abs() < 1e-6, "upper was {hi}");
 }
@@ -49,7 +52,10 @@ fn test_get_effective_computes_on_cache_miss() {
 
     // No recompute pass ran: the value is computed on demand from base + age.
     let now = CREATED + TASK_HALF_LIFE;
-    let (lo, hi) = store.get_effective_confidence(id, &cfg, now).unwrap().unwrap();
+    let (lo, hi) = store
+        .get_effective_confidence(id, &cfg, now)
+        .unwrap()
+        .unwrap();
     assert!((lo - 0.4).abs() < 1e-6);
     assert!((hi - 0.45).abs() < 1e-6);
 }
@@ -84,7 +90,10 @@ fn test_stale_cache_is_recomputed_on_read() {
     // Read far later (well past the freshness window): the stale entry must be
     // recomputed to the two-half-life value, not returned as 0.4/0.45.
     let now2 = CREATED + 2 * TASK_HALF_LIFE;
-    let (lo, hi) = store.get_effective_confidence(id, &cfg, now2).unwrap().unwrap();
+    let (lo, hi) = store
+        .get_effective_confidence(id, &cfg, now2)
+        .unwrap()
+        .unwrap();
     assert!((lo - 0.2).abs() < 1e-6, "lower was {lo}");
     assert!((hi - 0.225).abs() < 1e-6, "upper was {hi}");
 }

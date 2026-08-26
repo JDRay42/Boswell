@@ -59,22 +59,21 @@
 
 #![warn(missing_docs)]
 
-mod error;
-mod config;
-mod types;
-mod prompt;
 mod chunking;
-mod parser;
+mod config;
+mod error;
 mod extractor;
+mod parser;
+mod prompt;
+mod types;
 
 #[cfg(test)]
 mod tests;
 
+pub use config::{ChunkStrategy, ExtractorConfig};
 pub use error::ExtractorError;
-pub use config::{ExtractorConfig, ChunkStrategy};
-pub use types::{
-    ExtractionRequest, ExtractionResult, ClaimResult, ClaimSummary,
-    ExtractionFailure, ExtractionMetadata,
-};
 pub use extractor::Extractor;
-
+pub use types::{
+    ClaimResult, ClaimSummary, ExtractionFailure, ExtractionMetadata, ExtractionRequest,
+    ExtractionResult,
+};

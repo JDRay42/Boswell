@@ -36,7 +36,10 @@ pub async fn execute_forget(
     // Parse IDs
     let claim_ids: Vec<ClaimId> = ids
         .iter()
-        .map(|id| ClaimId::from_string(id).map_err(|e| CliError::InvalidInput(format!("Invalid ID '{}': {}", id, e))))
+        .map(|id| {
+            ClaimId::from_string(id)
+                .map_err(|e| CliError::InvalidInput(format!("Invalid ID '{}': {}", id, e)))
+        })
         .collect::<Result<Vec<_>>>()?;
 
     // Confirm deletion unless --yes is specified
@@ -46,10 +49,10 @@ pub async fn execute_forget(
             println!("  - {}", id);
         }
         print!("Continue? [y/N] ");
-        
+
         let mut response = String::new();
         io::stdin().read_line(&mut response)?;
-        
+
         if !response.trim().eq_ignore_ascii_case("y") {
             println!("{}", formatter.info("Operation cancelled"));
             return Ok(());
@@ -58,7 +61,7 @@ pub async fn execute_forget(
 
     // Delete claims
     let success = client.forget(claim_ids).await?;
-    
+
     if success {
         println!("{}", formatter.bulk_result("Deleted", ids.len()));
     } else {
@@ -71,14 +74,18 @@ pub async fn execute_forget(
 /// Read IDs from a file (one per line).
 fn read_ids_from_file(path: &str) -> Result<Vec<String>> {
     let content = fs::read_to_string(path)?;
-    Ok(content.lines().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+    Ok(content
+        .lines()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect())
 }
 
 /// Read IDs from stdin (one per line).
 fn read_ids_from_stdin() -> Result<Vec<String>> {
     let stdin = io::stdin();
     let mut ids = Vec::new();
-    
+
     for line in stdin.lock().lines() {
         let line = line?;
         let trimmed = line.trim();
@@ -86,7 +93,7 @@ fn read_ids_from_stdin() -> Result<Vec<String>> {
             ids.push(trimmed.to_string());
         }
     }
-    
+
     Ok(ids)
 }
 
@@ -101,9 +108,9 @@ mod tests {
         let mut file = NamedTempFile::new().unwrap();
         writeln!(file, "01HN5Z3K8QYWG9V2B1MXFK8RWE").unwrap();
         writeln!(file, "01HN5Z3K8QYWG9V2B1MXFK8RWF").unwrap();
-        writeln!(file, "").unwrap(); // Empty line should be ignored
+        writeln!(file).unwrap(); // Empty line should be ignored
         writeln!(file, "  01HN5Z3K8QYWG9V2B1MXFK8RWG  ").unwrap(); // Whitespace should be trimmed
-        
+
         let ids = read_ids_from_file(file.path().to_str().unwrap()).unwrap();
         assert_eq!(ids.len(), 3);
         assert_eq!(ids[2], "01HN5Z3K8QYWG9V2B1MXFK8RWG");

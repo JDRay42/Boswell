@@ -1,9 +1,9 @@
 //! Forget tool - Remove claims from Boswell
 
-use boswell_sdk::BoswellClient;
-use boswell_domain::ClaimId;
-use serde::{Deserialize, Serialize};
 use crate::error::McpError;
+use boswell_domain::ClaimId;
+use boswell_sdk::BoswellClient;
+use serde::{Deserialize, Serialize};
 
 /// Parameters for forgetting claims
 #[derive(Debug, Deserialize)]

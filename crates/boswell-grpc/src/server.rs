@@ -2,9 +2,9 @@
 //!
 //! Handles server initialization, TLS setup, and graceful shutdown.
 
+use boswell_domain::traits::ClaimStore;
 use std::sync::{Arc, Mutex};
 use tonic::transport::Server;
-use boswell_domain::traits::ClaimStore;
 
 use crate::proto::bos_well_service_server::BosWellServiceServer;
 use crate::service::BosWellServiceImpl;
@@ -14,16 +14,16 @@ use crate::service::BosWellServiceImpl;
 pub struct ServerConfig {
     /// Server listen address
     pub addr: String,
-    
+
     /// Server port
     pub port: u16,
-    
+
     /// Enable TLS (per ADR-017)
     pub enable_tls: bool,
-    
+
     /// TLS certificate path
     pub tls_cert_path: Option<String>,
-    
+
     /// TLS key path
     pub tls_key_path: Option<String>,
 }
@@ -49,7 +49,7 @@ impl ServerConfig {
             ..Default::default()
         }
     }
-    
+
     /// Enable TLS with certificate paths
     pub fn with_tls(mut self, cert_path: impl Into<String>, key_path: impl Into<String>) -> Self {
         self.enable_tls = true;
@@ -57,7 +57,7 @@ impl ServerConfig {
         self.tls_key_path = Some(key_path.into());
         self
     }
-    
+
     /// Get the full server address
     pub fn full_address(&self) -> String {
         format!("{}:{}", self.addr, self.port)
@@ -78,23 +78,23 @@ where
     S::Error: std::fmt::Debug,
 {
     let addr = config.full_address().parse()?;
-    
+
     let service = BosWellServiceImpl::new(store);
     let service_server = BosWellServiceServer::new(service);
-    
+
     println!("BosWell gRPC server starting on {}", addr);
-    
+
     if config.enable_tls {
         // TLS configuration (placeholder for Phase 2)
         println!("TLS enabled (certificate validation deferred)");
         // TODO: Load and validate certificates
     }
-    
+
     Server::builder()
         .add_service(service_server)
         .serve(addr)
         .await?;
-    
+
     Ok(())
 }
 
@@ -112,9 +112,8 @@ mod tests {
 
     #[test]
     fn test_config_with_tls() {
-        let config = ServerConfig::new("0.0.0.0", 50052)
-            .with_tls("cert.pem", "key.pem");
-        
+        let config = ServerConfig::new("0.0.0.0", 50052).with_tls("cert.pem", "key.pem");
+
         assert!(config.enable_tls);
         assert_eq!(config.tls_cert_path, Some("cert.pem".to_string()));
         assert_eq!(config.tls_key_path, Some("key.pem".to_string()));

@@ -2,8 +2,8 @@
 //!
 //! Handles bidirectional conversion between gRPC protobuf types and internal domain types.
 
-use boswell_domain::{Claim, ClaimId, ConfidenceInterval as DomainConfidence, Tier as DomainTier};
 use crate::proto;
+use boswell_domain::{Claim, ClaimId, ConfidenceInterval as DomainConfidence, Tier as DomainTier};
 
 /// Error type for conversion failures
 #[derive(Debug, thiserror::Error)]
@@ -11,15 +11,15 @@ pub enum ConversionError {
     /// Invalid ULID string
     #[error("Invalid claim ID: {0}")]
     InvalidClaimId(String),
-    
+
     /// Invalid confidence interval
     #[error("Invalid confidence interval: {0}")]
     InvalidConfidence(String),
-    
+
     /// Invalid tier value
     #[error("Invalid tier value: {0}")]
     InvalidTier(i32),
-    
+
     /// Missing required field
     #[error("Missing required field: {0}")]
     MissingField(&'static str),
@@ -50,22 +50,22 @@ pub fn tier_to_proto(tier: &str) -> proto::Tier {
 
 /// Convert proto ConfidenceInterval to domain ConfidenceInterval
 pub fn confidence_from_proto(
-    conf: Option<proto::ConfidenceInterval>
+    conf: Option<proto::ConfidenceInterval>,
 ) -> Result<DomainConfidence, ConversionError> {
     let conf = conf.ok_or(ConversionError::MissingField("confidence"))?;
-    
+
     if !(0.0..=1.0).contains(&conf.lower) || !(0.0..=1.0).contains(&conf.upper) {
         return Err(ConversionError::InvalidConfidence(
-            "bounds must be in [0, 1]".to_string()
+            "bounds must be in [0, 1]".to_string(),
         ));
     }
-    
+
     if conf.lower > conf.upper {
         return Err(ConversionError::InvalidConfidence(
-            "lower must be <= upper".to_string()
+            "lower must be <= upper".to_string(),
         ));
     }
-    
+
     Ok(DomainConfidence::new(conf.lower, conf.upper))
 }
 
@@ -79,18 +79,18 @@ pub fn confidence_to_proto(conf: DomainConfidence) -> proto::ConfidenceInterval 
 
 /// Convert proto Claim to domain Claim
 pub fn claim_from_proto(claim: proto::Claim) -> Result<Claim, ConversionError> {
-    let id = ClaimId::from_string(&claim.id)
-        .map_err(ConversionError::InvalidClaimId)?;
-    
+    let id = ClaimId::from_string(&claim.id).map_err(ConversionError::InvalidClaimId)?;
+
     let confidence = confidence_from_proto(claim.confidence)?;
-    let tier = tier_from_proto(proto::Tier::try_from(claim.tier)
-        .map_err(|_| ConversionError::InvalidTier(claim.tier))?)?;
-    
+    let tier = tier_from_proto(
+        proto::Tier::try_from(claim.tier).map_err(|_| ConversionError::InvalidTier(claim.tier))?,
+    )?;
+
     let created_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    
+
     // Default to a direct assertion when the client omits the origin.
     let source_type = if claim.source_type.is_empty() {
         Claim::SOURCE_ASSERTION.to_string()
@@ -141,7 +141,7 @@ mod tests {
             ("project", proto::Tier::Project),
             ("permanent", proto::Tier::Permanent),
         ];
-        
+
         for (tier_str, proto_tier) in tiers {
             let proto = tier_to_proto(tier_str);
             assert_eq!(proto, proto_tier);
@@ -163,7 +163,7 @@ mod tests {
     fn test_invalid_confidence() {
         let invalid = proto::ConfidenceInterval {
             lower: 0.9,
-            upper: 0.1,  // Invalid: lower > upper
+            upper: 0.1, // Invalid: lower > upper
         };
         assert!(confidence_from_proto(Some(invalid)).is_err());
     }

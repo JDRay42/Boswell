@@ -87,4 +87,3 @@ mod tests {
         assert_eq!(config.token_expiry_secs, 3600);
     }
 }
-

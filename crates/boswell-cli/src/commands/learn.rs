@@ -155,7 +155,7 @@ mod tests {
             "object": "beverage:espresso"
         }
         "#;
-        
+
         let def: ClaimDefinition = serde_json::from_str(json).unwrap();
         assert_eq!(def.subject, "user:alice");
         assert_eq!(def.confidence.lower, 0.5);

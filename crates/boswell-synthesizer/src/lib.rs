@@ -72,8 +72,8 @@
 #![warn(missing_docs)]
 
 mod clustering;
-mod config;
 mod confidence;
+mod config;
 mod error;
 mod parser;
 mod prompt;

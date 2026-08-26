@@ -4,21 +4,17 @@
 //! For Phase 2, we test the core SDK behavior with unit tests.
 //! Full integration testing is implemented in Phase 3 with async SDK.
 
-use boswell_sdk::{BoswellClient, SdkError};
+use boswell_sdk::BoswellClient;
 
 #[tokio::test]
 async fn test_sdk_not_connected_error() {
     let mut client = BoswellClient::new("http://localhost:8080");
-    
-    // Try to assert without connecting
-    let result = client.assert(
-        "test",
-        "subject",
-        "predicate",
-        "object",
-        Some(0.9),
-        None,
-    ).await;
+
+    // Try to assert without connecting — this should fail.
+    let result = client
+        .assert("test", "subject", "predicate", "object", Some(0.9), None)
+        .await;
+    assert!(result.is_err());
 }
 
 #[test]
@@ -28,5 +24,3 @@ fn test_sdk_client_creation() {
     // Connection happens on connect()
     std::mem::drop(client); // Silence unused variable warning
 }
-
-

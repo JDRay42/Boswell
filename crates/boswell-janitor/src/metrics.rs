@@ -10,16 +10,16 @@ use std::collections::HashMap;
 pub struct JanitorMetrics {
     /// Claims deleted per tier
     pub deleted: HashMap<Tier, usize>,
-    
+
     /// Claims promoted per tier (from → to)
     pub promoted: HashMap<Tier, usize>,
-    
+
     /// Claims demoted per tier (from → to)
     pub demoted: HashMap<Tier, usize>,
-    
+
     /// Total sweep iterations completed
     pub sweep_count: usize,
-    
+
     /// Total runtime in seconds
     pub total_runtime_secs: u64,
 }

@@ -102,8 +102,10 @@ impl SessionManager {
     /// Validate a session token and extract claims
     pub fn validate_token(&self, token: &str) -> Result<SessionClaims, SessionError> {
         let validation = Validation::default();
-        let token_data = decode::<SessionClaims>(token, &self.decoding_key, &validation)
-            .map_err(|e| match e.kind() {
+        let token_data =
+            decode::<SessionClaims>(token, &self.decoding_key, &validation).map_err(|e| match e
+                .kind()
+            {
                 jsonwebtoken::errors::ErrorKind::ExpiredSignature => SessionError::TokenExpired,
                 _ => SessionError::InvalidToken,
             })?;
@@ -113,10 +115,7 @@ impl SessionManager {
 }
 
 /// Create a session response with topology information
-pub fn create_session_response(
-    token: String,
-    instances: Vec<InstanceInfo>,
-) -> SessionResponse {
+pub fn create_session_response(token: String, instances: Vec<InstanceInfo>) -> SessionResponse {
     let mode = if instances.len() == 1 {
         "instance"
     } else {

@@ -1,9 +1,9 @@
 //! Assert tool - Add a new claim to Boswell
 
-use boswell_sdk::BoswellClient;
-use boswell_domain::Tier;
-use serde::{Deserialize, Serialize};
 use crate::error::McpError;
+use boswell_domain::Tier;
+use boswell_sdk::BoswellClient;
+use serde::{Deserialize, Serialize};
 
 /// Parameters for asserting a claim
 #[derive(Debug, Deserialize)]
@@ -53,7 +53,8 @@ pub async fn handle_assert(
     let tier = match params.tier {
         Some(ref t) => {
             // Validate tier by parsing
-            let tier_enum = t.parse::<Tier>()
+            let tier_enum = t
+                .parse::<Tier>()
                 .map_err(|_| McpError::InvalidRequest(format!("Invalid tier: {}", t)))?;
             Some(tier_enum)
         }

@@ -5,13 +5,13 @@
 pub struct ProvenanceEntry {
     /// Source identifier (e.g., "user:alice", "agent:gpt4", "synthesis:v1")
     pub source: String,
-    
+
     /// Timestamp when this provenance was recorded
     pub timestamp: u64,
-    
+
     /// Optional rationale or reasoning
     pub rationale: Option<String>,
-    
+
     /// Source type (e.g., "user", "agent", "extraction", "synthesis")
     pub source_type: String,
 }

@@ -31,4 +31,3 @@ mod session;
 
 pub use client::{BoswellClient, QueryFilter};
 pub use error::SdkError;
-

@@ -5,31 +5,31 @@
 pub struct ValidationConfig {
     /// Enable entity format validation (namespace:value)
     pub validate_entity_format: bool,
-    
+
     /// Enable confidence bounds checking
     pub validate_confidence_bounds: bool,
-    
+
     /// Enable duplicate detection (exact match)
     pub validate_duplicates: bool,
-    
+
     /// Enable semantic duplicate detection (requires vector search)
     pub validate_semantic_duplicates: bool,
-    
+
     /// Similarity threshold for semantic duplicate detection (0.0-1.0)
     pub semantic_duplicate_threshold: f64,
-    
+
     /// Enable tier appropriateness checking
     pub validate_tier_appropriateness: bool,
-    
+
     /// Minimum confidence lower bound for ephemeral tier
     pub ephemeral_min_confidence: f64,
-    
+
     /// Minimum confidence lower bound for task tier
     pub task_min_confidence: f64,
-    
+
     /// Minimum confidence lower bound for project tier
     pub project_min_confidence: f64,
-    
+
     /// Minimum confidence lower bound for permanent tier
     pub permanent_min_confidence: f64,
 }
@@ -67,7 +67,7 @@ impl ValidationConfig {
             permanent_min_confidence: 0.0,
         }
     }
-    
+
     /// Create a strict configuration (all validations enabled)
     pub fn strict() -> Self {
         Self {

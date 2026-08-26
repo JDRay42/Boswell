@@ -8,16 +8,16 @@ use serde::{Deserialize, Serialize};
 pub struct ExtractionRequest {
     /// Text to extract claims from
     pub text: String,
-    
+
     /// Target namespace for claims
     pub namespace: String,
-    
+
     /// Tier for the extracted claims
     pub tier: String,
-    
+
     /// Source identifier (hash or user-provided)
     pub source_id: String,
-    
+
     /// Optional existing claims for deduplication hints
     pub existing_context: Option<Vec<ClaimSummary>>,
 }
@@ -27,13 +27,13 @@ pub struct ExtractionRequest {
 pub struct ClaimSummary {
     /// Subject of the claim
     pub subject: String,
-    
+
     /// Predicate/relationship
     pub predicate: String,
-    
+
     /// Object of the claim
     pub object: String,
-    
+
     /// Confidence interval
     pub confidence: (f64, f64),
 }
@@ -43,13 +43,13 @@ pub struct ClaimSummary {
 pub struct ExtractionResult {
     /// Claims that were newly created
     pub claims_created: Vec<ClaimResult>,
-    
+
     /// Claims that corroborated existing claims
     pub claims_corroborated: Vec<ClaimResult>,
-    
+
     /// Claims that failed to be created
     pub failures: Vec<ExtractionFailure>,
-    
+
     /// Metadata about the extraction
     pub metadata: ExtractionMetadata,
 }
@@ -59,19 +59,19 @@ pub struct ExtractionResult {
 pub struct ClaimResult {
     /// ID of the claim
     pub claim_id: ClaimId,
-    
+
     /// Subject entity
     pub subject: String,
-    
+
     /// Predicate/relationship
     pub predicate: String,
-    
+
     /// Object entity or value
     pub object: String,
-    
+
     /// Confidence interval
     pub confidence: (f64, f64),
-    
+
     /// Original text that led to this claim
     pub raw_expression: String,
 }
@@ -81,7 +81,7 @@ pub struct ClaimResult {
 pub struct ExtractionFailure {
     /// Reason for failure
     pub reason: String,
-    
+
     /// Text fragment that failed to parse
     pub raw_text: String,
 }
@@ -91,16 +91,16 @@ pub struct ExtractionFailure {
 pub struct ExtractionMetadata {
     /// Source identifier
     pub source_id: String,
-    
+
     /// Timestamp when extraction occurred
     pub timestamp: u64,
-    
+
     /// Name of the LLM model used
     pub model_name: String,
-    
+
     /// Total number of claims attempted
     pub total_claims_attempted: usize,
-    
+
     /// Processing time in milliseconds
     pub processing_time_ms: u64,
 }
@@ -132,10 +132,16 @@ impl ClaimCandidate {
             return Err("raw_expression is empty".to_string());
         }
         if self.confidence_lower < 0.0 || self.confidence_lower > 1.0 {
-            return Err(format!("confidence_lower {} out of range [0.0, 1.0]", self.confidence_lower));
+            return Err(format!(
+                "confidence_lower {} out of range [0.0, 1.0]",
+                self.confidence_lower
+            ));
         }
         if self.confidence_upper < 0.0 || self.confidence_upper > 1.0 {
-            return Err(format!("confidence_upper {} out of range [0.0, 1.0]", self.confidence_upper));
+            return Err(format!(
+                "confidence_upper {} out of range [0.0, 1.0]",
+                self.confidence_upper
+            ));
         }
         if self.confidence_lower > self.confidence_upper {
             return Err(format!(

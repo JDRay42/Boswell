@@ -10,15 +10,16 @@ pub fn parse_llm_response(response: &str) -> Result<Vec<ClaimCandidate>, Extract
     // Try to extract JSON from response
     // LLMs sometimes wrap JSON in markdown code blocks
     let json_str = extract_json(response)?;
-    
+
     // Parse as JSON
     let json: Value = serde_json::from_str(&json_str)
         .map_err(|e| ExtractorError::InvalidFormat(format!("JSON parse error: {}", e)))?;
-    
+
     // Expect an array
-    let claims_array = json.as_array()
+    let claims_array = json
+        .as_array()
         .ok_or_else(|| ExtractorError::InvalidFormat("Expected JSON array".to_string()))?;
-    
+
     // Parse each claim
     let mut claims = Vec::new();
     for (idx, claim_json) in claims_array.iter().enumerate() {
@@ -36,24 +37,24 @@ pub fn parse_llm_response(response: &str) -> Result<Vec<ClaimCandidate>, Extract
             }
         }
     }
-    
+
     Ok(claims)
 }
 
 /// Extract JSON from response, handling markdown code blocks
 fn extract_json(response: &str) -> Result<String, ExtractorError> {
     let trimmed = response.trim();
-    
+
     // Check if wrapped in markdown code block
     if trimmed.starts_with("```json") || trimmed.starts_with("```") {
         // Find the actual JSON content
         let lines: Vec<&str> = trimmed.lines().collect();
         if lines.len() < 2 {
             return Err(ExtractorError::InvalidFormat(
-                "Empty code block".to_string()
+                "Empty code block".to_string(),
             ));
         }
-        
+
         // Skip first line (```json or ```) and last line (```)
         let json_lines = &lines[1..lines.len().saturating_sub(1)];
         Ok(json_lines.join("\n"))
@@ -65,38 +66,45 @@ fn extract_json(response: &str) -> Result<String, ExtractorError> {
 
 /// Parse a single claim from JSON
 fn parse_claim_json(json: &Value) -> Result<ClaimCandidate, String> {
-    let obj = json.as_object()
+    let obj = json
+        .as_object()
         .ok_or_else(|| "Claim is not a JSON object".to_string())?;
-    
+
     // Extract required fields
-    let subject = obj.get("subject")
+    let subject = obj
+        .get("subject")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "Missing or invalid 'subject'".to_string())?
         .to_string();
-    
-    let predicate = obj.get("predicate")
+
+    let predicate = obj
+        .get("predicate")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "Missing or invalid 'predicate'".to_string())?
         .to_string();
-    
-    let object = obj.get("object")
+
+    let object = obj
+        .get("object")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "Missing or invalid 'object'".to_string())?
         .to_string();
-    
-    let confidence_lower = obj.get("confidence_lower")
+
+    let confidence_lower = obj
+        .get("confidence_lower")
         .and_then(|v| v.as_f64())
         .ok_or_else(|| "Missing or invalid 'confidence_lower'".to_string())?;
-    
-    let confidence_upper = obj.get("confidence_upper")
+
+    let confidence_upper = obj
+        .get("confidence_upper")
         .and_then(|v| v.as_f64())
         .ok_or_else(|| "Missing or invalid 'confidence_upper'".to_string())?;
-    
-    let raw_expression = obj.get("raw_expression")
+
+    let raw_expression = obj
+        .get("raw_expression")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "Missing or invalid 'raw_expression'".to_string())?
         .to_string();
-    
+
     Ok(ClaimCandidate {
         subject,
         predicate,
@@ -123,7 +131,7 @@ mod tests {
                 "raw_expression": "Alice works at Acme"
             }
         ]"#;
-        
+
         let claims = parse_llm_response(response).unwrap();
         assert_eq!(claims.len(), 1);
         assert_eq!(claims[0].subject, "person:alice");
@@ -145,7 +153,7 @@ mod tests {
     }
 ]
 ```"#;
-        
+
         let claims = parse_llm_response(response).unwrap();
         assert_eq!(claims.len(), 1);
         assert_eq!(claims[0].subject, "person:bob");
@@ -171,7 +179,7 @@ mod tests {
                 "raw_expression": "Bob manages Alice"
             }
         ]"#;
-        
+
         let claims = parse_llm_response(response).unwrap();
         assert_eq!(claims.len(), 2);
     }
@@ -198,7 +206,7 @@ mod tests {
                 "predicate": "works_at"
             }
         ]"#;
-        
+
         let claims = parse_llm_response(response).unwrap();
         // Should skip invalid claim
         assert_eq!(claims.len(), 0);
@@ -216,7 +224,7 @@ mod tests {
                 "raw_expression": "Alice works at Acme"
             }
         ]"#;
-        
+
         let claims = parse_llm_response(response).unwrap();
         // Should skip claim with invalid confidence
         assert_eq!(claims.len(), 0);
@@ -246,7 +254,7 @@ mod tests {
                 "raw_expression": "Charlie lives in Portland"
             }
         ]"#;
-        
+
         let claims = parse_llm_response(response).unwrap();
         // Should parse 2 valid claims, skip 1 invalid
         assert_eq!(claims.len(), 2);

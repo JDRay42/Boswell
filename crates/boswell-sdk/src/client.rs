@@ -4,10 +4,10 @@ use crate::error::SdkError;
 use crate::session::establish_session;
 use boswell_domain::{Claim, ClaimId, Tier};
 use boswell_grpc::proto::{
-    bos_well_service_client::BosWellServiceClient, AssertRequest, AssertResponse, ConfidenceInterval,
-    ForgetRequest, ForgetResponse, LearnRequest, LearnResponse, QueryFilter as GrpcQueryFilter,
-    QueryMode as GrpcQueryMode, QueryRequest, QueryResponse, SearchRequest, SearchResponse,
-    Tier as GrpcTier,
+    bos_well_service_client::BosWellServiceClient, AssertRequest, AssertResponse,
+    ConfidenceInterval, ForgetRequest, ForgetResponse, LearnRequest, LearnResponse,
+    QueryFilter as GrpcQueryFilter, QueryMode as GrpcQueryMode, QueryRequest, QueryResponse,
+    SearchRequest, SearchResponse, Tier as GrpcTier,
 };
 use tonic::transport::Channel;
 
@@ -103,15 +103,12 @@ impl BoswellClient {
         tier: Option<Tier>,
     ) -> Result<ClaimId, SdkError> {
         let mut retried = false;
-        
+
         loop {
             let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
             let token = self.session_token.as_ref().ok_or(SdkError::NotConnected)?;
 
-            let confidence_interval = confidence.map(|c| ConfidenceInterval {
-                lower: c,
-                upper: c,
-            });
+            let confidence_interval = confidence.map(|c| ConfidenceInterval { lower: c, upper: c });
 
             let tier_i32 = tier
                 .map(grpc_tier_from_domain_tier)
@@ -147,7 +144,7 @@ impl BoswellClient {
     /// Query claims
     pub async fn query(&mut self, filter: QueryFilter) -> Result<Vec<Claim>, SdkError> {
         let mut retried = false;
-        
+
         loop {
             let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
             let token = self.session_token.as_ref().ok_or(SdkError::NotConnected)?;
@@ -171,7 +168,7 @@ impl BoswellClient {
             match client.query(request).await {
                 Ok(r) => {
                     let query_response: QueryResponse = r.into_inner();
-                    
+
                     // Convert gRPC claims to domain claims
                     let claims: Result<Vec<Claim>, _> = query_response
                         .claims
@@ -179,7 +176,9 @@ impl BoswellClient {
                         .map(|c| grpc_claim_to_domain(&c))
                         .collect();
 
-                    return claims.map_err(|e| SdkError::GrpcError(format!("Failed to convert claim: {}", e)));
+                    return claims.map_err(|e| {
+                        SdkError::GrpcError(format!("Failed to convert claim: {}", e))
+                    });
                 }
                 Err(e) if matches!(e.code(), tonic::Code::Unauthenticated) && !retried => {
                     // Session expired - try to reconnect once
@@ -225,8 +224,9 @@ impl BoswellClient {
                         let proto_claim = item.claim.ok_or_else(|| {
                             SdkError::GrpcError("Search result missing claim".to_string())
                         })?;
-                        let claim = grpc_claim_to_domain(&proto_claim)
-                            .map_err(|e| SdkError::GrpcError(format!("Failed to convert claim: {}", e)))?;
+                        let claim = grpc_claim_to_domain(&proto_claim).map_err(|e| {
+                            SdkError::GrpcError(format!("Failed to convert claim: {}", e))
+                        })?;
                         results.push((claim, item.similarity as f32));
                     }
                     return Ok(results);
@@ -243,12 +243,15 @@ impl BoswellClient {
     /// Learn multiple claims in batch
     pub async fn learn(&mut self, claims: Vec<Claim>) -> Result<LearnResponse, SdkError> {
         let mut retried = false;
-        
+
         loop {
             let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
             let token = self.session_token.as_ref().ok_or(SdkError::NotConnected)?;
 
-            let grpc_claims: Vec<_> = claims.iter().map(|c| domain_claim_to_grpc(c.clone())).collect();
+            let grpc_claims: Vec<_> = claims
+                .iter()
+                .map(|c| domain_claim_to_grpc(c.clone()))
+                .collect();
 
             let request = LearnRequest {
                 claims: grpc_claims,
@@ -271,7 +274,7 @@ impl BoswellClient {
     /// Forget (evict) claims
     pub async fn forget(&mut self, claim_ids: Vec<ClaimId>) -> Result<bool, SdkError> {
         let mut retried = false;
-        
+
         'retry: loop {
             let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
             let token = self.session_token.as_ref().ok_or(SdkError::NotConnected)?;
@@ -375,7 +378,7 @@ fn grpc_claim_to_domain(claim: &boswell_grpc::proto::Claim) -> Result<Claim, Str
 }
 
 fn domain_claim_to_grpc(claim: Claim) -> boswell_grpc::proto::Claim {
-    // Convert tier string to proto Tier  
+    // Convert tier string to proto Tier
     let tier = Tier::parse(&claim.tier)
         .map(grpc_tier_from_domain_tier)
         .unwrap_or(GrpcTier::Unspecified as i32);
@@ -394,5 +397,3 @@ fn domain_claim_to_grpc(claim: Claim) -> boswell_grpc::proto::Claim {
         source_type: claim.source_type,
     }
 }
-
-

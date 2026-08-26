@@ -17,8 +17,8 @@ pub mod proto {
 }
 
 pub mod conversions;
-pub mod service;
 pub mod server;
+pub mod service;
 
+pub use server::{start_server, ServerConfig};
 pub use service::BosWellServiceImpl;
-pub use server::{ServerConfig, start_server};

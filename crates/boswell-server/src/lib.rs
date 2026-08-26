@@ -26,9 +26,7 @@ use boswell_grpc::{start_server, ServerConfig};
 use boswell_store::{EmbeddingModel, OllamaEmbeddingModel, SqliteStore};
 use thiserror::Error;
 
-pub use config::{
-    ConfigError, EmbeddingBackend, EmbeddingConfig, InstanceConfig, StorageConfig,
-};
+pub use config::{ConfigError, EmbeddingBackend, EmbeddingConfig, InstanceConfig, StorageConfig};
 
 /// Errors that can occur while starting or running the instance server.
 #[derive(Debug, Error)]
@@ -77,10 +75,12 @@ pub fn build_store(config: &InstanceConfig) -> Result<SqliteStore, ServerError> 
                 model,
                 config.embedding.endpoint
             );
-            let embedder = OllamaEmbeddingModel::new(&config.embedding.endpoint, model)
-                .map_err(|e| ServerError::Embedding {
-                    model: model.clone(),
-                    message: e.to_string(),
+            let embedder =
+                OllamaEmbeddingModel::new(&config.embedding.endpoint, model).map_err(|e| {
+                    ServerError::Embedding {
+                        model: model.clone(),
+                        message: e.to_string(),
+                    }
                 })?;
             tracing::info!(
                 "Ollama embedder ready: model='{}', dimension={}",
@@ -168,7 +168,7 @@ fn spawn_janitor(config: &InstanceConfig, store: Arc<Mutex<SqliteStore>>) {
 /// which holds the store lock only for the synchronous planning and persistence
 /// phases — gRPC requests are not blocked during LLM analysis.
 fn spawn_synthesizer(config: &InstanceConfig, store: Arc<Mutex<SqliteStore>>) {
-    use boswell_synthesizer::{Synthesizer, SynthesisScope};
+    use boswell_synthesizer::{SynthesisScope, Synthesizer};
     use tokio::time::{interval, Duration};
 
     let settings = &config.synthesizer;

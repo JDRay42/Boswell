@@ -141,7 +141,9 @@ impl InstanceRegistry {
     /// Check if registry has any healthy instances
     pub fn has_healthy_instances(&self) -> bool {
         let instances = self.instances.read().unwrap();
-        instances.iter().any(|inst| inst.health == HealthStatus::Healthy)
+        instances
+            .iter()
+            .any(|inst| inst.health == HealthStatus::Healthy)
     }
 
     /// Get instance count
@@ -234,11 +236,15 @@ mod tests {
             vec![],
         );
 
-        registry.update_health("test", HealthStatus::Degraded).unwrap();
+        registry
+            .update_health("test", HealthStatus::Degraded)
+            .unwrap();
         let instances = registry.get_all_instances();
         assert_eq!(instances[0].health, "degraded");
 
-        registry.update_health("test", HealthStatus::Unhealthy).unwrap();
+        registry
+            .update_health("test", HealthStatus::Unhealthy)
+            .unwrap();
         let instances = registry.get_all_instances();
         assert_eq!(instances[0].health, "unhealthy");
     }
@@ -264,7 +270,9 @@ mod tests {
             vec![],
         );
 
-        registry.update_health("unhealthy", HealthStatus::Unhealthy).unwrap();
+        registry
+            .update_health("unhealthy", HealthStatus::Unhealthy)
+            .unwrap();
 
         let healthy = registry.get_healthy_instances();
         assert_eq!(healthy.len(), 1);

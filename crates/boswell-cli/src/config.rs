@@ -67,14 +67,15 @@ pub enum OutputFormat {
 impl Config {
     /// Get the configuration file path.
     pub fn path() -> Result<PathBuf> {
-        let home = dirs::home_dir().ok_or_else(|| CliError::Config("Could not find home directory".into()))?;
+        let home = dirs::home_dir()
+            .ok_or_else(|| CliError::Config("Could not find home directory".into()))?;
         Ok(home.join(".boswell").join("config.toml"))
     }
 
     /// Load configuration from file or create default.
     pub fn load() -> Result<Self> {
         let path = Self::path()?;
-        
+
         if path.exists() {
             let contents = fs::read_to_string(&path)?;
             let config: Config = toml::from_str(&contents)?;
@@ -87,7 +88,7 @@ impl Config {
     /// Save configuration to file.
     pub fn save(&self) -> Result<()> {
         let path = Self::path()?;
-        
+
         // Create parent directory if it doesn't exist
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
@@ -114,7 +115,10 @@ impl Config {
     /// Switch to a different profile.
     pub fn switch_profile(&mut self, name: String) -> Result<()> {
         if !self.profiles.contains_key(&name) {
-            return Err(CliError::Config(format!("Profile '{}' does not exist", name)));
+            return Err(CliError::Config(format!(
+                "Profile '{}' does not exist",
+                name
+            )));
         }
         self.active_profile = name;
         Ok(())
@@ -182,16 +186,16 @@ mod tests {
     #[test]
     fn test_profile_management() {
         let mut config = Config::default();
-        
+
         let profile = Profile {
             router_url: "http://example.com:8080".to_string(),
             instance_id: "test".to_string(),
             namespace: Some("test-ns".to_string()),
         };
-        
+
         config.set_profile("test".to_string(), profile);
         assert!(config.profiles.contains_key("test"));
-        
+
         config.switch_profile("test".to_string()).unwrap();
         assert_eq!(config.active_profile, "test");
     }

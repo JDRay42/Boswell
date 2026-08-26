@@ -79,7 +79,15 @@ impl Formatter {
         }
 
         let mut builder = Builder::default();
-        builder.push_record(["Similarity", "ID", "Namespace", "Subject", "Predicate", "Object", "Tier"]);
+        builder.push_record([
+            "Similarity",
+            "ID",
+            "Namespace",
+            "Subject",
+            "Predicate",
+            "Object",
+            "Tier",
+        ]);
 
         for (claim, similarity) in hits {
             builder.push_record([
@@ -134,13 +142,18 @@ impl Formatter {
         }
 
         let mut builder = Builder::default();
-        builder.push_record(["ID", "Namespace", "Subject", "Predicate", "Object", "Confidence", "Tier"]);
+        builder.push_record([
+            "ID",
+            "Namespace",
+            "Subject",
+            "Predicate",
+            "Object",
+            "Confidence",
+            "Tier",
+        ]);
 
         for claim in claims {
-            let confidence = format!(
-                "[{:.2}, {:.2}]",
-                claim.confidence.0, claim.confidence.1
-            );
+            let confidence = format!("[{:.2}, {:.2}]", claim.confidence.0, claim.confidence.1);
             builder.push_record([
                 &claim.id.to_string()[..8], // Truncate ID for readability
                 &claim.namespace,
@@ -188,10 +201,7 @@ impl Formatter {
 
     /// Format connection info.
     pub fn connection_info(&self, router_url: &str, instance_id: &str) -> String {
-        let msg = format!(
-            "Connected to {} (instance: {})",
-            router_url, instance_id
-        );
+        let msg = format!("Connected to {} (instance: {})", router_url, instance_id);
         self.success(&msg)
     }
 

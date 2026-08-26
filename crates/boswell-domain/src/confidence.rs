@@ -1,7 +1,7 @@
 //! Confidence interval module (per ADR-003)
 
 /// Confidence interval representing [lower, upper] bounds
-/// 
+///
 /// Per ADR-003, we use intervals to capture both:
 /// - The confidence level itself
 /// - Certainty about that confidence level
@@ -15,14 +15,20 @@ pub struct ConfidenceInterval {
 
 impl ConfidenceInterval {
     /// Create a new confidence interval
-    /// 
+    ///
     /// # Panics
     /// Panics if bounds are invalid (lower > upper or out of [0, 1])
     pub fn new(lower: f64, upper: f64) -> Self {
-        assert!((0.0..=1.0).contains(&lower), "Lower bound must be in [0, 1]");
-        assert!((0.0..=1.0).contains(&upper), "Upper bound must be in [0, 1]");
+        assert!(
+            (0.0..=1.0).contains(&lower),
+            "Lower bound must be in [0, 1]"
+        );
+        assert!(
+            (0.0..=1.0).contains(&upper),
+            "Upper bound must be in [0, 1]"
+        );
         assert!(lower <= upper, "Lower bound must be <= upper bound");
-        
+
         Self { lower, upper }
     }
 
@@ -93,7 +99,7 @@ mod proptests {
             if lower <= upper {
                 let ci = ConfidenceInterval::new(lower, upper);
                 let mid = ci.midpoint();
-                
+
                 prop_assert!(mid >= ci.lower);
                 prop_assert!(mid <= ci.upper);
             }
@@ -105,7 +111,7 @@ mod proptests {
             if lower <= upper {
                 let ci = ConfidenceInterval::new(lower, upper);
                 let width = ci.width();
-                
+
                 prop_assert!(width >= 0.0);
                 prop_assert!(width <= 1.0);
                 prop_assert_eq!(width, upper - lower);
@@ -117,7 +123,7 @@ mod proptests {
         fn test_contains_boundaries(lower in 0.0..=1.0, upper in 0.0..=1.0) {
             if lower <= upper {
                 let ci = ConfidenceInterval::new(lower, upper);
-                
+
                 prop_assert!(ci.contains(lower));
                 prop_assert!(ci.contains(upper));
                 prop_assert!(ci.contains(ci.midpoint()));

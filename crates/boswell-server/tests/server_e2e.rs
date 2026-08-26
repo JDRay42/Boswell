@@ -37,7 +37,9 @@ async fn spawn_server(backend: EmbeddingBackend, model: &str) -> String {
         contradiction: Default::default(),
     };
 
-    let store = Arc::new(Mutex::new(build_store(&config).expect("build_store failed")));
+    let store = Arc::new(Mutex::new(
+        build_store(&config).expect("build_store failed"),
+    ));
     let service = BosWellServiceServer::new(BosWellServiceImpl::new(store));
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

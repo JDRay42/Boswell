@@ -33,7 +33,10 @@ async fn dispatch() -> Result<(), ServerError> {
             Ok(())
         }
         Some("init") => {
-            let path = args.get(2).map(String::as_str).unwrap_or("config/instance.toml");
+            let path = args
+                .get(2)
+                .map(String::as_str)
+                .unwrap_or("config/instance.toml");
             init_config(path)
         }
         Some("--config") => {

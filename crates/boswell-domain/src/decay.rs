@@ -131,10 +131,7 @@ mod tests {
     fn test_unknown_tier_does_not_decay() {
         let cfg = DecayConfig::default();
         let base = (0.5, 0.6);
-        assert_eq!(
-            decayed_confidence(base, "bogus", 0, 1_000_000, &cfg),
-            base
-        );
+        assert_eq!(decayed_confidence(base, "bogus", 0, 1_000_000, &cfg), base);
     }
 
     #[test]

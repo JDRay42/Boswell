@@ -1,7 +1,7 @@
 //! Namespace module (per ADR-006 - convention-based namespaces)
 
 /// Namespace for organizing claims
-/// 
+///
 /// Uses slash-delimited hierarchy: `project/context/subcontext`
 /// Validated by slash count, not tree structures.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -9,7 +9,7 @@ pub struct Namespace(String);
 
 impl Namespace {
     /// Create a new namespace
-    /// 
+    ///
     /// # Errors
     /// Returns error if namespace format is invalid
     pub fn new(value: String) -> Result<Self, String> {
@@ -17,9 +17,9 @@ impl Namespace {
         if value.is_empty() {
             return Err("Namespace cannot be empty".to_string());
         }
-        
+
         // TODO: Add depth validation when max depth is configured
-        
+
         Ok(Self(value))
     }
 
@@ -59,7 +59,7 @@ mod tests {
     fn test_parent_relationship() {
         let parent = Namespace::new("project".to_string()).unwrap();
         let child = Namespace::new("project/task".to_string()).unwrap();
-        
+
         assert!(parent.is_parent_of(&child));
         assert!(!child.is_parent_of(&parent));
     }
@@ -76,7 +76,7 @@ mod proptests {
         fn test_namespace_depth_property(s in "[a-z]{1,10}(/[a-z]{1,10}){0,5}") {
             let ns = Namespace::new(s.clone()).unwrap();
             let expected_depth = s.split('/').count();
-            
+
             prop_assert_eq!(ns.depth(), expected_depth);
         }
 
@@ -90,7 +90,7 @@ mod proptests {
             let ns_a = Namespace::new(a.clone()).unwrap();
             let ns_ab = Namespace::new(format!("{}/{}", a, b)).unwrap();
             let ns_abc = Namespace::new(format!("{}/{}/{}", a, b, c)).unwrap();
-            
+
             // If A is parent of AB and AB is parent of ABC, then A is parent of ABC
             prop_assert!(ns_a.is_parent_of(&ns_ab));
             prop_assert!(ns_ab.is_parent_of(&ns_abc));
@@ -101,7 +101,7 @@ mod proptests {
         #[test]
         fn test_parent_relationship_not_reflexive(s in "[a-z]{1,10}(/[a-z]{1,10}){0,3}") {
             let ns = Namespace::new(s).unwrap();
-            
+
             // A namespace is not its own parent
             prop_assert!(!ns.is_parent_of(&ns));
         }
@@ -110,7 +110,7 @@ mod proptests {
         #[test]
         fn test_namespace_min_depth(s in "[a-z]{1,10}(/[a-z]{1,10}){0,5}") {
             let ns = Namespace::new(s).unwrap();
-            
+
             prop_assert!(ns.depth() >= 1);
         }
     }

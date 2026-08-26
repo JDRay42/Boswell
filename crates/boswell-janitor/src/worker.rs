@@ -61,17 +61,14 @@ impl JanitorWorker {
         S::Error: std::fmt::Display,
     {
         let mut ticker = interval(self.interval);
-        
-        tracing::info!(
-            "Janitor worker started (interval: {:?})",
-            self.interval
-        );
+
+        tracing::info!("Janitor worker started (interval: {:?})", self.interval);
 
         loop {
             tokio::select! {
                 _ = ticker.tick() => {
                     tracing::debug!("Starting sweep cycle");
-                    
+
                     match self.janitor.sweep(&mut store) {
                         Ok(metrics) => {
                             tracing::info!(
@@ -126,7 +123,7 @@ impl JanitorWorker {
         S::Error: std::fmt::Display,
     {
         let mut ticker = interval(self.interval);
-        
+
         tracing::info!(
             "Janitor worker started for {} cycles (interval: {:?})",
             cycles,
@@ -135,9 +132,9 @@ impl JanitorWorker {
 
         for cycle in 0..cycles {
             ticker.tick().await;
-            
+
             tracing::debug!("Starting sweep cycle {}/{}", cycle + 1, cycles);
-            
+
             match self.janitor.sweep(&mut store) {
                 Ok(metrics) => {
                     tracing::info!(
@@ -158,7 +155,11 @@ impl JanitorWorker {
 
         // Print final metrics
         let metrics = self.janitor.metrics();
-        tracing::info!("Janitor finished {} cycles. Final metrics:\n{}", cycles, metrics.summary());
+        tracing::info!(
+            "Janitor finished {} cycles. Final metrics:\n{}",
+            cycles,
+            metrics.summary()
+        );
 
         Ok(())
     }
@@ -178,8 +179,8 @@ impl JanitorWorker {
 mod tests {
     use super::*;
     use crate::JanitorConfig;
-    use boswell_domain::{Claim, ClaimId, Tier};
     use boswell_domain::traits::ClaimQuery;
+    use boswell_domain::{Claim, ClaimId, Tier};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     // Mock store for testing
@@ -224,11 +225,17 @@ mod tests {
             Ok(results)
         }
 
-        fn add_relationship(&mut self, _relationship: boswell_domain::Relationship) -> Result<(), Self::Error> {
+        fn add_relationship(
+            &mut self,
+            _relationship: boswell_domain::Relationship,
+        ) -> Result<(), Self::Error> {
             Ok(())
         }
 
-        fn get_relationships(&self, _id: ClaimId) -> Result<Vec<boswell_domain::Relationship>, Self::Error> {
+        fn get_relationships(
+            &self,
+            _id: ClaimId,
+        ) -> Result<Vec<boswell_domain::Relationship>, Self::Error> {
             Ok(Vec::new())
         }
 
@@ -302,7 +309,7 @@ mod tests {
     #[tokio::test]
     async fn test_metrics_tracking() {
         let mut store = MockStore::new();
-        
+
         // Add stale claim
         store.claims.push(create_test_claim(Tier::Ephemeral, 20));
 

@@ -1,18 +1,18 @@
 //! Claim validation logic
 
-use boswell_domain::{Claim, ClaimId, Tier};
-use boswell_domain::traits::{ClaimStore, ClaimQuery};
 use crate::{GatekeeperError, ValidationConfig};
+use boswell_domain::traits::{ClaimQuery, ClaimStore};
+use boswell_domain::{Claim, ClaimId, Tier};
 
 /// Result of claim validation
 #[derive(Debug, Clone)]
 pub struct ValidationResult {
     /// Whether the claim passed validation
     pub status: ValidationStatus,
-    
+
     /// Rejection reasons (if any)
     pub reasons: Vec<RejectionReason>,
-    
+
     /// Quality score (0.0-1.0)
     pub quality_score: f64,
 }
@@ -22,10 +22,10 @@ pub struct ValidationResult {
 pub enum ValidationStatus {
     /// Claim accepted
     Accepted,
-    
+
     /// Claim rejected
     Rejected,
-    
+
     /// Validation deferred (transient issues)
     Deferred,
 }
@@ -35,7 +35,7 @@ pub enum ValidationStatus {
 pub enum RejectionReason {
     /// Invalid entity format (expected namespace:value)
     InvalidEntityFormat(String),
-    
+
     /// Invalid confidence bounds
     InvalidConfidenceBounds {
         /// Lower bound
@@ -45,13 +45,13 @@ pub enum RejectionReason {
         /// Description of the issue
         issue: String,
     },
-    
+
     /// Duplicate claim detected
     Duplicate {
         /// ID of the existing claim
         existing_id: ClaimId,
     },
-    
+
     /// Tier confidence requirement not met
     TierConfidenceRequirement {
         /// Required tier
@@ -61,7 +61,7 @@ pub enum RejectionReason {
         /// Actual confidence
         actual: f64,
     },
-    
+
     /// Semantic duplicate detected
     SemanticDuplicate {
         /// ID of similar existing claim
@@ -169,17 +169,19 @@ impl Gatekeeper {
 
         for (name, entity) in &entities {
             if !entity.contains(':') {
-                return Some(RejectionReason::InvalidEntityFormat(
-                    format!("{} '{}' does not match namespace:value format", name, entity)
-                ));
+                return Some(RejectionReason::InvalidEntityFormat(format!(
+                    "{} '{}' does not match namespace:value format",
+                    name, entity
+                )));
             }
 
             // Check for valid namespace and value parts
             let parts: Vec<&str> = entity.split(':').collect();
             if parts.len() < 2 || parts[0].is_empty() || parts[1].is_empty() {
-                return Some(RejectionReason::InvalidEntityFormat(
-                    format!("{} '{}' has invalid namespace or value", name, entity)
-                ));
+                return Some(RejectionReason::InvalidEntityFormat(format!(
+                    "{} '{}' has invalid namespace or value",
+                    name, entity
+                )));
             }
         }
 
@@ -212,7 +214,10 @@ impl Gatekeeper {
             return Some(RejectionReason::InvalidConfidenceBounds {
                 lower: lower.to_string(),
                 upper: upper.to_string(),
-                issue: format!("Lower bound {} must be less than upper bound {}", lower, upper),
+                issue: format!(
+                    "Lower bound {} must be less than upper bound {}",
+                    lower, upper
+                ),
             });
         }
 
@@ -260,7 +265,8 @@ impl Gatekeeper {
             limit: Some(100), // Check up to 100 existing claims
         };
 
-        let existing_claims = store.query_claims(&query)
+        let existing_claims = store
+            .query_claims(&query)
             .map_err(|e| GatekeeperError::Store(format!("Failed to query claims: {}", e)))?;
 
         // Check for exact matches
@@ -284,9 +290,10 @@ impl Gatekeeper {
                 .semantic_search(&query_text, 5, threshold)
                 .map_err(|e| GatekeeperError::Store(format!("Semantic dedup failed: {}", e)))?;
 
-            if let Some((existing, _)) = hits.into_iter().find(|(_, similarity)| {
-                *similarity >= threshold
-            }) {
+            if let Some((existing, _)) = hits
+                .into_iter()
+                .find(|(_, similarity)| *similarity >= threshold)
+            {
                 return Ok(Some(RejectionReason::Duplicate {
                     existing_id: existing.id,
                 }));
@@ -390,7 +397,9 @@ mod tests {
 
         assert_eq!(result.status, ValidationStatus::Rejected);
         match &result.reasons[0] {
-            RejectionReason::TierConfidenceRequirement { required, actual, .. } => {
+            RejectionReason::TierConfidenceRequirement {
+                required, actual, ..
+            } => {
                 assert_eq!(*required, 0.8);
                 assert_eq!(*actual, 0.5);
             }
@@ -426,7 +435,7 @@ mod tests {
 
     // Mock store for testing (no actual storage)
     struct MockStore;
-    
+
     impl ClaimStore for MockStore {
         type Error = String;
 
@@ -442,11 +451,17 @@ mod tests {
             Ok(vec![])
         }
 
-        fn add_relationship(&mut self, _relationship: boswell_domain::Relationship) -> Result<(), Self::Error> {
+        fn add_relationship(
+            &mut self,
+            _relationship: boswell_domain::Relationship,
+        ) -> Result<(), Self::Error> {
             Ok(())
         }
 
-        fn get_relationships(&self, _id: ClaimId) -> Result<Vec<boswell_domain::Relationship>, Self::Error> {
+        fn get_relationships(
+            &self,
+            _id: ClaimId,
+        ) -> Result<Vec<boswell_domain::Relationship>, Self::Error> {
             Ok(vec![])
         }
     }
@@ -465,10 +480,16 @@ mod tests {
         fn query_claims(&self, _q: &ClaimQuery) -> Result<Vec<Claim>, Self::Error> {
             Ok(vec![])
         }
-        fn add_relationship(&mut self, _r: boswell_domain::Relationship) -> Result<(), Self::Error> {
+        fn add_relationship(
+            &mut self,
+            _r: boswell_domain::Relationship,
+        ) -> Result<(), Self::Error> {
             Ok(())
         }
-        fn get_relationships(&self, _id: ClaimId) -> Result<Vec<boswell_domain::Relationship>, Self::Error> {
+        fn get_relationships(
+            &self,
+            _id: ClaimId,
+        ) -> Result<Vec<boswell_domain::Relationship>, Self::Error> {
             Ok(vec![])
         }
         fn supports_semantic_search(&self) -> bool {

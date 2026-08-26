@@ -113,7 +113,12 @@ where
         let mut reports = Vec::with_capacity(cycles);
         for cycle in 0..cycles {
             let report = self.synthesizer.run_pass(store, self.scope()).await?;
-            info!("Synthesis cycle {}/{}: {}", cycle + 1, cycles, report.summary());
+            info!(
+                "Synthesis cycle {}/{}: {}",
+                cycle + 1,
+                cycles,
+                report.summary()
+            );
             reports.push(report);
         }
         Ok(reports)

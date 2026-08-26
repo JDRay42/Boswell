@@ -39,14 +39,16 @@ pub async fn execute_assert(
     let object_str = format!("{}:{}", object_ns, object_val);
 
     // Assert claim using SDK
-    let claim_id = client.assert(
-        namespace,
-        &subject_str,
-        &predicate_str,
-        &object_str,
-        Some(confidence),
-        Some(tier),
-    ).await?;
+    let claim_id = client
+        .assert(
+            namespace,
+            &subject_str,
+            &predicate_str,
+            &object_str,
+            Some(confidence),
+            Some(tier),
+        )
+        .await?;
 
     println!("{}", formatter.claim_asserted(&claim_id));
 

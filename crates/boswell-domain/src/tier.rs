@@ -1,7 +1,7 @@
 //! Tier module - lifecycle stages for claims
 
 /// Tier in the claim lifecycle
-/// 
+///
 /// Claims progress through tiers with different retention and evaluation criteria:
 /// - Ephemeral: Short-lived, task-specific
 /// - Task: Medium-term, specific task context
@@ -11,13 +11,13 @@
 pub enum Tier {
     /// Short-lived claims (hours to days)
     Ephemeral,
-    
+
     /// Task-specific claims (days to weeks)
     Task,
-    
+
     /// Project-level claims (weeks to months)
     Project,
-    
+
     /// Core knowledge (indefinite)
     Permanent,
 }

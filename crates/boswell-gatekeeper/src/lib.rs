@@ -15,17 +15,17 @@
 //!
 //! let config = ValidationConfig::default();
 //! let gatekeeper = Gatekeeper::new(config);
-//! 
+//!
 //! // Validate a claim before storing
 //! // let result = gatekeeper.validate(&claim, &store);
 //! ```
 
 #![warn(missing_docs)]
 
-mod validator;
-mod error;
 mod config;
+mod error;
+mod validator;
 
-pub use validator::{Gatekeeper, ValidationResult, ValidationStatus, RejectionReason};
-pub use error::GatekeeperError;
 pub use config::ValidationConfig;
+pub use error::GatekeeperError;
+pub use validator::{Gatekeeper, RejectionReason, ValidationResult, ValidationStatus};

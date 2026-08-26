@@ -12,8 +12,8 @@ fn main() {
         .init();
 
     // Get router URL from environment or use default
-    let router_url = env::var("BOSWELL_ROUTER")
-        .unwrap_or_else(|_| "http://localhost:8080".to_string());
+    let router_url =
+        env::var("BOSWELL_ROUTER").unwrap_or_else(|_| "http://localhost:8080".to_string());
 
     // Create and start MCP server
     let mut server = match McpServer::new(router_url.clone()) {

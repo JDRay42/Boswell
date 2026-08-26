@@ -1,6 +1,9 @@
 //! Interactive REPL (Read-Eval-Print Loop) mode.
 
-use crate::cli::{AssertArgs, Command, ConnectArgs, ForgetArgs, LearnArgs, ProfileAction, ProfileArgs, QueryArgs, SearchArgs, TierArg};
+use crate::cli::{
+    AssertArgs, Command, ConnectArgs, ForgetArgs, LearnArgs, ProfileAction, ProfileArgs, QueryArgs,
+    SearchArgs, TierArg,
+};
 use crate::commands;
 use crate::config::Config;
 use crate::error::{CliError, Result};
@@ -12,13 +15,19 @@ use std::path::PathBuf;
 
 /// Run the interactive REPL.
 pub async fn run_repl(config: &mut Config, formatter: &Formatter) -> Result<()> {
-    println!("{}", formatter.info("Boswell REPL - Type 'help' for commands, 'exit' to quit"));
+    println!(
+        "{}",
+        formatter.info("Boswell REPL - Type 'help' for commands, 'exit' to quit")
+    );
     println!();
 
     // Initialize readline editor
-    let mut editor = DefaultEditor::new().map_err(|e| CliError::Io(std::io::Error::other(
-        format!("Failed to initialize editor: {}", e),
-    )))?;
+    let mut editor = DefaultEditor::new().map_err(|e| {
+        CliError::Io(std::io::Error::other(format!(
+            "Failed to initialize editor: {}",
+            e
+        )))
+    })?;
 
     // Load history
     let history_path = get_history_path()?;
@@ -36,7 +45,7 @@ pub async fn run_repl(config: &mut Config, formatter: &Formatter) -> Result<()> 
         match editor.readline(prompt) {
             Ok(line) => {
                 let line = line.trim();
-                
+
                 if line.is_empty() {
                     continue;
                 }
@@ -53,7 +62,9 @@ pub async fn run_repl(config: &mut Config, formatter: &Formatter) -> Result<()> 
                         print_help(formatter);
                     }
                     Ok(ReplCommand::Command(cmd)) => {
-                        if let Err(e) = execute_repl_command(cmd, &mut client, config, formatter).await {
+                        if let Err(e) =
+                            execute_repl_command(cmd, &mut client, config, formatter).await
+                        {
                             eprintln!("{}", formatter.error(&e.to_string()));
                         }
                     }
@@ -91,7 +102,7 @@ enum ReplCommand {
 /// Parse a REPL command line.
 fn parse_repl_command(line: &str) -> Result<ReplCommand> {
     let parts: Vec<&str> = line.split_whitespace().collect();
-    
+
     if parts.is_empty() {
         return Err(CliError::InvalidInput("Empty command".to_string()));
     }
@@ -130,7 +141,7 @@ async fn execute_repl_command(
         }
         _ => {
             let client_ref = client.as_mut().ok_or(CliError::NotConnected)?;
-            
+
             match cmd {
                 Command::Assert(args) => {
                     commands::execute_assert(args, client_ref, formatter).await?;
@@ -151,7 +162,7 @@ async fn execute_repl_command(
             }
         }
     }
-    
+
     Ok(())
 }
 
@@ -160,7 +171,7 @@ async fn execute_repl_command(
 fn parse_connect_command(args: &[&str]) -> Result<ReplCommand> {
     let url = args.first().map(|s| s.to_string());
     let instance = args.get(1).map(|s| s.to_string());
-    
+
     Ok(ReplCommand::Command(Command::Connect(ConnectArgs {
         url,
         instance,
@@ -178,7 +189,10 @@ fn parse_assert_command(args: &[&str]) -> Result<ReplCommand> {
 
     let confidence_lower = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(0.5);
     let confidence_upper = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(1.0);
-    let tier = args.get(5).and_then(parse_tier_arg).unwrap_or(TierArg::Task);
+    let tier = args
+        .get(5)
+        .and_then(parse_tier_arg)
+        .unwrap_or(TierArg::Task);
 
     Ok(ReplCommand::Command(Command::Assert(AssertArgs {
         subject: args[0].to_string(),
@@ -219,7 +233,9 @@ fn parse_learn_command(args: &[&str]) -> Result<ReplCommand> {
 
 fn parse_forget_command(args: &[&str]) -> Result<ReplCommand> {
     if args.is_empty() {
-        return Err(CliError::InvalidInput("Usage: forget <id1> [id2] [id3] ...".to_string()));
+        return Err(CliError::InvalidInput(
+            "Usage: forget <id1> [id2] [id3] ...".to_string(),
+        ));
     }
 
     Ok(ReplCommand::Command(Command::Forget(ForgetArgs {
@@ -255,16 +271,25 @@ fn parse_profile_command(args: &[&str]) -> Result<ReplCommand> {
         "show" => ProfileAction::Show,
         "switch" => {
             if args.len() < 2 {
-                return Err(CliError::InvalidInput("Usage: profile switch <name>".to_string()));
+                return Err(CliError::InvalidInput(
+                    "Usage: profile switch <name>".to_string(),
+                ));
             }
             ProfileAction::Switch {
                 name: args[1].to_string(),
             }
         }
-        _ => return Err(CliError::InvalidInput(format!("Unknown profile action: {}", args[0]))),
+        _ => {
+            return Err(CliError::InvalidInput(format!(
+                "Unknown profile action: {}",
+                args[0]
+            )))
+        }
     };
 
-    Ok(ReplCommand::Command(Command::Profile(ProfileArgs { action })))
+    Ok(ReplCommand::Command(Command::Profile(ProfileArgs {
+        action,
+    })))
 }
 
 fn parse_tier_arg(s: &&str) -> Option<TierArg> {
@@ -278,7 +303,8 @@ fn parse_tier_arg(s: &&str) -> Option<TierArg> {
 }
 
 fn get_history_path() -> Result<PathBuf> {
-    let home = dirs::home_dir().ok_or_else(|| CliError::Config("Could not find home directory".into()))?;
+    let home =
+        dirs::home_dir().ok_or_else(|| CliError::Config("Could not find home directory".into()))?;
     let boswell_dir = home.join(".boswell");
     std::fs::create_dir_all(&boswell_dir)?;
     Ok(boswell_dir.join("history.txt"))

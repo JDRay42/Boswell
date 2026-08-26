@@ -61,8 +61,11 @@ fn list_profiles(config: &Config, formatter: &Formatter) -> Result<()> {
 /// Show the active profile.
 fn show_active_profile(config: &Config, formatter: &Formatter) -> Result<()> {
     let profile = config.get_active_profile()?;
-    
-    println!("Active profile: {}", formatter.success(&config.active_profile));
+
+    println!(
+        "Active profile: {}",
+        formatter.success(&config.active_profile)
+    );
     println!("  URL: {}", profile.router_url);
     println!("  Instance: {}", profile.instance_id);
     if let Some(ns) = &profile.namespace {

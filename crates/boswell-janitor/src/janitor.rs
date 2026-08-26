@@ -1,8 +1,8 @@
 //! Core Janitor implementation for tier management and cleanup
 
 use crate::{JanitorConfig, JanitorError, JanitorMetrics};
+use boswell_domain::traits::{ClaimQuery, ClaimStore};
 use boswell_domain::{decayed_confidence, Claim, ClaimId, DecayConfig, Tier};
-use boswell_domain::traits::{ClaimStore, ClaimQuery};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Current timestamp in seconds since Unix epoch
@@ -73,7 +73,14 @@ impl Janitor {
 
     /// Effective (age-decayed) lower confidence bound for a claim, as of `now`.
     fn effective_lower(&self, claim: &Claim, now: u64) -> f64 {
-        decayed_confidence(claim.confidence, &claim.tier, claim.created_at, now, &self.decay).0
+        decayed_confidence(
+            claim.confidence,
+            &claim.tier,
+            claim.created_at,
+            now,
+            &self.decay,
+        )
+        .0
     }
 
     /// Get a reference to the current metrics
@@ -116,7 +123,7 @@ impl Janitor {
 
         // Record sweep completion
         self.metrics.record_sweep();
-        
+
         if let Ok(elapsed) = start.elapsed() {
             self.metrics.total_runtime_secs += elapsed.as_secs();
         }
@@ -131,7 +138,11 @@ impl Janitor {
     where
         S::Error: std::fmt::Display,
     {
-        self.sweep_tier(store, Tier::Ephemeral, self.config.ephemeral_ttl().as_secs())
+        self.sweep_tier(
+            store,
+            Tier::Ephemeral,
+            self.config.ephemeral_ttl().as_secs(),
+        )
     }
 
     /// Sweep task tier claims past TTL
@@ -151,7 +162,11 @@ impl Janitor {
     where
         S::Error: std::fmt::Display,
     {
-        self.sweep_tier(store, Tier::Project, self.config.project_stale_threshold().as_secs())
+        self.sweep_tier(
+            store,
+            Tier::Project,
+            self.config.project_stale_threshold().as_secs(),
+        )
     }
 
     /// Generic sweep implementation for a specific tier
@@ -178,11 +193,13 @@ impl Janitor {
             ..Default::default()
         };
 
-        let claims = store.query_claims(&query)
+        let claims = store
+            .query_claims(&query)
             .map_err(|e| JanitorError::Store(e.to_string()))?;
 
         // Filter for stale claims (created before cutoff)
-        let stale_claims: Vec<&Claim> = claims.iter()
+        let stale_claims: Vec<&Claim> = claims
+            .iter()
             .filter(|claim| claim.created_at < cutoff)
             .collect();
 
@@ -242,7 +259,8 @@ impl Janitor {
                 ..Default::default()
             };
 
-            let claims = store.query_claims(&query)
+            let claims = store
+                .query_claims(&query)
                 .map_err(|e| JanitorError::Store(e.to_string()))?;
 
             for claim in claims {
@@ -280,7 +298,8 @@ impl Janitor {
                 ..Default::default()
             };
 
-            let claims = store.query_claims(&query)
+            let claims = store
+                .query_claims(&query)
                 .map_err(|e| JanitorError::Store(e.to_string()))?;
 
             for claim in claims {
@@ -313,7 +332,7 @@ impl Janitor {
             Some(t) => t,
             None => return false, // Invalid tier, skip
         };
-        
+
         // Check staleness based on current tier
         let not_stale = match tier {
             Tier::Ephemeral => {
@@ -394,7 +413,12 @@ impl Janitor {
             .update_claim_tier(claim_id, to_tier.as_str())
             .map_err(|e| JanitorError::Store(e.to_string()))?;
         if updated {
-            tracing::info!("Promoted claim {} from {:?} to {:?}", claim_id, from_tier, to_tier);
+            tracing::info!(
+                "Promoted claim {} from {:?} to {:?}",
+                claim_id,
+                from_tier,
+                to_tier
+            );
         }
         Ok(updated)
     }
@@ -424,7 +448,12 @@ impl Janitor {
             .update_claim_tier(claim_id, to_tier.as_str())
             .map_err(|e| JanitorError::Store(e.to_string()))?;
         if updated {
-            tracing::info!("Demoted claim {} from {:?} to {:?}", claim_id, from_tier, to_tier);
+            tracing::info!(
+                "Demoted claim {} from {:?} to {:?}",
+                claim_id,
+                from_tier,
+                to_tier
+            );
         }
         Ok(updated)
     }
@@ -484,11 +513,17 @@ mod tests {
             Ok(results)
         }
 
-        fn add_relationship(&mut self, _relationship: boswell_domain::Relationship) -> Result<(), Self::Error> {
+        fn add_relationship(
+            &mut self,
+            _relationship: boswell_domain::Relationship,
+        ) -> Result<(), Self::Error> {
             Ok(())
         }
 
-        fn get_relationships(&self, _id: ClaimId) -> Result<Vec<boswell_domain::Relationship>, Self::Error> {
+        fn get_relationships(
+            &self,
+            _id: ClaimId,
+        ) -> Result<Vec<boswell_domain::Relationship>, Self::Error> {
             Ok(Vec::new())
         }
 
@@ -545,12 +580,12 @@ mod tests {
 
         // Add stale ephemeral claim (20 hours old)
         store.add_claim(create_test_claim(Tier::Ephemeral, 20, 0.8));
-        
+
         // Add fresh ephemeral claim (2 hours old)
         store.add_claim(create_test_claim(Tier::Ephemeral, 2, 0.8));
 
         let result = janitor.sweep_ephemeral(&mut store).unwrap();
-        
+
         // Should identify 1 stale claim
         assert_eq!(result, 1);
         assert_eq!(janitor.metrics().deleted.get(&Tier::Ephemeral), Some(&1));
@@ -570,7 +605,7 @@ mod tests {
         store.add_claim(create_test_claim(Tier::Ephemeral, 20, 0.8));
 
         let result = janitor.sweep_ephemeral(&mut store).unwrap();
-        
+
         // Should not actually delete in dry-run mode
         assert_eq!(result, 0);
         assert_eq!(janitor.metrics().deleted.get(&Tier::Ephemeral), None);
@@ -585,7 +620,7 @@ mod tests {
         store.add_claim(create_test_claim(Tier::Permanent, 10000, 0.8));
 
         let result = janitor.sweep_tier(&mut store, Tier::Permanent, 1).unwrap();
-        
+
         // Should never sweep Permanent tier
         assert_eq!(result, 0);
     }
@@ -672,7 +707,10 @@ mod tests {
         assert_eq!(deleted, 1);
         // The stale claim is really gone; the fresh one remains.
         assert_eq!(store.claims.len(), 1);
-        assert!(store.claims.iter().all(|c| (current_timestamp() - c.created_at) / 3600 < 12));
+        assert!(store
+            .claims
+            .iter()
+            .all(|c| (current_timestamp() - c.created_at) / 3600 < 12));
     }
 
     #[test]
@@ -700,7 +738,7 @@ mod tests {
         store.add_claim(create_test_claim(Tier::Project, 2, 0.8)); // Fresh
 
         let metrics = janitor.sweep(&mut store).unwrap();
-        
+
         assert_eq!(metrics.sweep_count, 1);
         assert!(metrics.total_deleted() > 0);
     }
@@ -716,7 +754,7 @@ mod tests {
         assert!(janitor.metrics().sweep_count > 0);
 
         janitor.reset_metrics();
-        
+
         assert_eq!(janitor.metrics().sweep_count, 0);
         assert_eq!(janitor.metrics().total_deleted(), 0);
     }

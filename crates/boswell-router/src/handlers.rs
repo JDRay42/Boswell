@@ -96,7 +96,9 @@ async fn establish_session(
     State(state): State<AppState>,
     Json(request): Json<EstablishSessionRequest>,
 ) -> Result<Json<SessionResponse>, AppError> {
-    let user_id = request.user_id.unwrap_or_else(|| "default-user".to_string());
+    let user_id = request
+        .user_id
+        .unwrap_or_else(|| "default-user".to_string());
 
     // Generate session token
     let token = state.session_manager.generate_token(&user_id)?;

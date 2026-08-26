@@ -3,7 +3,6 @@
 //! These tests verify the MCP protocol implementation and tool functionality.
 //! They test JSON-RPC message handling and tool parameter validation.
 
-use boswell_mcp::McpServer;
 use serde_json::json;
 
 #[test]
@@ -147,7 +146,7 @@ fn test_e2e_full_workflow() {
     // 1. Terminal 1: cargo run -p boswell-grpc
     // 2. Terminal 2: cargo run -p boswell-router -- --config config/router.toml
     // 3. Terminal 3: cargo test -p boswell-mcp --test integration_tests -- --ignored
-    
+
     // For manual testing, use examples/manual_test.sh
     // Or test with Claude Desktop integration
     println!("E2E test: Start gRPC and Router servers, then test MCP server");

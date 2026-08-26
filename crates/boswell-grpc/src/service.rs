@@ -2,17 +2,16 @@
 //!
 //! Implements the BosWellService trait generated from proto definitions.
 
+use boswell_domain::traits::{ClaimQuery, ClaimStore};
+use boswell_domain::{Claim, ClaimId};
 use std::sync::{Arc, Mutex};
 use tonic::{Request, Response, Status};
-use boswell_domain::{Claim, ClaimId};
-use boswell_domain::traits::{ClaimStore, ClaimQuery};
 
+use crate::conversions::{
+    claim_from_proto, claim_to_proto, confidence_from_proto, tier_from_proto,
+};
 use crate::proto::bos_well_service_server::BosWellService;
 use crate::proto::*;
-use crate::conversions::{
-    claim_from_proto, claim_to_proto, confidence_from_proto,
-    tier_from_proto,
-};
 
 /// Implementation of the BosWellService
 pub struct BosWellServiceImpl<S: ClaimStore> {
@@ -44,29 +43,30 @@ where
         request: Request<AssertRequest>,
     ) -> Result<Response<AssertResponse>, Status> {
         let req = request.into_inner();
-        
+
         // Validate authentication token (placeholder for now)
         if req.auth_token.is_empty() {
             return Err(Status::unauthenticated("Missing authentication token"));
         }
-        
+
         // Convert proto types to domain types
         let confidence = confidence_from_proto(req.confidence)
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
-            
+
         let tier = if req.tier != 0 {
-            tier_from_proto(Tier::try_from(req.tier)
-                .map_err(|_| Status::invalid_argument("Invalid tier"))?)
-                .map_err(|e| Status::invalid_argument(e.to_string()))?
+            tier_from_proto(
+                Tier::try_from(req.tier).map_err(|_| Status::invalid_argument("Invalid tier"))?,
+            )
+            .map_err(|e| Status::invalid_argument(e.to_string()))?
         } else {
-            "ephemeral".to_string()  // Default tier
+            "ephemeral".to_string() // Default tier
         };
-        
+
         let created_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        
+
         // Create claim
         let claim = Claim {
             id: ClaimId::new(),
@@ -80,15 +80,16 @@ where
             created_at,
             stale_at: None,
         };
-        
+
         // Assert claim to store
         let mut store = self.store.lock().unwrap();
-        let result = store.assert_claim(claim.clone())
+        let result = store
+            .assert_claim(claim.clone())
             .map_err(|e| Status::internal(format!("Failed to assert claim: {:?}", e)))?;
-        
+
         Ok(Response::new(AssertResponse {
             claim_id: result.to_string(),
-            is_duplicate: result == claim.id,  // Simplified duplicate detection
+            is_duplicate: result == claim.id, // Simplified duplicate detection
             message: "Claim asserted successfully".to_string(),
         }))
     }
@@ -98,14 +99,16 @@ where
         request: Request<QueryRequest>,
     ) -> Result<Response<QueryResponse>, Status> {
         let req = request.into_inner();
-        
+
         // Validate authentication token
         if req.auth_token.is_empty() {
             return Err(Status::unauthenticated("Missing authentication token"));
         }
-        
-        let filter = req.filter.ok_or_else(|| Status::invalid_argument("Missing filter"))?;
-        
+
+        let filter = req
+            .filter
+            .ok_or_else(|| Status::invalid_argument("Missing filter"))?;
+
         // Build query
         let query = ClaimQuery {
             namespace: filter.namespace,
@@ -118,16 +121,22 @@ where
             }),
             min_confidence: filter.min_confidence.filter(|&c| c > 0.0),
             semantic_text: None,
-            limit: if req.limit > 0 { Some(req.limit as usize) } else { Some(100) },
+            limit: if req.limit > 0 {
+                Some(req.limit as usize)
+            } else {
+                Some(100)
+            },
         };
-        
+
         // Query claims from store
         let store = self.store.lock().unwrap();
-        let claims = store.query_claims(&query)
+        let claims = store
+            .query_claims(&query)
             .map_err(|e| Status::internal(format!("Query failed: {:?}", e)))?;
-        
+
         // Apply additional filters (subject, predicate, object not in ClaimQuery yet)
-        let filtered_claims: Vec<Claim> = claims.into_iter()
+        let filtered_claims: Vec<Claim> = claims
+            .into_iter()
             .filter(|c| {
                 if let Some(ref subject) = filter.subject {
                     if &c.subject != subject {
@@ -147,14 +156,12 @@ where
                 true
             })
             .collect();
-        
+
         let total_count = filtered_claims.len() as i32;
-        
+
         // Convert to proto
-        let proto_claims = filtered_claims.into_iter()
-            .map(claim_to_proto)
-            .collect();
-        
+        let proto_claims = filtered_claims.into_iter().map(claim_to_proto).collect();
+
         Ok(Response::new(QueryResponse {
             claims: proto_claims,
             total_count,
@@ -175,7 +182,11 @@ where
             return Err(Status::invalid_argument("query_text must not be empty"));
         }
 
-        let limit = if req.limit > 0 { req.limit as usize } else { 10 };
+        let limit = if req.limit > 0 {
+            req.limit as usize
+        } else {
+            10
+        };
         let min_similarity = req.min_similarity.clamp(0.0, 1.0) as f32;
 
         let store = self.store.lock().unwrap();
@@ -188,7 +199,11 @@ where
 
         // Fetch extra candidates when a namespace filter is applied, since the
         // post-filter may drop some of the top-k results.
-        let fetch = if req.namespace.is_some() { limit * 4 } else { limit };
+        let fetch = if req.namespace.is_some() {
+            limit * 4
+        } else {
+            limit
+        };
         let hits = store
             .semantic_search(&req.query_text, fetch, min_similarity)
             .map_err(|e| Status::internal(format!("Search failed: {:?}", e)))?;
@@ -220,11 +235,11 @@ where
         request: Request<LearnRequest>,
     ) -> Result<Response<LearnResponse>, Status> {
         let req = request.into_inner();
-        
+
         if req.auth_token.is_empty() {
             return Err(Status::unauthenticated("Missing authentication token"));
         }
-        
+
         let mut inserted_count = 0;
         // Duplicates cannot be distinguished from other failures at the generic
         // ClaimStore layer (the error type is opaque), so they are reported under
@@ -232,27 +247,25 @@ where
         let duplicate_count = 0;
         let mut error_count = 0;
         let mut errors = Vec::new();
-        
+
         let mut store = self.store.lock().unwrap();
-        
+
         for proto_claim in req.claims {
             match claim_from_proto(proto_claim) {
-                Ok(claim) => {
-                    match store.assert_claim(claim.clone()) {
-                        Ok(_) => inserted_count += 1,
-                        Err(_) => {
-                            error_count += 1;
-                            errors.push(format!("Failed to insert claim {}", claim.id));
-                        }
+                Ok(claim) => match store.assert_claim(claim.clone()) {
+                    Ok(_) => inserted_count += 1,
+                    Err(_) => {
+                        error_count += 1;
+                        errors.push(format!("Failed to insert claim {}", claim.id));
                     }
-                }
+                },
                 Err(e) => {
                     error_count += 1;
                     errors.push(format!("Invalid claim: {}", e));
                 }
             }
         }
-        
+
         Ok(Response::new(LearnResponse {
             inserted_count,
             duplicate_count,
@@ -267,14 +280,14 @@ where
         request: Request<ForgetRequest>,
     ) -> Result<Response<ForgetResponse>, Status> {
         let req = request.into_inner();
-        
+
         if req.auth_token.is_empty() {
             return Err(Status::unauthenticated("Missing authentication token"));
         }
-        
+
         let claim_id = ClaimId::from_string(&req.claim_id)
             .map_err(|e| Status::invalid_argument(format!("Invalid claim ID: {}", e)))?;
-        
+
         // Check if claim exists
         let store = self.store.lock().unwrap();
         match store.get_claim(claim_id) {
@@ -285,18 +298,14 @@ where
                     message: format!("Claim {} marked for eviction (stub)", req.claim_id),
                 }))
             }
-            Ok(None) => {
-                Ok(Response::new(ForgetResponse {
-                    success: false,
-                    message: "Claim not found".to_string(),
-                }))
-            }
-            Err(e) => {
-                Ok(Response::new(ForgetResponse {
-                    success: false,
-                    message: format!("Error checking claim: {:?}", e),
-                }))
-            }
+            Ok(None) => Ok(Response::new(ForgetResponse {
+                success: false,
+                message: "Claim not found".to_string(),
+            })),
+            Err(e) => Ok(Response::new(ForgetResponse {
+                success: false,
+                message: format!("Error checking claim: {:?}", e),
+            })),
         }
     }
 
@@ -306,10 +315,11 @@ where
     ) -> Result<Response<HealthCheckResponse>, Status> {
         let store = self.store.lock().unwrap();
         let query = ClaimQuery::default();
-        let claim_count = store.query_claims(&query)
+        let claim_count = store
+            .query_claims(&query)
             .map(|claims| claims.len() as i64)
             .unwrap_or(0);
-        
+
         Ok(Response::new(HealthCheckResponse {
             status: health_check_response::Status::Healthy as i32,
             version: env!("CARGO_PKG_VERSION").to_string(),
@@ -324,17 +334,17 @@ where
 mod tests {
     use super::*;
     use boswell_domain::Relationship;
-    
+
     // Mock store for testing
     struct MockStore;
-    
+
     impl ClaimStore for MockStore {
         type Error = String;
-        
+
         fn assert_claim(&mut self, claim: Claim) -> Result<ClaimId, Self::Error> {
             Ok(claim.id)
         }
-        
+
         fn get_claim(&self, _id: ClaimId) -> Result<Option<Claim>, Self::Error> {
             Ok(Some(Claim {
                 id: ClaimId::new(),
@@ -349,28 +359,26 @@ mod tests {
                 stale_at: None,
             }))
         }
-        
+
         fn query_claims(&self, _query: &ClaimQuery) -> Result<Vec<Claim>, Self::Error> {
-            Ok(vec![
-                Claim {
-                    id: ClaimId::new(),
-                    namespace: "test".to_string(),
-                    subject: "Alice".to_string(),
-                    predicate: "knows".to_string(),
-                    object: "Bob".to_string(),
-                    source_type: "assertion".to_string(),
-                    confidence: (0.8, 0.95),
-                    tier: "task".to_string(),
-                    created_at: 1000000,
-                    stale_at: None,
-                }
-            ])
+            Ok(vec![Claim {
+                id: ClaimId::new(),
+                namespace: "test".to_string(),
+                subject: "Alice".to_string(),
+                predicate: "knows".to_string(),
+                object: "Bob".to_string(),
+                source_type: "assertion".to_string(),
+                confidence: (0.8, 0.95),
+                tier: "task".to_string(),
+                created_at: 1000000,
+                stale_at: None,
+            }])
         }
-        
+
         fn add_relationship(&mut self, _relationship: Relationship) -> Result<(), Self::Error> {
             Ok(())
         }
-        
+
         fn get_relationships(&self, _id: ClaimId) -> Result<Vec<Relationship>, Self::Error> {
             Ok(vec![])
         }
@@ -490,17 +498,20 @@ mod tests {
             .unwrap()
             .into_inner();
         assert_eq!(filtered.results.len(), 1);
-        assert_eq!(filtered.results[0].claim.as_ref().unwrap().namespace, "lang");
+        assert_eq!(
+            filtered.results[0].claim.as_ref().unwrap().namespace,
+            "lang"
+        );
     }
 
     #[tokio::test]
     async fn test_health_check() {
         let service = BosWellServiceImpl::new(Arc::new(Mutex::new(MockStore)));
         let request = Request::new(HealthCheckRequest {});
-        
+
         let response = service.health_check(request).await.unwrap();
         let health = response.into_inner();
-        
+
         assert_eq!(health.status, health_check_response::Status::Healthy as i32);
         assert!(health.claim_count >= 0);
     }

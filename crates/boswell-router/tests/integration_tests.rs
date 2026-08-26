@@ -1,14 +1,14 @@
 //! Integration tests for the Router service
 
+use axum::{
+    body::Body,
+    http::{Request, StatusCode},
+};
 use boswell_router::{
     config::{InstanceConfig, RouterConfig},
     handlers::{create_router, AppState, HealthCheckResponse},
     registry::InstanceRegistry,
     session::{SessionManager, SessionResponse},
-};
-use axum::{
-    body::Body,
-    http::{Request, StatusCode},
 };
 use std::sync::Arc;
 use tower::ServiceExt; // for oneshot

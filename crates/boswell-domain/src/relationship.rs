@@ -7,38 +7,38 @@ use super::ClaimId;
 pub enum RelationshipType {
     /// One claim supports another (increases confidence)
     Supports,
-    
+
     /// One claim contradicts another
     Contradicts,
-    
+
     /// One claim was derived from another (synthesis)
     DerivedFrom,
-    
+
     /// One claim references another
     References,
-    
+
     /// One claim supersedes another (newer version)
     Supersedes,
 }
 
 /// A pairwise relationship between two claims
-/// 
+///
 /// Per ADR-002, we only model pairwise relationships.
 /// Compound relationships are handled by the Synthesizer creating derived claims.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Relationship {
     /// Source claim ID
     pub from_claim: ClaimId,
-    
+
     /// Target claim ID
     pub to_claim: ClaimId,
-    
+
     /// Type of relationship
     pub relationship_type: RelationshipType,
-    
+
     /// Strength of relationship [0.0, 1.0]
     pub strength: f64,
-    
+
     /// When this relationship was established
     pub created_at: u64,
 }
@@ -52,8 +52,11 @@ impl Relationship {
         strength: f64,
         created_at: u64,
     ) -> Self {
-        assert!((0.0..=1.0).contains(&strength), "Strength must be in [0, 1]");
-        
+        assert!(
+            (0.0..=1.0).contains(&strength),
+            "Strength must be in [0, 1]"
+        );
+
         Self {
             from_claim,
             to_claim,

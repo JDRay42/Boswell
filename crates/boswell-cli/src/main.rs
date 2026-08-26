@@ -1,8 +1,8 @@
 //! Boswell CLI - Command-line interface for the Boswell cognitive memory system.
 
-use boswell_cli::{Cli, Command, Config, Formatter};
 use boswell_cli::commands;
 use boswell_cli::repl;
+use boswell_cli::{Cli, Command, Config, Formatter};
 use clap::Parser;
 
 #[tokio::main]
@@ -30,10 +30,7 @@ async fn run() -> boswell_cli::Result<()> {
     }
 
     // Determine output format
-    let format = cli
-        .format
-        .map(Into::into)
-        .unwrap_or(config.settings.format);
+    let format = cli.format.map(Into::into).unwrap_or(config.settings.format);
 
     // Determine color setting
     let color_enabled = !cli.no_color && config.settings.color;

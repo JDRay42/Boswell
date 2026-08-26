@@ -1,9 +1,9 @@
 //! Learn tool - Batch insert multiple claims
 
-use boswell_sdk::BoswellClient;
-use boswell_domain::Tier;
-use serde::{Deserialize, Serialize};
 use crate::error::McpError;
+use boswell_domain::Tier;
+use boswell_sdk::BoswellClient;
+use serde::{Deserialize, Serialize};
 
 /// A single claim to be learned
 #[derive(Debug, Deserialize)]
@@ -69,15 +69,13 @@ pub async fn handle_learn(
     for (idx, claim) in params.claims.into_iter().enumerate() {
         // Parse tier if provided
         let tier = match claim.tier {
-            Some(ref t) => {
-                match t.parse::<Tier>() {
-                    Ok(tier_enum) => Some(tier_enum),
-                    Err(_) => {
-                        errors.push(format!("Claim {}: Invalid tier '{}'", idx, t));
-                        continue;
-                    }
+            Some(ref t) => match t.parse::<Tier>() {
+                Ok(tier_enum) => Some(tier_enum),
+                Err(_) => {
+                    errors.push(format!("Claim {}: Invalid tier '{}'", idx, t));
+                    continue;
                 }
-            }
+            },
             None => None,
         };
 

@@ -1,12 +1,14 @@
 //! Core Synthesizer implementation.
 
 use crate::clustering::build_clusters;
-use crate::config::SynthesizerConfig;
 use crate::confidence::propagate_confidence;
+use crate::config::SynthesizerConfig;
 use crate::error::SynthesizerError;
 use crate::parser::parse_insight_response;
 use crate::prompt::PromptBuilder;
-use crate::types::{ClaimCluster, InsightCandidate, SynthesisReport, SynthesisScope, SynthesizedInsight};
+use crate::types::{
+    ClaimCluster, InsightCandidate, SynthesisReport, SynthesisScope, SynthesizedInsight,
+};
 use boswell_domain::traits::{ClaimQuery, ClaimStore, LlmProvider};
 use boswell_domain::{Claim, ClaimId, Relationship, RelationshipType, Tier};
 use boswell_gatekeeper::{Gatekeeper, ValidationStatus};
@@ -618,7 +620,10 @@ mod tests {
             vec!["ephemeral", "task", "project", "permanent"]
         );
         // Unknown tier falls back to task.
-        assert_eq!(tiers_at_or_above("bogus"), vec!["task", "project", "permanent"]);
+        assert_eq!(
+            tiers_at_or_above("bogus"),
+            vec!["task", "project", "permanent"]
+        );
     }
 
     #[test]

@@ -72,11 +72,8 @@ pub fn build_clusters(
     }
 
     // Map claim id -> index in the candidate vector.
-    let index_of: HashMap<ClaimId, usize> = claims
-        .iter()
-        .enumerate()
-        .map(|(i, c)| (c.id, i))
-        .collect();
+    let index_of: HashMap<ClaimId, usize> =
+        claims.iter().enumerate().map(|(i, c)| (c.id, i)).collect();
 
     let mut uf = UnionFind::new(claims.len());
 
@@ -213,7 +210,11 @@ mod tests {
         assert_eq!(clusters[0].len(), 5);
         // The kept claims should be the highest-confidence ones (upper >= 0.7).
         for c in &clusters[0] {
-            assert!(c.confidence.1 >= 0.7 - f64::EPSILON, "kept {:?}", c.confidence);
+            assert!(
+                c.confidence.1 >= 0.7 - f64::EPSILON,
+                "kept {:?}",
+                c.confidence
+            );
         }
     }
 
@@ -222,7 +223,13 @@ mod tests {
         let a = claim("entity:a", "1");
         let b = claim("entity:b", "2");
         let outsider = ClaimId::new();
-        let rels = vec![Relationship::new(a.id, outsider, RelationshipType::Supports, 0.9, 0)];
+        let rels = vec![Relationship::new(
+            a.id,
+            outsider,
+            RelationshipType::Supports,
+            0.9,
+            0,
+        )];
         // a and b share no subject and only a references a non-candidate.
         let clusters = build_clusters(vec![a, b], &rels, 2, 12);
         // Neither reaches size 2 as a connected group.

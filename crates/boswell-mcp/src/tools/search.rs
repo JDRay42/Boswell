@@ -1,9 +1,9 @@
 //! Semantic search tool - Find claims by semantic similarity
 
-use boswell_sdk::BoswellClient;
-use boswell_domain::Claim;
-use serde::{Deserialize, Serialize};
 use crate::error::McpError;
+use boswell_domain::Claim;
+use boswell_sdk::BoswellClient;
+use serde::{Deserialize, Serialize};
 
 /// Parameters for semantic search
 #[derive(Debug, Deserialize)]

@@ -23,7 +23,7 @@ pub async fn execute_connect(
 
     // Create client
     let mut client = BoswellClient::new(&url);
-    
+
     // Connect to router (auto-selects instance)
     client.connect().await?;
 

@@ -10,7 +10,9 @@ use serde_json::Value;
 /// - `Ok(Some(candidate))` when the LLM reported a genuine insight,
 /// - `Ok(None)` when the LLM explicitly reported no insight,
 /// - `Err(..)` when the response could not be parsed at all.
-pub fn parse_insight_response(response: &str) -> Result<Option<InsightCandidate>, SynthesizerError> {
+pub fn parse_insight_response(
+    response: &str,
+) -> Result<Option<InsightCandidate>, SynthesizerError> {
     let json_str = extract_json(response)?;
 
     let json: Value = serde_json::from_str(&json_str)

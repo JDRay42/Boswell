@@ -84,16 +84,16 @@ impl fmt::Display for ClaimId {
 pub struct Claim {
     /// Unique identifier
     pub id: ClaimId,
-    
+
     /// Namespace for organization (per ADR-006)
     pub namespace: String,
-    
+
     /// Subject of the claim
     pub subject: String,
-    
+
     /// Predicate/relationship
     pub predicate: String,
-    
+
     /// Object of the claim
     pub object: String,
 
@@ -106,13 +106,13 @@ pub struct Claim {
 
     /// Confidence interval [lower, upper] (per ADR-003)
     pub confidence: (f64, f64),
-    
+
     /// Current tier (ephemeral, task, project, permanent)
     pub tier: String,
-    
+
     /// When this claim was created (timestamp)
     pub created_at: u64,
-    
+
     /// When this claim should be considered stale
     pub stale_at: Option<u64>,
 }
@@ -174,7 +174,7 @@ mod tests {
     fn test_claim_id_ordering() {
         let id1 = ClaimId::from_value(1000);
         let id2 = ClaimId::from_value(2000);
-        
+
         assert!(id1 < id2);
         assert!(id2 > id1);
     }
@@ -187,7 +187,10 @@ mod tests {
         let id2 = ClaimId::new();
 
         assert!(id1 < id2, "Earlier UUIDv7 should be less than later UUIDv7");
-        assert!(id1.timestamp() <= id2.timestamp(), "Timestamps should be ordered");
+        assert!(
+            id1.timestamp() <= id2.timestamp(),
+            "Timestamps should be ordered"
+        );
     }
 
     #[test]

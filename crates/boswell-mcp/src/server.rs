@@ -29,9 +29,7 @@ impl McpServer {
     ///
     /// Result containing the server or an error
     pub fn new(router_url: String) -> Result<Self, McpError> {
-        let runtime = Runtime::new().map_err(|e| {
-            McpError::IoError(std::io::Error::other(e))
-        })?;
+        let runtime = Runtime::new().map_err(|e| McpError::IoError(std::io::Error::other(e)))?;
 
         let client = BoswellClient::new(&router_url);
 
@@ -69,11 +67,8 @@ impl McpServer {
                 Ok(req) => req,
                 Err(e) => {
                     error!("Failed to parse request: {}", e);
-                    let error_response = JsonRpcError::new(
-                        None,
-                        -32700,
-                        format!("Parse error: {}", e),
-                    );
+                    let error_response =
+                        JsonRpcError::new(None, -32700, format!("Parse error: {}", e));
                     let error_value = serde_json::to_value(&error_response).unwrap();
                     self.write_response(&mut stdout, &error_value)?;
                     continue;
@@ -98,11 +93,8 @@ impl McpServer {
             "tools/list" => self.handle_tools_list(id),
             "tools/call" => self.handle_tool_call(id, request.params),
             _ => {
-                let error = JsonRpcError::new(
-                    id,
-                    -32601,
-                    format!("Method not found: {}", request.method),
-                );
+                let error =
+                    JsonRpcError::new(id, -32601, format!("Method not found: {}", request.method));
                 serde_json::to_value(error).unwrap()
             }
         }
@@ -163,11 +155,7 @@ impl McpServer {
             "boswell_forget" => self.call_forget_tool(tool_params),
             "boswell_semantic_search" => self.call_search_tool(tool_params),
             _ => {
-                let error = JsonRpcError::new(
-                    id,
-                    -32601,
-                    format!("Tool not found: {}", tool_name),
-                );
+                let error = JsonRpcError::new(id, -32601, format!("Tool not found: {}", tool_name));
                 return serde_json::to_value(error).unwrap();
             }
         };
@@ -187,35 +175,45 @@ impl McpServer {
     /// Call assert tool
     fn call_assert_tool(&mut self, params: Value) -> Result<Value, McpError> {
         let params: tools::AssertParams = serde_json::from_value(params)?;
-        let result = self.runtime.block_on(tools::handle_assert(&mut self.client, params))?;
+        let result = self
+            .runtime
+            .block_on(tools::handle_assert(&mut self.client, params))?;
         Ok(serde_json::to_value(result)?)
     }
 
     /// Call query tool
     fn call_query_tool(&mut self, params: Value) -> Result<Value, McpError> {
         let params: tools::QueryParams = serde_json::from_value(params)?;
-        let result = self.runtime.block_on(tools::handle_query(&mut self.client, params))?;
+        let result = self
+            .runtime
+            .block_on(tools::handle_query(&mut self.client, params))?;
         Ok(serde_json::to_value(result)?)
     }
 
     /// Call learn tool
     fn call_learn_tool(&mut self, params: Value) -> Result<Value, McpError> {
         let params: tools::LearnParams = serde_json::from_value(params)?;
-        let result = self.runtime.block_on(tools::handle_learn(&mut self.client, params))?;
+        let result = self
+            .runtime
+            .block_on(tools::handle_learn(&mut self.client, params))?;
         Ok(serde_json::to_value(result)?)
     }
 
     /// Call forget tool
     fn call_forget_tool(&mut self, params: Value) -> Result<Value, McpError> {
         let params: tools::ForgetParams = serde_json::from_value(params)?;
-        let result = self.runtime.block_on(tools::handle_forget(&mut self.client, params))?;
+        let result = self
+            .runtime
+            .block_on(tools::handle_forget(&mut self.client, params))?;
         Ok(serde_json::to_value(result)?)
     }
 
     /// Call search tool
     fn call_search_tool(&mut self, params: Value) -> Result<Value, McpError> {
         let params: tools::SearchParams = serde_json::from_value(params)?;
-        let result = self.runtime.block_on(tools::handle_search(&mut self.client, params))?;
+        let result = self
+            .runtime
+            .block_on(tools::handle_search(&mut self.client, params))?;
         Ok(serde_json::to_value(result)?)
     }
 
@@ -232,7 +230,8 @@ impl McpServer {
     fn tool_definition_assert(&self) -> ToolDefinition {
         ToolDefinition {
             name: "boswell_assert".to_string(),
-            description: "Assert a new claim into Boswell with optional confidence and tier".to_string(),
+            description: "Assert a new claim into Boswell with optional confidence and tier"
+                .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {

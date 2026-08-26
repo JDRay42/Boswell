@@ -19,7 +19,12 @@ pub async fn execute_search(
     }
 
     let hits = client
-        .search(&args.query, args.namespace.clone(), args.limit, args.threshold)
+        .search(
+            &args.query,
+            args.namespace.clone(),
+            args.limit,
+            args.threshold,
+        )
         .await?;
 
     println!("{}", formatter.format_search_results(&hits)?);
