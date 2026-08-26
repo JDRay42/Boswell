@@ -96,7 +96,14 @@ pub struct Claim {
     
     /// Object of the claim
     pub object: String,
-    
+
+    /// How this claim came to exist. See [`Claim::SOURCE_ASSERTION`] and the
+    /// other `SOURCE_*` constants for the canonical values:
+    /// `"assertion"` (direct user/agent assertion), `"extraction"` (derived
+    /// from text by the Extractor), `"inference"` (synthesized from other
+    /// claims by the Synthesizer), or `"import"`.
+    pub source_type: String,
+
     /// Confidence interval [lower, upper] (per ADR-003)
     pub confidence: (f64, f64),
     
@@ -111,7 +118,22 @@ pub struct Claim {
 }
 
 impl Claim {
-    /// Create a new claim
+    /// Canonical `source_type`: a direct assertion by a user or agent. This is
+    /// the default for claims created without an explicit source.
+    pub const SOURCE_ASSERTION: &'static str = "assertion";
+
+    /// Canonical `source_type`: extracted from unstructured text by the Extractor.
+    pub const SOURCE_EXTRACTION: &'static str = "extraction";
+
+    /// Canonical `source_type`: synthesized from other claims by the Synthesizer.
+    pub const SOURCE_INFERENCE: &'static str = "inference";
+
+    /// Canonical `source_type`: bulk-imported from an external source.
+    pub const SOURCE_IMPORT: &'static str = "import";
+
+    /// Create a new claim with the default source type (`"assertion"`).
+    ///
+    /// Use [`Claim::with_source_type`] to record a different origin.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: ClaimId,
@@ -129,11 +151,18 @@ impl Claim {
             subject,
             predicate,
             object,
+            source_type: Self::SOURCE_ASSERTION.to_string(),
             confidence,
             tier,
             created_at,
             stale_at: None,
         }
+    }
+
+    /// Set the `source_type` (builder style).
+    pub fn with_source_type(mut self, source_type: impl Into<String>) -> Self {
+        self.source_type = source_type.into();
+        self
     }
 }
 

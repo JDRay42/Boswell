@@ -291,6 +291,7 @@ mod tests {
             subject: "user:alice".to_string(),
             predicate: "likes:coffee".to_string(),
             object: "beverage:espresso".to_string(),
+            source_type: "assertion".to_string(),
             confidence: (0.8, 0.9),
             tier: "task".to_string(),
             created_at: 1234567890,

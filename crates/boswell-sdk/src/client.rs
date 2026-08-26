@@ -304,12 +304,19 @@ fn grpc_claim_to_domain(claim: &boswell_grpc::proto::Claim) -> Result<Claim, Str
         .unwrap()
         .as_secs();
 
+    let source_type = if claim.source_type.is_empty() {
+        Claim::SOURCE_ASSERTION.to_string()
+    } else {
+        claim.source_type.clone()
+    };
+
     Ok(Claim {
         id: claim_id,
         namespace: claim.namespace.clone(),
         subject: claim.subject.clone(),
         predicate: claim.predicate.clone(),
         object: claim.object.clone(),
+        source_type,
         confidence,
         tier,
         created_at,
@@ -334,6 +341,7 @@ fn domain_claim_to_grpc(claim: Claim) -> boswell_grpc::proto::Claim {
             upper: claim.confidence.1,
         }),
         tier,
+        source_type: claim.source_type,
     }
 }
 

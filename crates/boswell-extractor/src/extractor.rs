@@ -260,6 +260,7 @@ where
             subject: candidate.subject.clone(),
             predicate: candidate.predicate.clone(),
             object: candidate.object.clone(),
+            source_type: Claim::SOURCE_EXTRACTION.to_string(),
             confidence: (candidate.confidence_lower, candidate.confidence_upper),
             tier: tier.to_string(),
             created_at: SystemTime::now()

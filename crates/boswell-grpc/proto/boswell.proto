@@ -49,6 +49,7 @@ message Claim {
     string object = 5;                    // Object entity
     ConfidenceInterval confidence = 6;    // Confidence interval
     Tier tier = 7;                       // Lifecycle tier
+    string source_type = 8;               // Origin: assertion | extraction | inference | import
 }
 
 // Provenance entry tracking claim origin

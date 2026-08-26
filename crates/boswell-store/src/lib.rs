@@ -109,11 +109,49 @@ impl SqliteStore {
     fn initialize_schema(&mut self) -> Result<(), StoreError> {
         // Read and execute the schema SQL
         let schema = include_str!("schema.sql");
-        
+
         // Execute each statement (SQLite doesn't support multiple statements in one execute)
         self.conn.execute_batch(schema)?;
-        
+
+        // Apply incremental migrations for databases created by earlier versions.
+        self.run_migrations()?;
+
         Ok(())
+    }
+
+    /// Apply incremental schema migrations to databases that predate newer columns.
+    ///
+    /// This is idempotent: on a freshly created database the columns already
+    /// exist (via `schema.sql`), so the `ALTER TABLE` steps are skipped.
+    fn run_migrations(&mut self) -> Result<(), StoreError> {
+        // Migration: add `source_type` to the claims table if it is missing.
+        if !self.column_exists("claims", "source_type")? {
+            self.conn.execute_batch(
+                "ALTER TABLE claims ADD COLUMN source_type TEXT NOT NULL DEFAULT 'assertion';",
+            )?;
+        }
+        // Index is safe to (re)create now that the column is guaranteed to exist.
+        self.conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_claims_source_type ON claims(source_type);",
+        )?;
+
+        Ok(())
+    }
+
+    /// Check whether `column` exists on `table` via `PRAGMA table_info`.
+    fn column_exists(&self, table: &str, column: &str) -> Result<bool, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!("PRAGMA table_info({})", table))?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            // Column 1 of table_info is the column name.
+            let name: String = row.get(1)?;
+            if name == column {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
     
     /// Convert ClaimId to bytes for storage
@@ -176,14 +214,15 @@ impl ClaimStore for SqliteStore {
         
         // Insert the claim
         self.conn.execute(
-            "INSERT INTO claims (id, namespace, subject, predicate, object, base_lower, base_upper, tier, created_at, stale_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT INTO claims (id, namespace, subject, predicate, object, source_type, base_lower, base_upper, tier, created_at, stale_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 &id_bytes,
                 &claim.namespace,
                 &claim.subject,
                 &claim.predicate,
                 &claim.object,
+                &claim.source_type,
                 claim.confidence.0,
                 claim.confidence.1,
                 &claim.tier,
@@ -217,7 +256,7 @@ impl ClaimStore for SqliteStore {
         let id_bytes = Self::claim_id_to_bytes(id);
         
         let claim = self.conn.query_row(
-            "SELECT id, namespace, subject, predicate, object, base_lower, base_upper, tier, created_at, stale_at
+            "SELECT id, namespace, subject, predicate, object, base_lower, base_upper, tier, created_at, stale_at, source_type
              FROM claims WHERE id = ?1",
             params![&id_bytes],
             |row| {
@@ -235,6 +274,7 @@ impl ClaimStore for SqliteStore {
                     subject: row.get(2)?,
                     predicate: row.get(3)?,
                     object: row.get(4)?,
+                    source_type: row.get(10)?,
                     confidence: (row.get(5)?, row.get(6)?),
                     tier: row.get(7)?,
                     created_at: row.get::<_, i64>(8)? as u64,
@@ -248,7 +288,7 @@ impl ClaimStore for SqliteStore {
     
     fn query_claims(&self, query: &ClaimQuery) -> Result<Vec<Claim>, Self::Error> {
         let mut sql = String::from(
-            "SELECT id, namespace, subject, predicate, object, base_lower, base_upper, tier, created_at, stale_at
+            "SELECT id, namespace, subject, predicate, object, base_lower, base_upper, tier, created_at, stale_at, source_type
              FROM claims WHERE 1=1"
         );
         let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
@@ -291,6 +331,7 @@ impl ClaimStore for SqliteStore {
                 subject: row.get(2)?,
                 predicate: row.get(3)?,
                 object: row.get(4)?,
+                source_type: row.get(10)?,
                 confidence: (row.get(5)?, row.get(6)?),
                 tier: row.get(7)?,
                 created_at: row.get::<_, i64>(8)? as u64,
@@ -442,5 +483,115 @@ impl SqliteStore {
             .map_err(|e| StoreError::InvalidData(format!("Failed to add embedding: {}", e)))?;
         
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+
+    /// A database created before `source_type` existed must gain the column on
+    /// open (existing rows defaulting to "assertion") and remain fully usable.
+    #[test]
+    fn test_source_type_migration_on_legacy_db() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy.db");
+
+        // 1. Build a legacy `claims` table WITHOUT the source_type column and
+        //    insert one row through a raw connection.
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE claims (
+                    id BLOB PRIMARY KEY NOT NULL,
+                    namespace TEXT NOT NULL,
+                    subject TEXT NOT NULL,
+                    predicate TEXT NOT NULL,
+                    object TEXT NOT NULL,
+                    base_lower REAL NOT NULL,
+                    base_upper REAL NOT NULL,
+                    tier TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    stale_at INTEGER,
+                    embedding_vector TEXT,
+                    content_hash TEXT
+                );",
+            )
+            .unwrap();
+
+            let id_bytes = SqliteStore::claim_id_to_bytes(ClaimId::from_value(42));
+            conn.execute(
+                "INSERT INTO claims (id, namespace, subject, predicate, object, base_lower, base_upper, tier, created_at, stale_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![&id_bytes, "legacy", "user:alice", "knows", "user:bob", 0.7, 0.8, "task", 1000_i64, Option::<i64>::None],
+            )
+            .unwrap();
+        }
+
+        // 2. Opening through SqliteStore triggers run_migrations().
+        let mut store = SqliteStore::new(&path, false, 0).unwrap();
+        assert!(store.column_exists("claims", "source_type").unwrap());
+
+        // 3. The pre-existing row now carries the default source_type.
+        let legacy = store
+            .get_claim(ClaimId::from_value(42))
+            .unwrap()
+            .expect("legacy claim should still be present");
+        assert_eq!(legacy.source_type, "assertion");
+        assert_eq!(legacy.subject, "user:alice");
+
+        // 4. New inserts with an explicit source_type round-trip correctly.
+        let new = Claim {
+            id: ClaimId::from_value(99),
+            namespace: "legacy".to_string(),
+            subject: "team:atlas".to_string(),
+            predicate: "trend:focus".to_string(),
+            object: "topic:auth".to_string(),
+            source_type: "inference".to_string(),
+            confidence: (0.5, 0.7),
+            tier: "task".to_string(),
+            created_at: 2000,
+            stale_at: None,
+        };
+        store.assert_claim(new).unwrap();
+        let back = store.get_claim(ClaimId::from_value(99)).unwrap().unwrap();
+        assert_eq!(back.source_type, "inference");
+
+        // Re-running migrations is idempotent.
+        store.run_migrations().unwrap();
+        assert!(store.column_exists("claims", "source_type").unwrap());
+    }
+
+    /// source_type persists through assert/get, and Claim::new defaults it.
+    #[test]
+    fn test_source_type_roundtrip_and_default() {
+        let mut store = SqliteStore::new(":memory:", false, 0).unwrap();
+
+        let c = Claim::new(
+            ClaimId::new(),
+            "ns".into(),
+            "s:1".into(),
+            "p:1".into(),
+            "o:1".into(),
+            (0.4, 0.6),
+            "task".into(),
+            100,
+        )
+        .with_source_type("extraction");
+        let id = store.assert_claim(c).unwrap();
+        assert_eq!(store.get_claim(id).unwrap().unwrap().source_type, "extraction");
+
+        // Claim::new defaults to "assertion".
+        let d = Claim::new(
+            ClaimId::new(),
+            "ns".into(),
+            "s:2".into(),
+            "p:2".into(),
+            "o:2".into(),
+            (0.4, 0.6),
+            "task".into(),
+            100,
+        );
+        assert_eq!(d.source_type, "assertion");
     }
 }

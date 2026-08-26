@@ -481,6 +481,7 @@ mod tests {
             subject: "entity:test".to_string(),
             predicate: "has_property".to_string(),
             object: "value:123".to_string(),
+            source_type: "assertion".to_string(),
             confidence: (confidence, confidence + 0.1),
             tier: tier.as_str().to_string(), // Convert Tier to String
             created_at,

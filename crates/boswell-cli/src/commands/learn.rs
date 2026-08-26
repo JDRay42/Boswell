@@ -99,6 +99,7 @@ impl ClaimDefinition {
             subject,
             predicate,
             object,
+            source_type: boswell_domain::Claim::SOURCE_ASSERTION.to_string(),
             confidence: (self.confidence.lower, self.confidence.upper),
             tier: tier_str,
             created_at,

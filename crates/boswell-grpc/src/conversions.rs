@@ -91,12 +91,20 @@ pub fn claim_from_proto(claim: proto::Claim) -> Result<Claim, ConversionError> {
         .unwrap()
         .as_secs();
     
+    // Default to a direct assertion when the client omits the origin.
+    let source_type = if claim.source_type.is_empty() {
+        Claim::SOURCE_ASSERTION.to_string()
+    } else {
+        claim.source_type
+    };
+
     Ok(Claim {
         id,
         namespace: claim.namespace,
         subject: claim.subject,
         predicate: claim.predicate,
         object: claim.object,
+        source_type,
         confidence: (confidence.lower, confidence.upper),
         tier,
         created_at,
@@ -117,6 +125,7 @@ pub fn claim_to_proto(claim: Claim) -> proto::Claim {
             upper: claim.confidence.1,
         }),
         tier: tier_to_proto(&claim.tier) as i32,
+        source_type: claim.source_type,
     }
 }
 
@@ -167,19 +176,21 @@ mod tests {
             subject: "Alice".to_string(),
             predicate: "knows".to_string(),
             object: "Bob".to_string(),
+            source_type: "inference".to_string(),
             confidence: (0.8, 0.95),
             tier: "task".to_string(),
             created_at: 1000000,
             stale_at: None,
         };
-        
+
         let proto = claim_to_proto(claim.clone());
         let back = claim_from_proto(proto).unwrap();
-        
+
         assert_eq!(claim.id, back.id);
         assert_eq!(claim.namespace, back.namespace);
         assert_eq!(claim.subject, back.subject);
         assert_eq!(claim.confidence, back.confidence);
         assert_eq!(claim.tier, back.tier);
+        assert_eq!(claim.source_type, back.source_type);
     }
 }

@@ -16,6 +16,9 @@ CREATE TABLE IF NOT EXISTS claims (
     base_lower REAL NOT NULL CHECK (base_lower >= 0.0 AND base_lower <= 1.0),
     base_upper REAL NOT NULL CHECK (base_upper >= 0.0 AND base_upper <= 1.0),
     
+    -- How this claim came to exist (assertion, extraction, inference, import)
+    source_type TEXT NOT NULL DEFAULT 'assertion',
+
     -- Tier and timestamps
     tier TEXT NOT NULL CHECK (tier IN ('ephemeral', 'task', 'project', 'permanent')),
     created_at INTEGER NOT NULL,
@@ -37,6 +40,8 @@ CREATE INDEX IF NOT EXISTS idx_claims_namespace ON claims(namespace);
 CREATE INDEX IF NOT EXISTS idx_claims_tier ON claims(tier);
 CREATE INDEX IF NOT EXISTS idx_claims_created_at ON claims(created_at);
 CREATE INDEX IF NOT EXISTS idx_claims_content_hash ON claims(content_hash);
+-- Note: idx_claims_source_type is created by run_migrations() in lib.rs, after
+-- ensuring the source_type column exists on databases created before it was added.
 
 -- Relationships table (pairwise only, per ADR-002)
 CREATE TABLE IF NOT EXISTS relationships (
