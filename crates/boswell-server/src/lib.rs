@@ -108,6 +108,9 @@ pub async fn run(config: InstanceConfig) -> Result<(), ServerError> {
     if config.synthesizer.enabled {
         spawn_synthesizer(&config, Arc::clone(&store));
     }
+    if config.contradiction.enabled {
+        spawn_contradiction(&config, Arc::clone(&store));
+    }
 
     let server_config = ServerConfig::new(config.bind_address.clone(), config.bind_port);
 
@@ -197,6 +200,45 @@ fn spawn_synthesizer(config: &InstanceConfig, store: Arc<Mutex<SqliteStore>>) {
                     r.insights_created
                 ),
                 Err(e) => tracing::error!("Synthesis pass failed: {}", e),
+            }
+        }
+    });
+}
+
+/// Spawn the background Contradiction Janitor scan loop against the shared store.
+///
+/// Like the Synthesizer, it makes slow LLM calls, so it uses
+/// [`ContradictionJanitor::scan_pass_shared`], holding the store lock only for
+/// the synchronous planning and recording phases.
+fn spawn_contradiction(config: &InstanceConfig, store: Arc<Mutex<SqliteStore>>) {
+    use boswell_janitor::ContradictionJanitor;
+    use tokio::time::{interval, Duration};
+
+    let settings = &config.contradiction;
+    let llm = boswell_llm::OllamaProvider::new(&settings.endpoint, &settings.model);
+    let cfg = settings.to_contradiction_config();
+    let period = Duration::from_secs(settings.interval_hours.max(1) * 3600);
+
+    tracing::info!(
+        "Contradiction janitor enabled: model='{}', every {}h (dry_run: {})",
+        settings.model,
+        settings.interval_hours,
+        settings.dry_run
+    );
+
+    tokio::spawn(async move {
+        let janitor = ContradictionJanitor::new(llm, cfg);
+        let mut ticker = interval(period);
+        loop {
+            ticker.tick().await;
+            match janitor.scan_pass_shared(Arc::clone(&store)).await {
+                Ok(r) => tracing::info!(
+                    "Contradiction scan: {} examined, {} pairs, {} contradictions",
+                    r.claims_examined,
+                    r.pairs_evaluated,
+                    r.contradictions_found
+                ),
+                Err(e) => tracing::error!("Contradiction scan failed: {}", e),
             }
         }
     });

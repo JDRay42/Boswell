@@ -46,3 +46,15 @@ interval_hours = 6
 min_tier = "task"
 # Dry-run analyzes and logs insights without writing them to the store.
 dry_run = false
+
+[contradiction]
+# Run scheduled LLM-backed contradiction detection: compares same-subject claims
+# and records a Contradicts relationship for incompatible pairs (which lowers the
+# effective confidence of both). Off by default (LLM cost).
+enabled = false
+model = "qwen2.5:7b"
+endpoint = "http://localhost:11434"
+interval_hours = 12
+min_tier = "task"
+# Dry-run detects and logs contradictions without recording them.
+dry_run = false

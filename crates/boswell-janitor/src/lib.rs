@@ -117,12 +117,16 @@
 
 #![warn(missing_docs)]
 
+mod contradiction;
 mod error;
 mod config;
 mod metrics;
 mod janitor;
 mod worker;
 
+pub use contradiction::{
+    ContradictionConfig, ContradictionJanitor, ContradictionReport, DetectedContradiction,
+};
 pub use error::JanitorError;
 pub use config::JanitorConfig;
 pub use metrics::JanitorMetrics;

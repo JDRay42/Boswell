@@ -40,6 +40,9 @@ pub struct InstanceConfig {
 
     /// Background synthesis (Synthesizer) settings.
     pub synthesizer: SynthesizerSettings,
+
+    /// Background contradiction-detection settings.
+    pub contradiction: ContradictionSettings,
 }
 
 impl Default for InstanceConfig {
@@ -51,6 +54,7 @@ impl Default for InstanceConfig {
             embedding: EmbeddingConfig::default(),
             janitor: JanitorSettings::default(),
             synthesizer: SynthesizerSettings::default(),
+            contradiction: ContradictionSettings::default(),
         }
     }
 }
@@ -131,6 +135,52 @@ impl SynthesizerSettings {
             min_tier: self.min_tier.clone(),
             dry_run: self.dry_run,
             ..boswell_synthesizer::SynthesizerConfig::default()
+        }
+    }
+}
+
+/// Background contradiction-detection settings for the in-process janitor.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ContradictionSettings {
+    /// Whether to run scheduled LLM-backed contradiction scans in the background.
+    pub enabled: bool,
+    /// Ollama chat model used for contradiction detection.
+    pub model: String,
+    /// Ollama endpoint for the contradiction model.
+    pub endpoint: String,
+    /// Hours between contradiction scans.
+    pub interval_hours: u64,
+    /// Minimum tier considered (claims below this are skipped).
+    pub min_tier: String,
+    /// Dry-run: detect and log contradictions without recording them.
+    pub dry_run: bool,
+}
+
+impl Default for ContradictionSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false, // opt-in (LLM cost)
+            model: "qwen2.5:7b".to_string(),
+            endpoint: "http://localhost:11434".to_string(),
+            interval_hours: 12,
+            min_tier: "task".to_string(),
+            dry_run: false,
+        }
+    }
+}
+
+impl ContradictionSettings {
+    /// Build the [`boswell_janitor::ContradictionConfig`] this settings block
+    /// describes. `enabled` is set to `true` because the server only builds this
+    /// when the settings-level `enabled` gate is already on.
+    pub fn to_contradiction_config(&self) -> boswell_janitor::ContradictionConfig {
+        boswell_janitor::ContradictionConfig {
+            enabled: true,
+            scan_interval_hours: self.interval_hours,
+            min_tier: self.min_tier.clone(),
+            dry_run: self.dry_run,
+            ..boswell_janitor::ContradictionConfig::default()
         }
     }
 }
@@ -247,6 +297,18 @@ endpoint = "http://localhost:11434"
 interval_hours = 6
 min_tier = "task"
 # Dry-run analyzes and logs insights without writing them to the store.
+dry_run = false
+
+[contradiction]
+# Run scheduled LLM-backed contradiction detection: compares same-subject claims
+# and records a Contradicts relationship for incompatible pairs (which lowers the
+# effective confidence of both). Off by default (LLM cost).
+enabled = false
+model = "qwen2.5:7b"
+endpoint = "http://localhost:11434"
+interval_hours = 12
+min_tier = "task"
+# Dry-run detects and logs contradictions without recording them.
 dry_run = false
 "#;
 

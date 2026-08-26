@@ -20,4 +20,12 @@ pub enum JanitorError {
     /// Worker error (tokio runtime issues)
     #[error("Worker error: {0}")]
     Worker(String),
+
+    /// LLM provider error (contradiction detection)
+    #[error("LLM error: {0}")]
+    Llm(String),
+
+    /// LLM call timed out
+    #[error("LLM call timed out")]
+    Timeout,
 }

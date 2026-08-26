@@ -117,6 +117,13 @@ insights as new claims linked to their sources via `derived_from` (ADR-006).
 LLM analysis runs without holding the store lock, so gRPC requests are not
 blocked during a pass.
 
+To surface conflicting knowledge, enable the Contradiction Janitor under
+`[contradiction]` (`enabled = true`; also LLM-backed). It compares claims that
+share a subject, asks the LLM whether each pair is incompatible, and records a
+`Contradicts` relationship for genuine contradictions — which the confidence
+computation (ADR-007) folds in as a penalty, lowering the effective confidence
+of both claims. Pairs are rate-limited and already-related pairs are skipped.
+
 ## Project Status
 
 🚧 **In Development** - Phase 1: Foundation
