@@ -134,14 +134,30 @@ confidence decay → decay-aware maintenance (tier demotion + GC) → LLM-backed
 synthesis of emergent insights → LLM-backed contradiction detection. All
 maintenance services run as opt-in background workers inside the instance server.
 
-See [docs/development/plan-boswellDevelopment.prompt.md](docs/development/plan-boswellDevelopment.prompt.md) for the development roadmap and [docs/architecture/](docs/architecture/) for component specs.
+See [docs/development/roadmap.md](docs/development/roadmap.md) for the development roadmap and [docs/architecture/](docs/architecture/) for component specs.
 
 ## Documentation
 
 - [Architecture Documentation](docs/architecture/) - System design and component specifications
 - [Architecture Decision Records](docs/ADRs/) - Key technical decisions and rationale
-- [Development Plan](docs/development/plan-boswellDevelopment.prompt.md) - Phased implementation roadmap
+- [Development Plan](docs/development/roadmap.md) - Phased implementation roadmap
+
+## Contributing
+
+See the [contributing guide](docs/architecture/14-contributing.md) and the
+[Architecture Decision Records](docs/ADRs/) before opening a PR. All code should
+build clean (`cargo build`), pass `cargo clippy -- -D warnings`, and pass
+`cargo test`.
 
 ## License
 
-MIT OR Apache-2.0
+Copyright © 2026 the Boswell authors.
+
+Boswell is licensed under the **GNU Affero General Public License v3.0**
+([AGPL-3.0](LICENSE)). You may use, modify, and redistribute it under those
+terms — including running it as a network service — provided that you preserve
+attribution and make your source (including any modifications) available to
+users of that service under the same license.
+
+The "Boswell" name is not licensed for use in a way that implies endorsement by
+or affiliation with the project.
