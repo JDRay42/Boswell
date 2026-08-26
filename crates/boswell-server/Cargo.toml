@@ -26,3 +26,6 @@ boswell-domain = { workspace = true }
 tonic = "0.12"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "time"] }
 tokio-stream = { version = "0.1", features = ["net"] }
+
+[lints]
+workspace = true

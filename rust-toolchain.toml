@@ -1,7 +1,7 @@
-# Pins the toolchain so every contributor and CI run uses the same Rust.
-# `channel = "stable"` tracks current stable (what the project is developed and
-# linted against); `rust-version` in Cargo.toml declares the minimum supported
-# version separately.
+# Pins the toolchain so every contributor and CI run uses the same Rust, and so
+# CI matches a local install rather than floating ahead of it. `rust-version` in
+# Cargo.toml declares the minimum supported version separately; bump this pin
+# deliberately when you want to move to a newer compiler.
 [toolchain]
-channel = "stable"
+channel = "1.96.0"
 components = ["rustfmt", "clippy"]

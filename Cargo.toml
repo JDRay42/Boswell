@@ -24,6 +24,14 @@ authors = ["Boswell Contributors"]
 license = "AGPL-3.0-only"
 repository = "https://github.com/JDRay42/Boswell"
 
+# Workspace-wide lints (applied to any crate with `[lints] workspace = true`).
+[workspace.lints.clippy]
+# gRPC returns `Result<_, tonic::Status>` throughout, and `Status` is large by
+# design; `result_large_err` fires on tonic's generated code and our handlers
+# alike. Boxing isn't possible (the trait signatures are fixed by tonic), so this
+# lint is not actionable here.
+result_large_err = "allow"
+
 [workspace.dependencies]
 # Internal crates
 boswell-domain = { path = "crates/boswell-domain" }
