@@ -275,6 +275,24 @@ impl Gatekeeper {
             }
         }
 
+        // Semantic (near-)duplicate detection, when enabled and supported.
+        if self.config.validate_semantic_duplicates && store.supports_semantic_search() {
+            let query_text = format!("{} {} {}", claim.subject, claim.predicate, claim.object);
+            let threshold = self.config.semantic_duplicate_threshold as f32;
+
+            let hits = store
+                .semantic_search(&query_text, 5, threshold)
+                .map_err(|e| GatekeeperError::Store(format!("Semantic dedup failed: {}", e)))?;
+
+            if let Some((existing, _)) = hits.into_iter().find(|(_, similarity)| {
+                *similarity >= threshold
+            }) {
+                return Ok(Some(RejectionReason::Duplicate {
+                    existing_id: existing.id,
+                }));
+            }
+        }
+
         Ok(None)
     }
 }
@@ -431,5 +449,107 @@ mod tests {
         fn get_relationships(&self, _id: ClaimId) -> Result<Vec<boswell_domain::Relationship>, Self::Error> {
             Ok(vec![])
         }
+    }
+
+    // A store that supports semantic search and always returns one close hit.
+    struct SemanticDupStore;
+
+    impl ClaimStore for SemanticDupStore {
+        type Error = String;
+        fn assert_claim(&mut self, _c: Claim) -> Result<ClaimId, Self::Error> {
+            Ok(ClaimId::new())
+        }
+        fn get_claim(&self, _id: ClaimId) -> Result<Option<Claim>, Self::Error> {
+            Ok(None)
+        }
+        fn query_claims(&self, _q: &ClaimQuery) -> Result<Vec<Claim>, Self::Error> {
+            Ok(vec![])
+        }
+        fn add_relationship(&mut self, _r: boswell_domain::Relationship) -> Result<(), Self::Error> {
+            Ok(())
+        }
+        fn get_relationships(&self, _id: ClaimId) -> Result<Vec<boswell_domain::Relationship>, Self::Error> {
+            Ok(vec![])
+        }
+        fn supports_semantic_search(&self) -> bool {
+            true
+        }
+        fn semantic_search(
+            &self,
+            _query_text: &str,
+            _limit: usize,
+            _min_similarity: f32,
+        ) -> Result<Vec<(Claim, f32)>, Self::Error> {
+            Ok(vec![(
+                Claim {
+                    id: ClaimId::from_value(7),
+                    namespace: "test".to_string(),
+                    subject: "user:alice".to_string(),
+                    predicate: "likes:coffee".to_string(),
+                    object: "beverage:latte".to_string(),
+                    source_type: "assertion".to_string(),
+                    confidence: (0.8, 0.9),
+                    tier: "task".to_string(),
+                    created_at: 1,
+                    stale_at: None,
+                },
+                0.96,
+            )])
+        }
+    }
+
+    fn near_duplicate_claim() -> Claim {
+        // Same subject/predicate as the canned hit, different object → not an
+        // exact match, but semantically close.
+        Claim {
+            id: ClaimId::new(),
+            namespace: "test".to_string(),
+            subject: "user:alice".to_string(),
+            predicate: "likes:coffee".to_string(),
+            object: "beverage:espresso".to_string(),
+            source_type: "assertion".to_string(),
+            confidence: (0.8, 0.9),
+            tier: "task".to_string(),
+            created_at: 1,
+            stale_at: None,
+        }
+    }
+
+    #[test]
+    fn test_semantic_duplicate_rejected() {
+        let config = ValidationConfig {
+            validate_semantic_duplicates: true,
+            semantic_duplicate_threshold: 0.9,
+            ..Default::default()
+        };
+        let gatekeeper = Gatekeeper::new(config);
+
+        let result = gatekeeper
+            .validate(&near_duplicate_claim(), Some(&SemanticDupStore))
+            .unwrap();
+
+        assert_eq!(result.status, ValidationStatus::Rejected);
+        assert!(result
+            .reasons
+            .iter()
+            .any(|r| matches!(r, RejectionReason::Duplicate { .. })));
+    }
+
+    #[test]
+    fn test_semantic_dedup_skipped_when_store_unsupported() {
+        // Enabled in config, but MockStore reports no semantic support → the
+        // claim is accepted (no semantic rejection path taken).
+        let config = ValidationConfig {
+            validate_semantic_duplicates: true,
+            semantic_duplicate_threshold: 0.9,
+            ..Default::default()
+        };
+        let gatekeeper = Gatekeeper::new(config);
+
+        let result = gatekeeper
+            .validate(&near_duplicate_claim(), Some(&MockStore))
+            .unwrap();
+
+        assert_eq!(result.status, ValidationStatus::Accepted);
     }
 }

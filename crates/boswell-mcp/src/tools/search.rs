@@ -61,12 +61,10 @@ pub struct SearchResult {
     pub results: Vec<SearchResultItem>,
 }
 
-/// Handle boswell_semantic_search tool invocation
+/// Handle boswell_semantic_search tool invocation.
 ///
-/// Performs semantic search using embeddings to find similar claims.
-///
-/// **Note**: Full semantic search is not yet implemented in the SDK.
-/// This currently returns an error indicating the feature is coming soon.
+/// Performs semantic (vector-similarity) search via the SDK, returning ranked
+/// claims with their similarity scores.
 ///
 /// # Arguments
 ///
@@ -77,21 +75,43 @@ pub struct SearchResult {
 ///
 /// Result containing ranked claims with similarity scores or an error
 pub async fn handle_search(
-    _client: &mut BoswellClient,
+    client: &mut BoswellClient,
     params: SearchParams,
 ) -> Result<SearchResult, McpError> {
-    // TODO: Implement semantic search once SDK supports it
-    // The store layer has HNSW vector search, but it's not exposed via gRPC/Router yet
-    // For now, return an error indicating this is not yet available
-    
-    Err(McpError::BoswellError(
-        format!(
-            "Semantic search is not yet implemented. Query was: '{}'. \
-            This feature requires HNSW vector search to be exposed via the gRPC API. \
-            Use boswell_query for now to search by exact filters.",
-            params.query
+    let hits = client
+        .search(
+            &params.query,
+            params.namespace.clone(),
+            params.limit,
+            params.threshold,
         )
-    ))
+        .await
+        .map_err(|e| McpError::BoswellError(e.to_string()))?;
+
+    let results: Vec<SearchResultItem> = hits
+        .into_iter()
+        .map(|(claim, similarity)| claim_to_result_item(claim, similarity))
+        .collect();
+
+    Ok(SearchResult {
+        count: results.len(),
+        query: params.query,
+        results,
+    })
+}
+
+/// Convert a domain claim + similarity score into a search result item.
+fn claim_to_result_item(claim: Claim, similarity: f32) -> SearchResultItem {
+    SearchResultItem {
+        id: claim.id.to_string(),
+        namespace: claim.namespace,
+        subject: claim.subject,
+        predicate: claim.predicate,
+        object: claim.object,
+        confidence: (claim.confidence.0, claim.confidence.1),
+        tier: claim.tier,
+        similarity: similarity as f64,
+    }
 }
 
 #[cfg(test)]

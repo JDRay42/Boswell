@@ -39,6 +39,68 @@ impl Formatter {
         self.format_claims(&[claim.clone()])
     }
 
+    /// Format semantic-search results (claims paired with similarity scores).
+    pub fn format_search_results(&self, hits: &[(Claim, f32)]) -> Result<String> {
+        match self.format {
+            OutputFormat::Json => self.format_search_json(hits),
+            OutputFormat::Table => self.format_search_table(hits),
+            OutputFormat::Quiet => {
+                let ids: Vec<String> = hits.iter().map(|(c, _)| c.id.to_string()).collect();
+                Ok(ids.join("\n"))
+            }
+        }
+    }
+
+    /// Format search results as JSON.
+    fn format_search_json(&self, hits: &[(Claim, f32)]) -> Result<String> {
+        let json: Vec<serde_json::Value> = hits
+            .iter()
+            .map(|(c, similarity)| {
+                serde_json::json!({
+                    "id": c.id.to_string(),
+                    "namespace": c.namespace,
+                    "subject": c.subject,
+                    "predicate": c.predicate,
+                    "object": c.object,
+                    "confidence": { "lower": c.confidence.0, "upper": c.confidence.1 },
+                    "tier": c.tier,
+                    "source_type": c.source_type,
+                    "similarity": similarity,
+                })
+            })
+            .collect();
+        Ok(serde_json::to_string_pretty(&json)?)
+    }
+
+    /// Format search results as a table with a Similarity column.
+    fn format_search_table(&self, hits: &[(Claim, f32)]) -> Result<String> {
+        if hits.is_empty() {
+            return Ok(self.colorize("No matching claims found.", "yellow"));
+        }
+
+        let mut builder = Builder::default();
+        builder.push_record(["Similarity", "ID", "Namespace", "Subject", "Predicate", "Object", "Tier"]);
+
+        for (claim, similarity) in hits {
+            builder.push_record([
+                &format!("{:.3}", similarity),
+                &claim.id.to_string()[..8],
+                &claim.namespace,
+                &claim.subject,
+                &claim.predicate,
+                &claim.object,
+                &claim.tier,
+            ]);
+        }
+
+        let mut table = builder.build();
+        table
+            .with(Style::rounded())
+            .with(Modify::new(Rows::first()).with(Alignment::center()));
+
+        Ok(table.to_string())
+    }
+
     /// Format claims as JSON.
     fn format_claims_json(&self, claims: &[Claim]) -> Result<String> {
         // Create a serializable representation

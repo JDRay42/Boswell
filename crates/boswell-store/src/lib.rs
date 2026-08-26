@@ -403,7 +403,32 @@ impl ClaimStore for SqliteStore {
         
         Ok(relationships)
     }
+
+    fn semantic_search(
+        &self,
+        query_text: &str,
+        limit: usize,
+        min_similarity: f32,
+    ) -> Result<Vec<(Claim, f32)>, StoreError> {
+        // Embed the query text, then search the vector index.
+        let embedding_model = self.embedding_model.as_ref().ok_or_else(|| {
+            StoreError::InvalidData("Vector search is not enabled for this store".to_string())
+        })?;
+
+        let embedding = embedding_model
+            .embed(query_text)
+            .map_err(|e| StoreError::InvalidData(format!("Failed to embed query: {}", e)))?;
+
+        self.semantic_search_by_embedding(&embedding, limit, DEFAULT_EF_SEARCH, min_similarity)
+    }
+
+    fn supports_semantic_search(&self) -> bool {
+        self.vector_index.is_some() && self.embedding_model.is_some()
+    }
 }
+
+/// Default HNSW `ef_search` quality parameter for trait-level semantic search.
+const DEFAULT_EF_SEARCH: usize = 64;
 
 impl SqliteStore {
     /// Perform semantic search for claims similar to the given embedding
@@ -424,7 +449,7 @@ impl SqliteStore {
     /// # Errors
     ///
     /// Returns error if vector search is not enabled or if search fails
-    pub fn semantic_search(
+    pub fn semantic_search_by_embedding(
         &self,
         query_embedding: &[f32],
         k: usize,

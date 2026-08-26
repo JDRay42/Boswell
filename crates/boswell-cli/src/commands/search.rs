@@ -8,7 +8,7 @@ use boswell_sdk::BoswellClient;
 /// Execute the search command.
 pub async fn execute_search(
     args: SearchArgs,
-    _client: &mut BoswellClient,
+    client: &mut BoswellClient,
     formatter: &Formatter,
 ) -> Result<()> {
     // Validate parameters
@@ -18,18 +18,10 @@ pub async fn execute_search(
         ));
     }
 
-    // Note: Semantic search is not yet implemented in the SDK
-    // This is a placeholder that will be implemented when the SDK exposes HNSW search
-    println!(
-        "{}",
-        formatter.warning("Semantic search is not yet available in the SDK")
-    );
-    println!("{}", formatter.info("Use the 'query' command for exact filtering"));
-    println!();
-    println!("Once implemented, this will search for:");
-    println!("  Query: {}", args.query);
-    println!("  Limit: {}", args.limit);
-    println!("  Threshold: {}", args.threshold);
+    let hits = client
+        .search(&args.query, args.namespace.clone(), args.limit, args.threshold)
+        .await?;
 
+    println!("{}", formatter.format_search_results(&hits)?);
     Ok(())
 }

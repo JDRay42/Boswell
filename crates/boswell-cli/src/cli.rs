@@ -180,6 +180,10 @@ pub struct SearchArgs {
     /// Search query text
     pub query: String,
 
+    /// Restrict results to a namespace prefix
+    #[arg(short, long)]
+    pub namespace: Option<String>,
+
     /// Maximum number of results
     #[arg(short, long, default_value = "10")]
     pub limit: usize,

@@ -238,6 +238,7 @@ fn parse_search_command(args: &[&str]) -> Result<ReplCommand> {
 
     Ok(ReplCommand::Command(Command::Search(SearchArgs {
         query: args.join(" "),
+        namespace: None,
         limit: 10,
         threshold: 0.7,
     })))

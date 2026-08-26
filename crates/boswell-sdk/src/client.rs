@@ -6,7 +6,8 @@ use boswell_domain::{Claim, ClaimId, Tier};
 use boswell_grpc::proto::{
     bos_well_service_client::BosWellServiceClient, AssertRequest, AssertResponse, ConfidenceInterval,
     ForgetRequest, ForgetResponse, LearnRequest, LearnResponse, QueryFilter as GrpcQueryFilter,
-    QueryMode as GrpcQueryMode, QueryRequest, QueryResponse, Tier as GrpcTier,
+    QueryMode as GrpcQueryMode, QueryRequest, QueryResponse, SearchRequest, SearchResponse,
+    Tier as GrpcTier,
 };
 use tonic::transport::Channel;
 
@@ -182,6 +183,55 @@ impl BoswellClient {
                 }
                 Err(e) if matches!(e.code(), tonic::Code::Unauthenticated) && !retried => {
                     // Session expired - try to reconnect once
+                    self.reconnect().await?;
+                    retried = true;
+                }
+                Err(e) => return Err(SdkError::from(e)),
+            }
+        }
+    }
+
+    /// Semantically search for claims similar to `query_text`.
+    ///
+    /// Returns up to `limit` `(claim, similarity)` pairs whose cosine similarity
+    /// is at least `min_similarity`, ordered by similarity descending. When
+    /// `namespace` is provided, results are restricted to that namespace prefix.
+    pub async fn search(
+        &mut self,
+        query_text: &str,
+        namespace: Option<String>,
+        limit: usize,
+        min_similarity: f64,
+    ) -> Result<Vec<(Claim, f32)>, SdkError> {
+        let mut retried = false;
+
+        loop {
+            let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
+            let token = self.session_token.as_ref().ok_or(SdkError::NotConnected)?;
+
+            let request = SearchRequest {
+                query_text: query_text.to_string(),
+                namespace: namespace.clone(),
+                limit: limit as i32,
+                min_similarity,
+                auth_token: token.clone(),
+            };
+
+            match client.search(request).await {
+                Ok(r) => {
+                    let response: SearchResponse = r.into_inner();
+                    let mut results = Vec::with_capacity(response.results.len());
+                    for item in response.results {
+                        let proto_claim = item.claim.ok_or_else(|| {
+                            SdkError::GrpcError("Search result missing claim".to_string())
+                        })?;
+                        let claim = grpc_claim_to_domain(&proto_claim)
+                            .map_err(|e| SdkError::GrpcError(format!("Failed to convert claim: {}", e)))?;
+                        results.push((claim, item.similarity as f32));
+                    }
+                    return Ok(results);
+                }
+                Err(e) if matches!(e.code(), tonic::Code::Unauthenticated) && !retried => {
                     self.reconnect().await?;
                     retried = true;
                 }

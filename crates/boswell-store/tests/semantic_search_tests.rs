@@ -54,7 +54,7 @@ fn test_semantic_search_basic() {
     store.add_embedding(claim_id2, &embedding2).unwrap();
     
     // Search for similar claims
-    let results = store.semantic_search(&embedding1, 2, 64, 0.8).unwrap();
+    let results = store.semantic_search_by_embedding(&embedding1, 2, 64, 0.8).unwrap();
     
     // Should return both claims, with claim1 being more similar
     assert_eq!(results.len(), 2);
@@ -86,7 +86,7 @@ fn test_semantic_search_disabled() {
     
     // Attempt semantic search should fail
     let embedding: Vec<f32> = vec![0.1; 384];
-    let result = store.semantic_search(&embedding, 5, 64, 0.8);
+    let result = store.semantic_search_by_embedding(&embedding, 5, 64, 0.8);
     
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not enabled"));
@@ -149,9 +149,67 @@ fn test_semantic_search_with_threshold() {
     store.add_embedding(claim_id2, &embedding2).unwrap();
     
     // Search with high threshold - should only return claim1
-    let results = store.semantic_search(&embedding1, 10, 64, 0.95).unwrap();
+    let results = store.semantic_search_by_embedding(&embedding1, 10, 64, 0.95).unwrap();
     
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].0.id, claim_id1);
     assert!(results[0].1 > 0.99);
+}
+
+#[test]
+fn test_semantic_search_by_text_trait() {
+    // Vector search enabled: claims are auto-embedded from "subject predicate object".
+    let mut store = SqliteStore::new(":memory:", true, 384).unwrap();
+    assert!(store.supports_semantic_search());
+
+    let rust_id = ClaimId::new();
+    store
+        .assert_claim(Claim {
+            id: rust_id,
+            namespace: "lang".to_string(),
+            subject: "rust".to_string(),
+            predicate: "is_a".to_string(),
+            object: "programming_language".to_string(),
+            source_type: "assertion".to_string(),
+            confidence: (0.9, 0.95),
+            tier: "permanent".to_string(),
+            created_at: 1000,
+            stale_at: None,
+        })
+        .unwrap();
+    store
+        .assert_claim(Claim {
+            id: ClaimId::new(),
+            namespace: "food".to_string(),
+            subject: "banana".to_string(),
+            predicate: "is_a".to_string(),
+            object: "fruit".to_string(),
+            source_type: "assertion".to_string(),
+            confidence: (0.9, 0.95),
+            tier: "permanent".to_string(),
+            created_at: 1001,
+            stale_at: None,
+        })
+        .unwrap();
+
+    // Trait-level text search embeds the query with the same model.
+    let results = store
+        .semantic_search("rust is_a programming_language", 5, 0.5)
+        .unwrap();
+
+    assert!(!results.is_empty(), "expected at least one match");
+    // The exact-text match ranks first with near-perfect similarity.
+    assert_eq!(results[0].0.id, rust_id);
+    assert!(results[0].1 > 0.99, "similarity was {}", results[0].1);
+}
+
+#[test]
+fn test_supports_semantic_search_flag() {
+    let with = SqliteStore::new(":memory:", true, 384).unwrap();
+    assert!(with.supports_semantic_search());
+
+    let without = SqliteStore::new(":memory:", false, 0).unwrap();
+    assert!(!without.supports_semantic_search());
+    // Text search against a non-vector store surfaces a clear error.
+    assert!(without.semantic_search("anything", 5, 0.5).is_err());
 }

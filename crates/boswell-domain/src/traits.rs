@@ -26,6 +26,30 @@ pub trait ClaimStore {
 
     /// Get relationships for a claim
     fn get_relationships(&self, id: ClaimId) -> Result<Vec<Relationship>, Self::Error>;
+
+    /// Search for claims semantically similar to `query_text`.
+    ///
+    /// Returns up to `limit` `(claim, similarity)` pairs whose similarity is at
+    /// least `min_similarity` (cosine similarity in `[0.0, 1.0]`), ordered by
+    /// similarity descending.
+    ///
+    /// The default implementation returns no results, so stores without a vector
+    /// index (see [`ClaimStore::supports_semantic_search`]) degrade gracefully.
+    fn semantic_search(
+        &self,
+        _query_text: &str,
+        _limit: usize,
+        _min_similarity: f32,
+    ) -> Result<Vec<(Claim, f32)>, Self::Error> {
+        Ok(Vec::new())
+    }
+
+    /// Whether this store can perform [`ClaimStore::semantic_search`].
+    ///
+    /// Defaults to `false`; stores backed by a vector index override this.
+    fn supports_semantic_search(&self) -> bool {
+        false
+    }
 }
 
 /// Query criteria for retrieving claims

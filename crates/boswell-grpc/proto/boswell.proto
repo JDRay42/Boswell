@@ -12,6 +12,9 @@ service BosWellService {
     
     // Query claims from the knowledge base
     rpc Query(QueryRequest) returns (QueryResponse);
+
+    // Semantic search: find claims by vector similarity to a query string.
+    rpc Search(SearchRequest) returns (SearchResponse);
     
     // Learn multiple claims in bulk (ADR-012)
     rpc Learn(LearnRequest) returns (LearnResponse);
@@ -105,6 +108,27 @@ message QueryRequest {
 message QueryResponse {
     repeated Claim claims = 1;
     int32 total_count = 2;               // Total matching claims (may exceed limit)
+    string message = 3;
+}
+
+// ========== Search Operation (semantic / vector similarity) ==========
+
+message SearchRequest {
+    string query_text = 1;               // Natural-language query to embed and match
+    optional string namespace = 2;       // Optional namespace prefix filter
+    int32 limit = 3;                     // Maximum results (default: 10)
+    double min_similarity = 4;           // Minimum cosine similarity [0.0, 1.0]
+    string auth_token = 5;
+}
+
+message SearchResult {
+    Claim claim = 1;
+    double similarity = 2;               // Cosine similarity to the query [0.0, 1.0]
+}
+
+message SearchResponse {
+    repeated SearchResult results = 1;   // Ordered by similarity descending
+    int32 total_count = 2;
     string message = 3;
 }
 

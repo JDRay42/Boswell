@@ -69,9 +69,9 @@ Enhance client SDK, implement MCP server, build CLI, and add advanced services.
   - Parameters: claim_ids array
   - Returns: success status
 - [x] `boswell_semantic_search` - Semantic search with embeddings ✅ DONE
-  - Note: Returns error indicating feature not yet in SDK
+  - Note: Fully wired end-to-end (store HNSW → gRPC Search RPC → SDK → MCP)
   - Parameters: query_text, namespace?, limit?, threshold?
-  - Returns: error message with workaround
+  - Returns: ranked claims with similarity scores
 
 ### ✅ Configuration
 - [x] Router endpoint configuration ✅ DONE
@@ -116,8 +116,8 @@ Enhance client SDK, implement MCP server, build CLI, and add advanced services.
 - [x] `boswell forget <claim-ids>...` - Remove claims ✅ DONE
   - Support for file input with `--file`
   - Confirmation prompt with `--yes` to skip
-- [x] `boswell search <query>` - Semantic search placeholder ✅ DONE
-  - Awaits SDK HNSW exposure
+- [x] `boswell search <query>` - Semantic (vector) search ✅ DONE
+  - Flags: `--namespace`, `--limit`, `--threshold`; wired through SDK Search RPC
 - [x] `boswell profile` - Profile management ✅ DONE
   - Subcommands: list, show, switch, set, delete
 

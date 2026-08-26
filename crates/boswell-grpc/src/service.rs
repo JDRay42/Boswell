@@ -159,6 +159,59 @@ where
         }))
     }
 
+    async fn search(
+        &self,
+        request: Request<SearchRequest>,
+    ) -> Result<Response<SearchResponse>, Status> {
+        let req = request.into_inner();
+
+        if req.auth_token.is_empty() {
+            return Err(Status::unauthenticated("Missing authentication token"));
+        }
+        if req.query_text.trim().is_empty() {
+            return Err(Status::invalid_argument("query_text must not be empty"));
+        }
+
+        let limit = if req.limit > 0 { req.limit as usize } else { 10 };
+        let min_similarity = req.min_similarity.clamp(0.0, 1.0) as f32;
+
+        let store = self.store.lock().unwrap();
+
+        if !store.supports_semantic_search() {
+            return Err(Status::failed_precondition(
+                "Semantic search is not enabled on this instance",
+            ));
+        }
+
+        // Fetch extra candidates when a namespace filter is applied, since the
+        // post-filter may drop some of the top-k results.
+        let fetch = if req.namespace.is_some() { limit * 4 } else { limit };
+        let hits = store
+            .semantic_search(&req.query_text, fetch, min_similarity)
+            .map_err(|e| Status::internal(format!("Search failed: {:?}", e)))?;
+
+        let results: Vec<SearchResult> = hits
+            .into_iter()
+            .filter(|(claim, _)| match &req.namespace {
+                Some(ns) => claim.namespace.starts_with(ns.as_str()),
+                None => true,
+            })
+            .take(limit)
+            .map(|(claim, similarity)| SearchResult {
+                claim: Some(claim_to_proto(claim)),
+                similarity: similarity as f64,
+            })
+            .collect();
+
+        let total_count = results.len() as i32;
+
+        Ok(Response::new(SearchResponse {
+            results,
+            total_count,
+            message: format!("Found {} claims", total_count),
+        }))
+    }
+
     async fn learn(
         &self,
         request: Request<LearnRequest>,
@@ -316,7 +369,124 @@ mod tests {
             Ok(vec![])
         }
     }
-    
+
+    // Mock store that supports semantic search, returning two canned hits in
+    // different namespaces so namespace filtering can be exercised.
+    struct SemanticMockStore;
+
+    fn canned(namespace: &str, subject: &str) -> Claim {
+        Claim {
+            id: ClaimId::new(),
+            namespace: namespace.to_string(),
+            subject: subject.to_string(),
+            predicate: "is_a".to_string(),
+            object: "thing".to_string(),
+            source_type: "assertion".to_string(),
+            confidence: (0.8, 0.9),
+            tier: "task".to_string(),
+            created_at: 1,
+            stale_at: None,
+        }
+    }
+
+    impl ClaimStore for SemanticMockStore {
+        type Error = String;
+        fn assert_claim(&mut self, claim: Claim) -> Result<ClaimId, Self::Error> {
+            Ok(claim.id)
+        }
+        fn get_claim(&self, _id: ClaimId) -> Result<Option<Claim>, Self::Error> {
+            Ok(None)
+        }
+        fn query_claims(&self, _query: &ClaimQuery) -> Result<Vec<Claim>, Self::Error> {
+            Ok(vec![])
+        }
+        fn add_relationship(&mut self, _r: Relationship) -> Result<(), Self::Error> {
+            Ok(())
+        }
+        fn get_relationships(&self, _id: ClaimId) -> Result<Vec<Relationship>, Self::Error> {
+            Ok(vec![])
+        }
+        fn supports_semantic_search(&self) -> bool {
+            true
+        }
+        fn semantic_search(
+            &self,
+            _query_text: &str,
+            _limit: usize,
+            _min_similarity: f32,
+        ) -> Result<Vec<(Claim, f32)>, Self::Error> {
+            Ok(vec![
+                (canned("lang", "rust"), 0.98),
+                (canned("food", "banana"), 0.80),
+            ])
+        }
+    }
+
+    #[tokio::test]
+    async fn test_search_requires_auth() {
+        let service = BosWellServiceImpl::new(Arc::new(Mutex::new(SemanticMockStore)));
+        let resp = service
+            .search(Request::new(SearchRequest {
+                query_text: "rust".to_string(),
+                namespace: None,
+                limit: 10,
+                min_similarity: 0.5,
+                auth_token: String::new(),
+            }))
+            .await;
+        assert_eq!(resp.unwrap_err().code(), tonic::Code::Unauthenticated);
+    }
+
+    #[tokio::test]
+    async fn test_search_unsupported_store() {
+        let service = BosWellServiceImpl::new(Arc::new(Mutex::new(MockStore)));
+        let resp = service
+            .search(Request::new(SearchRequest {
+                query_text: "rust".to_string(),
+                namespace: None,
+                limit: 10,
+                min_similarity: 0.5,
+                auth_token: "token".to_string(),
+            }))
+            .await;
+        assert_eq!(resp.unwrap_err().code(), tonic::Code::FailedPrecondition);
+    }
+
+    #[tokio::test]
+    async fn test_search_happy_path_and_namespace_filter() {
+        let service = BosWellServiceImpl::new(Arc::new(Mutex::new(SemanticMockStore)));
+
+        // No namespace filter → both hits returned, ordered by similarity.
+        let all = service
+            .search(Request::new(SearchRequest {
+                query_text: "rust".to_string(),
+                namespace: None,
+                limit: 10,
+                min_similarity: 0.5,
+                auth_token: "token".to_string(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(all.results.len(), 2);
+        assert!(all.results[0].similarity >= all.results[1].similarity);
+
+        // Namespace filter keeps only the matching-prefix hit.
+        let filtered = service
+            .search(Request::new(SearchRequest {
+                query_text: "rust".to_string(),
+                namespace: Some("lang".to_string()),
+                limit: 10,
+                min_similarity: 0.5,
+                auth_token: "token".to_string(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(filtered.results.len(), 1);
+        assert_eq!(filtered.results[0].claim.as_ref().unwrap().namespace, "lang");
+    }
+
     #[tokio::test]
     async fn test_health_check() {
         let service = BosWellServiceImpl::new(Arc::new(Mutex::new(MockStore)));
