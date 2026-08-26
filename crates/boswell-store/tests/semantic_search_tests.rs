@@ -213,3 +213,59 @@ fn test_supports_semantic_search_flag() {
     // Text search against a non-vector store surfaces a clear error.
     assert!(without.semantic_search("anything", 5, 0.5).is_err());
 }
+
+// End-to-end semantic search with the real local embedder (EmbeddingGemma via
+// Ollama). Ignored by default because it needs a running Ollama:
+//   ollama pull embeddinggemma
+//   cargo test -p boswell-store --test semantic_search_tests --ignored real_embedder
+#[test]
+#[ignore = "requires a local Ollama with embeddinggemma"]
+fn test_semantic_search_with_real_embedder() {
+    use boswell_store::OllamaEmbeddingModel;
+
+    let embedder = OllamaEmbeddingModel::default_local("embeddinggemma").unwrap();
+    let mut store =
+        SqliteStore::with_embedding_model(":memory:", Box::new(embedder)).unwrap();
+    assert!(store.supports_semantic_search());
+
+    // Claims are auto-embedded from "subject predicate object" on assert.
+    let facts = [
+        ("animals", "cat", "is_a", "feline"),
+        ("animals", "dog", "is_a", "canine"),
+        ("finance", "invoice", "due_on", "the first of the month"),
+    ];
+    let mut cat_id = None;
+    for (ns, s, p, o) in facts {
+        let id = ClaimId::new();
+        if s == "cat" {
+            cat_id = Some(id);
+        }
+        store
+            .assert_claim(Claim {
+                id,
+                namespace: ns.to_string(),
+                subject: s.to_string(),
+                predicate: p.to_string(),
+                object: o.to_string(),
+                source_type: "assertion".to_string(),
+                confidence: (0.9, 0.95),
+                tier: "permanent".to_string(),
+                created_at: 1000,
+                stale_at: None,
+            })
+            .unwrap();
+    }
+
+    // A conceptually-related query (never the literal claim text) should surface
+    // the cat claim first thanks to real semantic embeddings.
+    let results = store
+        .semantic_search("which animal is a kind of cat", 3, 0.0)
+        .unwrap();
+
+    assert!(!results.is_empty(), "expected semantic matches");
+    assert_eq!(
+        results[0].0.id,
+        cat_id.unwrap(),
+        "the cat claim should rank first for a cat-related query"
+    );
+}

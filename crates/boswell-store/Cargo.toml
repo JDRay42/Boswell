@@ -19,8 +19,14 @@ hnsw_rs = "0.3"
 # ort = { version = "2.0", features = ["download-binaries"] }
 
 # Serialization for embeddings
-serde = "1.0"
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+
+# Blocking HTTP client for local embedding models (Ollama).
+# ureq is used instead of reqwest because EmbeddingModel::embed is a sync trait
+# method invoked from inside async request handlers; ureq does blocking socket
+# I/O without starting its own tokio runtime, so it is safe there.
+ureq = { version = "2", features = ["json"] }
 
 [dev-dependencies]
 tempfile = "3.10"

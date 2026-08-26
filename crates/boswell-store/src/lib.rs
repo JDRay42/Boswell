@@ -22,6 +22,7 @@
 
 pub mod vector_index;
 pub mod embedding;
+pub mod ollama_embedding;
 
 use boswell_domain::{Claim, ClaimId, Relationship, RelationshipType};
 use boswell_domain::traits::{ClaimStore, ClaimQuery};
@@ -31,6 +32,7 @@ use thiserror::Error;
 
 pub use vector_index::VectorIndex;
 pub use embedding::{EmbeddingModel, MockEmbeddingModel, cosine_similarity};
+pub use ollama_embedding::OllamaEmbeddingModel;
 
 /// Errors that can occur during storage operations
 #[derive(Error, Debug)]
@@ -104,7 +106,35 @@ impl SqliteStore {
         store.initialize_schema()?;
         Ok(store)
     }
-    
+
+    /// Create a store with a caller-supplied embedding model.
+    ///
+    /// Vector search is enabled and sized to the model's own dimension, so this
+    /// is the constructor to use with a real embedder such as
+    /// [`OllamaEmbeddingModel`](crate::OllamaEmbeddingModel):
+    ///
+    /// ```no_run
+    /// use boswell_store::{SqliteStore, OllamaEmbeddingModel};
+    ///
+    /// let embedder = OllamaEmbeddingModel::default_local("embeddinggemma").unwrap();
+    /// let store = SqliteStore::with_embedding_model("boswell.db", Box::new(embedder)).unwrap();
+    /// ```
+    pub fn with_embedding_model<P: AsRef<Path>>(
+        path: P,
+        embedding_model: Box<dyn EmbeddingModel + Send + Sync>,
+    ) -> Result<Self, StoreError> {
+        let dimension = embedding_model.dimension();
+        let conn = Connection::open(path)?;
+
+        let mut store = Self {
+            conn,
+            vector_index: Some(VectorIndex::new(dimension)),
+            embedding_model: Some(embedding_model),
+        };
+        store.initialize_schema()?;
+        Ok(store)
+    }
+
     /// Initialize the database schema
     fn initialize_schema(&mut self) -> Result<(), StoreError> {
         // Read and execute the schema SQL

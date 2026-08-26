@@ -41,6 +41,7 @@ Boswell follows Clean Architecture principles with clear separation of concerns:
 - Rust 1.88+ (install via [rustup](https://rustup.rs/) or Homebrew)
 - Protocol Buffers compiler (`brew install protobuf`)
 - Ollama for local LLM testing (`brew install ollama`)
+  - Semantic search uses a local embedding model; pull it with `ollama pull embeddinggemma` (see [ADR-013](docs/ADRs/013-local-embedding-models.md))
 
 ### Building
 

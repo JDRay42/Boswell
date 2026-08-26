@@ -4,18 +4,15 @@
 //! Per ADR-013, we use local embedding models to avoid network dependencies
 //! and API costs.
 //!
-//! # Phase 1 Implementation
+//! # Backends
 //!
-//! For Phase 1, this module provides a mock embedding model that generates
-//! deterministic embeddings based on text hashing. This allows testing the
-//! full pipeline without requiring large model files.
+//! - [`MockEmbeddingModel`]: hash-based deterministic embeddings. Requires no
+//!   model files or services, so it is the default for tests and offline use.
+//! - [`OllamaEmbeddingModel`](crate::OllamaEmbeddingModel): real embeddings from
+//!   a local Ollama server (EmbeddingGemma by default). See ADR-013.
 //!
-//! Future phases will integrate real ONNX models like bge-small-en-v1.5.
-//!
-//! # Architecture
-//!
-//! - **MockEmbeddingModel**: Hash-based deterministic embeddings (Phase 1)
-//! - **ONNXEmbeddingModel**: Real ML model embeddings (Future)
+//! An in-process ONNX backend remains a possible future addition; the
+//! [`EmbeddingModel`] trait is the stable seam for adding one.
 //!
 //! # Examples
 //!
