@@ -163,18 +163,21 @@ Enhance client SDK, implement MCP server, build CLI, and add advanced services.
 
 ## Stream D: Advanced Services 🔲 TODO
 
-### D1: Extractor Service (`boswell-extractor`)
+### D3: Extractor Service (`boswell-extractor`) ✅ COMPLETE
 
 **Goal:** Extract claims from unstructured text using LLM (ADR-05)
 
-- [ ] Text preprocessing pipeline
-- [ ] LLM prompt engineering for claim extraction
-- [ ] Triple extraction: (subject, predicate, object)
-- [ ] Confidence estimation
-- [ ] Batch processing support
-- [ ] Integration tests with sample texts
+- [x] Text preprocessing pipeline (chunking with configurable strategy) ✅ DONE
+- [x] LLM prompt engineering for claim extraction ✅ DONE
+- [x] Triple extraction: (subject, predicate, object) ✅ DONE
+- [x] Confidence estimation ✅ DONE
+- [x] Batch processing support (chunked documents) ✅ DONE
+- [x] Gatekeeper integration for validation ✅ DONE
+- [x] Integration tests with sample texts ✅ DONE
 
-**Deliverable:** `boswell-extractor` crate - Extract claims from text
+**Deliverable:** ✅ `boswell-extractor` crate - Extract claims from text
+
+**Commit:** `6e08d60` - Phase 3D3: Implement Extractor service for text-to-claims conversion
 
 ---
 
@@ -230,32 +233,23 @@ ClaimStore (query + delete operations)
 
 ---
 
-### D3: Extractor Service (`boswell-extractor`)
+### D4: Synthesizer Service (`boswell-synthesizer`) 🟡 IN PROGRESS
 
-**Goal:** Extract claims from text (ADR-05)
+**Goal:** Discover emergent patterns and higher-order insights across claims (ADR-06)
 
-- [ ] Text parsing and entity extraction
-- [ ] LLM-based claim generation
-- [ ] Confidence assignment
-- [ ] Namespace inference
-- [ ] Batch processing
+- [ ] Candidate selection (by namespace, tier, recency, relationship density)
+- [ ] Cluster building from the relationship graph
+- [ ] LLM prompt construction for cluster analysis ("no insight" is valid)
+- [ ] Insight generation with `source_type: inference`
+- [ ] `derived_from` relationship creation to constituent claims
+- [ ] Confidence propagation (uncertainty widens outward)
+- [ ] Derivation-depth limit to prevent runaway meta-synthesis
+- [ ] Gatekeeper validation of synthesized claims
+- [ ] Background worker (scheduled passes) + dry-run mode
+- [ ] `run_pass(scope) -> SynthesisReport` trait interface
+- [ ] Unit + integration tests
 
-**Deliverable:** `boswell-extractor` crate - Extract claims from unstructured text
-
----
-
-### D4: Synthesizer Service (`boswell-synthesizer`)
-
-**Goal:** Generate summaries and answer questions (ADR-06)
-
-- [ ] Context retrieval from claim store
-- [ ] LLM prompt construction
-- [ ] Summary generation
-- [ ] Question answering
-- [ ] Citation support (claim provenance)
-- [ ] Streaming responses
-
-**Deliverable:** `boswell-synthesizer` crate - Generate summaries and answers
+**Deliverable:** `boswell-synthesizer` crate - Discover emergent patterns and derived claims
 
 ---
 
@@ -309,12 +303,12 @@ ClaimStore (query + delete operations)
 | C: CLI Tool | ✅ Complete | 21/21 | 100% |
 | D1: Gatekeeper | ✅ Complete | 10/10 | 100% |
 | D2: Janitor | ✅ Complete | 24/24 | 100% |
-| D3: Extractor | 🔲 Todo | 0 | 0% |
-| D4: Synthesizer | 🔲 Todo | 0 | 0% |
+| D3: Extractor | ✅ Complete | — | 100% |
+| D4: Synthesizer | 🟡 In Progress | — | — |
 
-**Overall Phase 3 Progress:** 71% (5/7 streams complete)
+**Overall Phase 3 Progress:** 86% (6/7 streams complete)
 
-**Total Tests Passing:** 79 tests (8 SDK + 16 MCP + 21 CLI + 10 Gatekeeper + 24 Janitor)
+**Total Tests Passing:** 111 workspace tests green on the UUIDv7 base (post ADR-011 supersession)
 
 ---
 
@@ -325,7 +319,8 @@ ClaimStore (query + delete operations)
 - **CLI Tool** (Stream C) enables human operators and scripting ✅
 - **Gatekeeper** (Stream D1) provides quality control and validation ✅
 - **Janitor** (Stream D2) handles automated tier management and cleanup ✅
-- **Extractor** (Stream D3) and **Synthesizer** (Stream D4) remain for next phase
+- **Extractor** (Stream D3) converts unstructured text into claims ✅
+- **Synthesizer** (Stream D4) discovers emergent higher-order insights — final Phase 3 stream 🟡
 - All streams depend on async SDK (Stream A) being complete ✅
 
 ## Related ADRs
@@ -337,6 +332,5 @@ ClaimStore (query + delete operations)
 
 ## Next Session Starting Point
 
-**Start with Stream D3 (Extractor)** or **Stream D4 (Synthesizer)** - both can be built in parallel.
-
-See `HANDOFF_PHASE3D2.md` for detailed continuation instructions.
+**Stream D4 (Synthesizer)** is the final remaining Phase 3 stream — see the checklist above.
+Once complete, Phase 3 closes and work moves to the next phase.
