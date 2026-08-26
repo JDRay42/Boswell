@@ -3,7 +3,8 @@
 **/target/
 **/*.rs.bk
 *.pdb
-Cargo.lock
+# Cargo.lock is intentionally committed: Boswell ships binaries (an application,
+# not a library), so a locked dependency set gives reproducible builds.
 
 # IDE
 .vscode/
