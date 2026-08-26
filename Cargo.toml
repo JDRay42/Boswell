@@ -13,6 +13,7 @@ members = [
     "crates/boswell-synthesizer",
     "crates/boswell-mcp",
     "crates/boswell-cli",
+    "crates/boswell-server",
 ]
 
 [workspace.package]

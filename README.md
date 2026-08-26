@@ -34,6 +34,10 @@ Boswell follows Clean Architecture principles with clear separation of concerns:
 - `boswell-mcp` - MCP (Model Context Protocol) server
 - `boswell-cli` - Command-line interface
 
+### Runtime Binaries
+- `boswell-server` - Instance gRPC daemon (serves the claim store + embedder)
+- `boswell-router` - Session management and instance registry (HTTP)
+
 ## Development Setup
 
 ### Prerequisites
@@ -77,6 +81,26 @@ cargo clippy -- -D warnings
 # Check without building
 cargo check
 ```
+
+### Running an instance
+
+The instance server (`boswell-server`) serves the Boswell gRPC API backed by the
+SQLite store and a local embedder. By default it uses the EmbeddingGemma model
+via Ollama, so make sure Ollama is running and the model is pulled first:
+
+```bash
+ollama pull embeddinggemma
+
+# Write a starter config you can edit
+cargo run -p boswell-server -- init config/instance.toml
+
+# Start the server (defaults to 127.0.0.1:50051)
+cargo run -p boswell-server -- --config config/instance.toml
+```
+
+To run without Ollama (e.g. for offline development), set `backend = "mock"`
+under `[embedding]` in the config. A `boswell-router` can then register the
+instance at its `http://localhost:50051` endpoint (see `config/router.toml`).
 
 ## Project Status
 

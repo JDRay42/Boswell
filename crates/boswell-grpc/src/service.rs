@@ -33,7 +33,10 @@ impl<S: ClaimStore> BosWellServiceImpl<S> {
 #[tonic::async_trait]
 impl<S> BosWellService for BosWellServiceImpl<S>
 where
-    S: ClaimStore + Send + Sync + 'static,
+    // `Send` (not `Sync`) is sufficient: the store is only ever accessed through
+    // `Arc<Mutex<S>>`, which is `Sync` whenever `S: Send`. Requiring `S: Sync`
+    // would needlessly exclude stores like `SqliteStore` (rusqlite is `!Sync`).
+    S: ClaimStore + Send + 'static,
     S::Error: std::fmt::Debug,
 {
     async fn assert(

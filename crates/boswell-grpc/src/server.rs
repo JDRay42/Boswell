@@ -73,7 +73,8 @@ pub async fn start_server<S>(
     store: Arc<Mutex<S>>,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
-    S: ClaimStore + Send + Sync + 'static,
+    // See `BosWellServiceImpl`: `Send` suffices because access is via `Arc<Mutex<S>>`.
+    S: ClaimStore + Send + 'static,
     S::Error: std::fmt::Debug,
 {
     let addr = config.full_address().parse()?;

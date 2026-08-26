@@ -1,0 +1,28 @@
+# Boswell instance server configuration
+#
+# The instance server serves the Boswell gRPC API. A boswell-router deployment
+# registers instances by their endpoint (see config/router.toml, which points at
+# http://localhost:50051 by default).
+#
+# Start with:  boswell-server --config config/instance.toml
+
+# Address and port the gRPC server binds to.
+bind_address = "127.0.0.1"
+bind_port = 50051
+
+[storage]
+# Path to the SQLite database. Use ":memory:" for an ephemeral store.
+db_path = "boswell.db"
+
+[embedding]
+# Embedding backend: "ollama" (real, local), "mock" (deterministic, offline),
+# or "none" (disable semantic search).
+backend = "ollama"
+
+# Ollama settings (used when backend = "ollama").
+# Pull the model first: `ollama pull embeddinggemma`
+model = "embeddinggemma"
+endpoint = "http://localhost:11434"
+
+# Vector dimension for the mock backend (used when backend = "mock").
+mock_dimension = 384
