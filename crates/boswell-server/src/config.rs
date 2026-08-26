@@ -37,6 +37,9 @@ pub struct InstanceConfig {
 
     /// Background maintenance (Janitor) settings.
     pub janitor: JanitorSettings,
+
+    /// Background synthesis (Synthesizer) settings.
+    pub synthesizer: SynthesizerSettings,
 }
 
 impl Default for InstanceConfig {
@@ -47,6 +50,7 @@ impl Default for InstanceConfig {
             storage: StorageConfig::default(),
             embedding: EmbeddingConfig::default(),
             janitor: JanitorSettings::default(),
+            synthesizer: SynthesizerSettings::default(),
         }
     }
 }
@@ -81,6 +85,52 @@ impl JanitorSettings {
             sweep_interval_minutes: self.sweep_interval_minutes,
             dry_run: self.dry_run,
             ..boswell_janitor::JanitorConfig::default()
+        }
+    }
+}
+
+/// Background synthesis settings for the in-process Synthesizer.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct SynthesizerSettings {
+    /// Whether to run scheduled LLM-backed synthesis passes in the background.
+    pub enabled: bool,
+    /// Ollama chat model used for synthesis (distinct from the embedding model).
+    pub model: String,
+    /// Ollama endpoint for the synthesis model.
+    pub endpoint: String,
+    /// Hours between synthesis passes.
+    pub interval_hours: u64,
+    /// Minimum tier considered for synthesis (claims below this are skipped).
+    pub min_tier: String,
+    /// Dry-run: analyze and log insights without writing them to the store.
+    pub dry_run: bool,
+}
+
+impl Default for SynthesizerSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false, // opt-in (LLM cost)
+            model: "qwen2.5:7b".to_string(),
+            endpoint: "http://localhost:11434".to_string(),
+            interval_hours: 6,
+            min_tier: "task".to_string(),
+            dry_run: false,
+        }
+    }
+}
+
+impl SynthesizerSettings {
+    /// Build the [`boswell_synthesizer::SynthesizerConfig`] this settings block
+    /// describes. `enabled` is set to `true` because the server only builds this
+    /// when the settings-level `enabled` gate is already on.
+    pub fn to_synthesizer_config(&self) -> boswell_synthesizer::SynthesizerConfig {
+        boswell_synthesizer::SynthesizerConfig {
+            enabled: true,
+            synthesis_interval_hours: self.interval_hours,
+            min_tier: self.min_tier.clone(),
+            dry_run: self.dry_run,
+            ..boswell_synthesizer::SynthesizerConfig::default()
         }
     }
 }
@@ -185,6 +235,18 @@ mock_dimension = 384
 enabled = false
 sweep_interval_minutes = 60
 # Dry-run logs what would be deleted/demoted without changing anything.
+dry_run = false
+
+[synthesizer]
+# Run scheduled LLM-backed synthesis passes that discover higher-order insights
+# across the claim graph. Off by default (LLM cost). Requires the chat model:
+#   ollama pull qwen2.5:7b
+enabled = false
+model = "qwen2.5:7b"
+endpoint = "http://localhost:11434"
+interval_hours = 6
+min_tier = "task"
+# Dry-run analyzes and logs insights without writing them to the store.
 dry_run = false
 "#;
 

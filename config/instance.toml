@@ -34,3 +34,15 @@ enabled = false
 sweep_interval_minutes = 60
 # Dry-run logs what would be deleted/demoted without changing anything.
 dry_run = false
+
+[synthesizer]
+# Run scheduled LLM-backed synthesis passes that discover higher-order insights
+# across the claim graph. Off by default (LLM cost). Requires the chat model:
+#   ollama pull qwen2.5:7b
+enabled = false
+model = "qwen2.5:7b"
+endpoint = "http://localhost:11434"
+interval_hours = 6
+min_tier = "task"
+# Dry-run analyzes and logs insights without writing them to the store.
+dry_run = false

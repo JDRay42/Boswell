@@ -11,7 +11,7 @@ use boswell_domain::traits::{ClaimQuery, ClaimStore, LlmProvider};
 use boswell_domain::{Claim, ClaimId, Relationship, RelationshipType, Tier};
 use boswell_gatekeeper::{Gatekeeper, ValidationStatus};
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::timeout;
 use tracing::{debug, info, warn};
@@ -85,20 +85,110 @@ where
             return Ok(report);
         }
 
-        // 1. Gather candidate claims across all qualifying tiers/namespaces.
-        let candidates = self.gather_candidates(store, &scope)?;
-        report.claims_examined = candidates.len();
-        info!("Synthesis candidates: {}", candidates.len());
+        let (examined, clusters) = self.plan(store, &scope)?;
+        report.claims_examined = examined;
+        info!("Synthesis candidates: {}", examined);
 
-        if candidates.len() < self.config.min_cluster_size {
-            report.duration_ms = elapsed_ms(start);
+        for cluster in clusters {
+            // Enforce the derivation-depth limit to prevent runaway synthesis.
+            if cluster.max_depth >= self.config.max_derivation_depth {
+                report.clusters_depth_skipped += 1;
+                continue;
+            }
+            report.clusters_evaluated += 1;
+
+            match self.analyze_cluster(&cluster).await {
+                Ok(Some(candidate)) => {
+                    let result = self.materialize_insight(store, &cluster, candidate);
+                    Self::record_materialization(&mut report, result);
+                }
+                Ok(None) => debug!("No insight for cluster"),
+                Err(e) => warn!("Cluster analysis failed: {}", e),
+            }
+        }
+
+        report.duration_ms = elapsed_ms(start);
+        info!("{}", report.summary());
+        Ok(report)
+    }
+
+    /// Run a single synthesis pass against a store shared with other services
+    /// (e.g. the gRPC server behind an `Arc<Mutex<_>>`).
+    ///
+    /// The store lock is held only for the synchronous planning and persistence
+    /// phases — never across the LLM call — so concurrent gRPC requests are not
+    /// blocked for the (potentially slow) duration of synthesis.
+    pub async fn run_pass_shared<S>(
+        &self,
+        store: Arc<Mutex<S>>,
+        scope: SynthesisScope,
+    ) -> Result<SynthesisReport, SynthesizerError>
+    where
+        S: ClaimStore + Send + 'static,
+        S::Error: std::fmt::Display,
+    {
+        let start = SystemTime::now();
+        let mut report = SynthesisReport::default();
+
+        if !self.config.enabled {
             return Ok(report);
         }
 
-        // 2. Fetch relationships among candidates for clustering + depth.
-        let relationships = self.gather_relationships(store, &candidates)?;
+        // Phase 1: plan under a brief lock (no LLM work here).
+        let (examined, clusters) = {
+            let guard = store.lock().unwrap();
+            self.plan(&*guard, &scope)?
+        };
+        report.claims_examined = examined;
+        info!("Synthesis candidates: {}", examined);
 
-        // 3. Build clusters.
+        // Phase 2: analyze each cluster with the LLM (no lock held), then persist
+        // any insight under a brief lock.
+        for cluster in clusters {
+            if cluster.max_depth >= self.config.max_derivation_depth {
+                report.clusters_depth_skipped += 1;
+                continue;
+            }
+            report.clusters_evaluated += 1;
+
+            match self.analyze_cluster(&cluster).await {
+                Ok(Some(candidate)) => {
+                    let result = {
+                        let mut guard = store.lock().unwrap();
+                        self.materialize_insight(&mut *guard, &cluster, candidate)
+                    };
+                    Self::record_materialization(&mut report, result);
+                }
+                Ok(None) => debug!("No insight for cluster"),
+                Err(e) => warn!("Cluster analysis failed: {}", e),
+            }
+        }
+
+        report.duration_ms = elapsed_ms(start);
+        info!("{}", report.summary());
+        Ok(report)
+    }
+
+    /// Plan clusters for a pass: gather candidates and their relationships, build
+    /// clusters, and annotate each with its derivation depth. Read-only, so it
+    /// can run under a shared read lock.
+    fn plan<S>(
+        &self,
+        store: &S,
+        scope: &SynthesisScope,
+    ) -> Result<(usize, Vec<ClaimCluster>), SynthesizerError>
+    where
+        S: ClaimStore,
+        S::Error: std::fmt::Display,
+    {
+        let candidates = self.gather_candidates(store, scope)?;
+        let examined = candidates.len();
+
+        if candidates.len() < self.config.min_cluster_size {
+            return Ok((examined, Vec::new()));
+        }
+
+        let relationships = self.gather_relationships(store, &candidates)?;
         let raw_clusters = build_clusters(
             candidates,
             &relationships,
@@ -107,49 +197,34 @@ where
         );
         debug!("Built {} candidate clusters", raw_clusters.len());
 
-        // 4. Evaluate clusters (respecting max_clusters and depth limits).
-        for claims in raw_clusters.into_iter().take(scope.max_clusters) {
-            let max_depth = self.cluster_max_depth(store, &claims);
-            let cluster = ClaimCluster { claims, max_depth };
+        let clusters = raw_clusters
+            .into_iter()
+            .take(scope.max_clusters)
+            .map(|claims| {
+                let max_depth = self.cluster_max_depth(store, &claims);
+                ClaimCluster { claims, max_depth }
+            })
+            .collect();
 
-            // Enforce the derivation-depth limit to prevent runaway synthesis.
-            if max_depth >= self.config.max_derivation_depth {
-                report.clusters_depth_skipped += 1;
-                debug!(
-                    "Skipping cluster at derivation depth {} (limit {})",
-                    max_depth, self.config.max_derivation_depth
-                );
-                continue;
+        Ok((examined, clusters))
+    }
+
+    /// Fold a materialization result into the pass report.
+    fn record_materialization(
+        report: &mut SynthesisReport,
+        result: Result<Option<SynthesizedInsight>, SynthesizerError>,
+    ) {
+        match result {
+            Ok(Some(insight)) => {
+                report.insights_created += 1;
+                report.insights.push(insight);
             }
-
-            report.clusters_evaluated += 1;
-
-            match self.analyze_cluster(&cluster).await {
-                Ok(Some(candidate)) => {
-                    match self.materialize_insight(store, &cluster, candidate) {
-                        Ok(Some(insight)) => {
-                            report.insights_created += 1;
-                            report.insights.push(insight);
-                        }
-                        Ok(None) => report.insights_rejected += 1,
-                        Err(e) => {
-                            warn!("Failed to persist insight: {}", e);
-                            report.insights_rejected += 1;
-                        }
-                    }
-                }
-                Ok(None) => {
-                    debug!("No insight for cluster");
-                }
-                Err(e) => {
-                    warn!("Cluster analysis failed: {}", e);
-                }
+            Ok(None) => report.insights_rejected += 1,
+            Err(e) => {
+                warn!("Failed to persist insight: {}", e);
+                report.insights_rejected += 1;
             }
         }
-
-        report.duration_ms = elapsed_ms(start);
-        info!("{}", report.summary());
-        Ok(report)
     }
 
     /// Query the store for all candidate claims matching the scope.
@@ -261,6 +336,8 @@ where
         let response = timeout(self.config.cluster_timeout(), self.call_llm(prompt))
             .await
             .map_err(|_| SynthesizerError::Timeout)??;
+
+        debug!("LLM cluster response: {}", response);
 
         parse_insight_response(&response)
     }

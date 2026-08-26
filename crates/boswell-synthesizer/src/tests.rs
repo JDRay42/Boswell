@@ -265,3 +265,44 @@ async fn test_since_filter_excludes_old_claims() {
     assert_eq!(report.claims_examined, 0);
     assert_eq!(report.insights_created, 0);
 }
+
+/// Real end-to-end synthesis against a live Ollama chat model.
+///
+/// Ignored by default; run with:
+///   cargo test -p boswell-synthesizer real_llm_synthesis -- --ignored --nocapture
+#[tokio::test]
+#[ignore = "requires a local Ollama with qwen2.5:7b"]
+async fn test_real_llm_synthesis() {
+    use boswell_llm::OllamaProvider;
+
+    let mut store = new_store();
+    // A cluster of related claims that plausibly imply a higher-order insight.
+    insert(&mut store, "team:atlas", "works_on", "topic:oauth", "task", (0.9, 0.95));
+    insert(&mut store, "team:atlas", "works_on", "topic:login-flow", "task", (0.9, 0.95));
+    insert(&mut store, "team:atlas", "works_on", "topic:session-tokens", "task", (0.9, 0.95));
+
+    let llm = OllamaProvider::new("http://localhost:11434", "qwen2.5:7b");
+    let synthesizer = Synthesizer::new(llm, SynthesizerConfig::default())
+        .with_model_name("qwen2.5:7b");
+
+    let scope = SynthesisScope::all("task", 50);
+    let report = synthesizer.run_pass(&mut store, scope).await.unwrap();
+
+    println!("\n=== synthesis report ===\n{}", report.summary());
+    for insight in &report.insights {
+        println!(
+            "insight: {} {} {}  (conf {:.2}-{:.2})\n  rationale: {}",
+            insight.subject,
+            insight.predicate,
+            insight.object,
+            insight.confidence.0,
+            insight.confidence.1,
+            insight.rationale,
+        );
+    }
+
+    // The LLM must at least have been asked about the cluster. Whether it returns
+    // an insight is model-dependent, so we don't hard-assert insights_created.
+    assert_eq!(report.claims_examined, 3);
+    assert!(report.clusters_evaluated >= 1, "expected a cluster to be analyzed");
+}

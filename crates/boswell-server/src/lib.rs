@@ -105,6 +105,9 @@ pub async fn run(config: InstanceConfig) -> Result<(), ServerError> {
     if config.janitor.enabled {
         spawn_janitor(&config, Arc::clone(&store));
     }
+    if config.synthesizer.enabled {
+        spawn_synthesizer(&config, Arc::clone(&store));
+    }
 
     let server_config = ServerConfig::new(config.bind_address.clone(), config.bind_port);
 
@@ -151,6 +154,49 @@ fn spawn_janitor(config: &InstanceConfig, store: Arc<Mutex<SqliteStore>>) {
                     m.total_demoted()
                 ),
                 Err(e) => tracing::error!("Janitor sweep failed: {}", e),
+            }
+        }
+    });
+}
+
+/// Spawn the background Synthesizer pass loop against the shared store.
+///
+/// Synthesis makes slow LLM calls, so it uses [`Synthesizer::run_pass_shared`],
+/// which holds the store lock only for the synchronous planning and persistence
+/// phases — gRPC requests are not blocked during LLM analysis.
+fn spawn_synthesizer(config: &InstanceConfig, store: Arc<Mutex<SqliteStore>>) {
+    use boswell_synthesizer::{Synthesizer, SynthesisScope};
+    use tokio::time::{interval, Duration};
+
+    let settings = &config.synthesizer;
+    let llm = boswell_llm::OllamaProvider::new(&settings.endpoint, &settings.model);
+    let synth_config = settings.to_synthesizer_config();
+    let model = settings.model.clone();
+    let min_tier = synth_config.min_tier.clone();
+    let max_clusters = synth_config.max_clusters_per_pass;
+    let period = Duration::from_secs(settings.interval_hours.max(1) * 3600);
+
+    tracing::info!(
+        "Synthesizer enabled: model='{}', every {}h (dry_run: {})",
+        model,
+        settings.interval_hours,
+        settings.dry_run
+    );
+
+    tokio::spawn(async move {
+        let synthesizer = Synthesizer::new(llm, synth_config).with_model_name(model);
+        let mut ticker = interval(period);
+        loop {
+            ticker.tick().await;
+            let scope = SynthesisScope::all(min_tier.clone(), max_clusters);
+            match synthesizer.run_pass_shared(Arc::clone(&store), scope).await {
+                Ok(r) => tracing::info!(
+                    "Synthesis pass: {} examined, {} clusters, {} insights created",
+                    r.claims_examined,
+                    r.clusters_evaluated,
+                    r.insights_created
+                ),
+                Err(e) => tracing::error!("Synthesis pass failed: {}", e),
             }
         }
     });

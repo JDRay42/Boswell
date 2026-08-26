@@ -33,6 +33,7 @@ async fn spawn_server(backend: EmbeddingBackend, model: &str) -> String {
             ..EmbeddingConfig::default()
         },
         janitor: Default::default(),
+        synthesizer: Default::default(),
     };
 
     let store = Arc::new(Mutex::new(build_store(&config).expect("build_store failed")));

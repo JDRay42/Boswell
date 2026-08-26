@@ -38,7 +38,7 @@ cluster — a pattern, trend, or principle.\n\n",
         prompt.push_str("- \"No insight\" is a valid and common answer. Only report an insight if it is genuinely supported by the cluster.\n");
         prompt.push_str("- The insight must be a single triple, not a restatement of one of the input claims.\n");
         prompt.push_str("- Assess your confidence in the INFERENCE (how strongly the cluster implies the insight), as an interval [lower, upper] within [0.0, 1.0].\n");
-        prompt.push_str("- Keep subject/predicate/object concise. Reuse the namespace's entity style where possible.\n\n");
+        prompt.push_str("- CRITICAL: subject, predicate, and object MUST each be in `namespace:value` form — a short lowercase namespace, a colon, then a value (e.g. `team:atlas`, `trend:focus`, `topic:authentication`). Never emit a bare word without a colon; reuse the namespaces shown in the cluster.\n\n");
 
         prompt.push_str(&format!("Namespace: {}\n\n", self.namespace));
         prompt.push_str("Cluster claims:\n");
@@ -57,9 +57,11 @@ cluster — a pattern, trend, or principle.\n\n",
 
         prompt.push_str(
             "\nRespond with a single JSON object and nothing else.\n\
-If there is a genuine insight:\n\
-{\"insight\": true, \"subject\": \"...\", \"predicate\": \"...\", \"object\": \"...\", \
-\"confidence_lower\": 0.0, \"confidence_upper\": 0.0, \"rationale\": \"...\"}\n\
+If there is a genuine insight (EVERY field — including the predicate — must be \
+namespace:value with a colon):\n\
+{\"insight\": true, \"subject\": \"team:atlas\", \"predicate\": \"trend:focus\", \
+\"object\": \"topic:authentication\", \"confidence_lower\": 0.7, \
+\"confidence_upper\": 0.9, \"rationale\": \"why the cluster implies this\"}\n\
 If there is no insight:\n\
 {\"insight\": false, \"rationale\": \"...\"}\n",
         );
