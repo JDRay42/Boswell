@@ -1,0 +1,7 @@
+# Pins the toolchain so every contributor and CI run uses the same Rust.
+# `channel = "stable"` tracks current stable (what the project is developed and
+# linted against); `rust-version` in Cargo.toml declares the minimum supported
+# version separately.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
