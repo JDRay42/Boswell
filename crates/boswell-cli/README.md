@@ -144,7 +144,7 @@ Arguments:
     "subject": "user:alice",
     "predicate": "likes:coffee",
     "object": "beverage:espresso",
-    "confidence": [0.8, 0.9],
+    "confidence": { "lower": 0.8, "upper": 0.9 },
     "tier": "task"
   },
   {
@@ -155,6 +155,10 @@ Arguments:
 ]
 ```
 
+`confidence` (object with `lower`/`upper` in `[0,1]`, `lower ≤ upper`) and `tier`
+(`ephemeral` | `task` | `project` | `permanent`) are optional. Entities are
+`namespace:value`.
+
 **Examples:**
 
 ```bash
@@ -163,6 +167,28 @@ boswell learn claims.json
 
 # With different output format
 boswell learn --format json claims.json
+```
+
+### validate
+
+Check a `learn` JSON file **offline** (no server connection) before loading it.
+Reports every problem per claim and exits non-zero if any are invalid.
+
+```bash
+boswell validate <FILE>       # or: boswell validate --stdin
+
+Arguments:
+  <FILE>    Path to the JSON file to validate
+```
+
+**Examples:**
+
+```bash
+# Validate, then load only if everything is valid
+boswell validate claims.json && boswell learn claims.json
+
+# Validate a file produced by an assistant (see docs/importing-personal-memory.md)
+boswell validate claude-memories.json
 ```
 
 ### forget

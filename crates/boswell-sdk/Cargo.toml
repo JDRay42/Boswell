@@ -16,3 +16,6 @@ tonic = "0.12"
 
 [dev-dependencies]
 tokio = { workspace = true }
+
+[lints]
+workspace = true
