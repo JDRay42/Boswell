@@ -13,11 +13,13 @@ pub struct EstablishSessionRequest {
 /// Instance information from Router
 #[derive(Debug, Clone, Deserialize)]
 pub struct InstanceInfo {
-    /// Instance ID
+    /// Instance ID. Part of the router's wire format; not yet used by the SDK.
+    #[allow(dead_code)]
     pub id: String,
     /// gRPC endpoint
     pub endpoint: String,
-    /// Expertise profile (namespaces)
+    /// Expertise profile (namespaces). Wire format; not yet used by the SDK.
+    #[allow(dead_code)]
     pub expertise: Vec<String>,
     /// Health status
     pub health: String,
@@ -28,7 +30,8 @@ pub struct InstanceInfo {
 pub struct SessionResponse {
     /// JWT session token
     pub token: String,
-    /// Deployment mode
+    /// Deployment mode. Wire format; not yet used by the SDK.
+    #[allow(dead_code)]
     pub mode: String,
     /// Available instances
     pub instances: Vec<InstanceInfo>,

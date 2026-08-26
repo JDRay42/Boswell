@@ -1,6 +1,6 @@
-///! Type conversions between proto and domain types
-///!
-///! Handles bidirectional conversion between gRPC protobuf types and internal domain types.
+//! Type conversions between proto and domain types
+//!
+//! Handles bidirectional conversion between gRPC protobuf types and internal domain types.
 
 use boswell_domain::{Claim, ClaimId, ConfidenceInterval as DomainConfidence, Tier as DomainTier};
 use crate::proto;
@@ -80,7 +80,7 @@ pub fn confidence_to_proto(conf: DomainConfidence) -> proto::ConfidenceInterval 
 /// Convert proto Claim to domain Claim
 pub fn claim_from_proto(claim: proto::Claim) -> Result<Claim, ConversionError> {
     let id = ClaimId::from_string(&claim.id)
-        .map_err(|e| ConversionError::InvalidClaimId(e))?;
+        .map_err(ConversionError::InvalidClaimId)?;
     
     let confidence = confidence_from_proto(claim.confidence)?;
     let tier = tier_from_proto(proto::Tier::try_from(claim.tier)

@@ -233,21 +233,24 @@ ClaimStore (query + delete operations)
 
 ---
 
-### D4: Synthesizer Service (`boswell-synthesizer`) 🟡 IN PROGRESS
+### D4: Synthesizer Service (`boswell-synthesizer`) ✅ COMPLETE
 
 **Goal:** Discover emergent patterns and higher-order insights across claims (ADR-06)
 
-- [ ] Candidate selection (by namespace, tier, recency, relationship density)
-- [ ] Cluster building from the relationship graph
-- [ ] LLM prompt construction for cluster analysis ("no insight" is valid)
-- [ ] Insight generation with `source_type: inference`
-- [ ] `derived_from` relationship creation to constituent claims
-- [ ] Confidence propagation (uncertainty widens outward)
-- [ ] Derivation-depth limit to prevent runaway meta-synthesis
-- [ ] Gatekeeper validation of synthesized claims
-- [ ] Background worker (scheduled passes) + dry-run mode
-- [ ] `run_pass(scope) -> SynthesisReport` trait interface
-- [ ] Unit + integration tests
+- [x] Candidate selection (by namespace, tier, recency, relationship density) ✅ DONE
+- [x] Cluster building from the relationship graph ✅ DONE
+- [x] LLM prompt construction for cluster analysis ("no insight" is valid) ✅ DONE
+- [x] Insight generation with `source_type: inference` ✅ DONE
+- [x] `derived_from` relationship creation to constituent claims ✅ DONE
+- [x] Confidence propagation (uncertainty widens outward) ✅ DONE
+- [x] Derivation-depth limit to prevent runaway meta-synthesis ✅ DONE
+- [x] Gatekeeper validation of synthesized claims ✅ DONE
+- [x] Background worker (scheduled passes) + dry-run mode ✅ DONE
+- [x] `run_pass(scope) -> SynthesisReport` interface (+ `run_pass_shared` for the server) ✅ DONE
+- [x] Unit + integration tests (incl. live Ollama synthesis) ✅ DONE
+- [x] Scheduled in the instance server via `[synthesizer]` config ✅ DONE
+
+**Commit:** `c14e76d` (service) + `009dbf0` (server scheduling)
 
 **Deliverable:** `boswell-synthesizer` crate - Discover emergent patterns and derived claims
 
@@ -304,11 +307,13 @@ ClaimStore (query + delete operations)
 | D1: Gatekeeper | ✅ Complete | 10/10 | 100% |
 | D2: Janitor | ✅ Complete | 24/24 | 100% |
 | D3: Extractor | ✅ Complete | — | 100% |
-| D4: Synthesizer | 🟡 In Progress | — | — |
+| D4: Synthesizer | ✅ Complete | — | 100% |
 
-**Overall Phase 3 Progress:** 86% (6/7 streams complete)
+**Overall Phase 3 Progress:** 100% (7/7 streams complete)
 
-**Total Tests Passing:** 111 workspace tests green on the UUIDv7 base (post ADR-011 supersession)
+**Beyond Phase 3:** semantic search wired end-to-end (store HNSW → gRPC → SDK → MCP/CLI) with a real local embedder (EmbeddingGemma); `boswell-server` instance daemon; age-based confidence decay + cache (ADR-007); decay-aware Janitor with real effects; scheduled Synthesizer; and an LLM-backed Contradiction Janitor — all running as opt-in background services in the instance.
+
+**Total Tests Passing:** 324 workspace tests green (0 build/clippy warnings).
 
 ---
 

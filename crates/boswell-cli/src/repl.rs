@@ -16,8 +16,7 @@ pub async fn run_repl(config: &mut Config, formatter: &Formatter) -> Result<()> 
     println!();
 
     // Initialize readline editor
-    let mut editor = DefaultEditor::new().map_err(|e| CliError::Io(std::io::Error::new(
-        std::io::ErrorKind::Other,
+    let mut editor = DefaultEditor::new().map_err(|e| CliError::Io(std::io::Error::other(
         format!("Failed to initialize editor: {}", e),
     )))?;
 
@@ -159,7 +158,7 @@ async fn execute_repl_command(
 // Simple command parsers for REPL (minimal argument parsing)
 
 fn parse_connect_command(args: &[&str]) -> Result<ReplCommand> {
-    let url = args.get(0).map(|s| s.to_string());
+    let url = args.first().map(|s| s.to_string());
     let instance = args.get(1).map(|s| s.to_string());
     
     Ok(ReplCommand::Command(Command::Connect(ConnectArgs {
@@ -194,7 +193,7 @@ fn parse_assert_command(args: &[&str]) -> Result<ReplCommand> {
 fn parse_query_command(args: &[&str]) -> Result<ReplCommand> {
     // Simple query - just subject filter for now
     // Format: query [subject:value]
-    let subject = args.get(0).map(|s| s.to_string());
+    let subject = args.first().map(|s| s.to_string());
 
     Ok(ReplCommand::Command(Command::Query(QueryArgs {
         subject,

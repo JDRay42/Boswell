@@ -191,7 +191,7 @@ impl Gatekeeper {
         let (lower, upper) = claim.confidence;
 
         // Check bounds
-        if lower < 0.0 || lower > 1.0 {
+        if !(0.0..=1.0).contains(&lower) {
             return Some(RejectionReason::InvalidConfidenceBounds {
                 lower: lower.to_string(),
                 upper: upper.to_string(),
@@ -199,7 +199,7 @@ impl Gatekeeper {
             });
         }
 
-        if upper < 0.0 || upper > 1.0 {
+        if !(0.0..=1.0).contains(&upper) {
             return Some(RejectionReason::InvalidConfidenceBounds {
                 lower: lower.to_string(),
                 upper: upper.to_string(),

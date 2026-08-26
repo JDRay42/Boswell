@@ -6,7 +6,9 @@ use serde_json::Value;
 /// JSON-RPC request
 #[derive(Debug, Deserialize)]
 pub struct JsonRpcRequest {
-    /// JSON-RPC version (must be "2.0")
+    /// JSON-RPC version (must be "2.0"). Parsed for protocol conformance; not
+    /// otherwise read.
+    #[allow(dead_code)]
     pub jsonrpc: String,
     /// Request ID
     pub id: Option<Value>,
@@ -84,8 +86,9 @@ pub struct ToolDefinition {
     pub name: String,
     /// Tool description
     pub description: String,
-    /// Input schema (JSON Schema)
-    pub inputSchema: Value,
+    /// Input schema (JSON Schema). Serialized as `inputSchema` per the MCP spec.
+    #[serde(rename = "inputSchema")]
+    pub input_schema: Value,
 }
 
 /// MCP server info

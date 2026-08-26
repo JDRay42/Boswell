@@ -4,7 +4,7 @@ use boswell_sdk::BoswellClient;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use tokio::runtime::Runtime;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 use crate::error::McpError;
 use crate::protocol::*;
@@ -30,7 +30,7 @@ impl McpServer {
     /// Result containing the server or an error
     pub fn new(router_url: String) -> Result<Self, McpError> {
         let runtime = Runtime::new().map_err(|e| {
-            McpError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e))
+            McpError::IoError(std::io::Error::other(e))
         })?;
 
         let client = BoswellClient::new(&router_url);
@@ -233,7 +233,7 @@ impl McpServer {
         ToolDefinition {
             name: "boswell_assert".to_string(),
             description: "Assert a new claim into Boswell with optional confidence and tier".to_string(),
-            inputSchema: json!({
+            input_schema: json!({
                 "type": "object",
                 "properties": {
                     "namespace": {"type": "string", "description": "Namespace for the claim"},
@@ -252,7 +252,7 @@ impl McpServer {
         ToolDefinition {
             name: "boswell_query".to_string(),
             description: "Query claims from Boswell with optional filters".to_string(),
-            inputSchema: json!({
+            input_schema: json!({
                 "type": "object",
                 "properties": {
                     "namespace": {"type": "string", "description": "Filter by namespace"},
@@ -270,7 +270,7 @@ impl McpServer {
         ToolDefinition {
             name: "boswell_learn".to_string(),
             description: "Batch insert multiple claims into Boswell".to_string(),
-            inputSchema: json!({
+            input_schema: json!({
                 "type": "object",
                 "properties": {
                     "claims": {
@@ -299,7 +299,7 @@ impl McpServer {
         ToolDefinition {
             name: "boswell_forget".to_string(),
             description: "Remove claims from Boswell by their IDs".to_string(),
-            inputSchema: json!({
+            input_schema: json!({
                 "type": "object",
                 "properties": {
                     "claim_ids": {
@@ -317,7 +317,7 @@ impl McpServer {
         ToolDefinition {
             name: "boswell_semantic_search".to_string(),
             description: "Perform semantic search to find claims similar to a query".to_string(),
-            inputSchema: json!({
+            input_schema: json!({
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Search query text"},

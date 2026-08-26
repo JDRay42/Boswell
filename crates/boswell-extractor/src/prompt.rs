@@ -50,7 +50,7 @@ impl PromptBuilder {
                     claim.confidence.1
                 ));
             }
-            prompt.push_str("\n");
+            prompt.push('\n');
         }
         
         // 4. The text to analyze

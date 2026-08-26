@@ -85,25 +85,25 @@ impl JanitorMetrics {
         ];
 
         if !self.deleted.is_empty() {
-            lines.push(format!("Deletions by tier:"));
+            lines.push("Deletions by tier:".to_string());
             for (tier, count) in &self.deleted {
                 lines.push(format!("  {:?}: {}", tier, count));
             }
             lines.push(format!("  Total: {}", self.total_deleted()));
-            lines.push(format!(""));
+            lines.push(String::new());
         }
 
         if !self.promoted.is_empty() {
-            lines.push(format!("Promotions from tier:"));
+            lines.push("Promotions from tier:".to_string());
             for (tier, count) in &self.promoted {
                 lines.push(format!("  {:?}: {}", tier, count));
             }
             lines.push(format!("  Total: {}", self.total_promoted()));
-            lines.push(format!(""));
+            lines.push(String::new());
         }
 
         if !self.demoted.is_empty() {
-            lines.push(format!("Demotions from tier:"));
+            lines.push("Demotions from tier:".to_string());
             for (tier, count) in &self.demoted {
                 lines.push(format!("  {:?}: {}", tier, count));
             }

@@ -1,6 +1,6 @@
-///! gRPC service implementation
-///!
-///! Implements the BosWellService trait generated from proto definitions.
+//! gRPC service implementation
+//!
+//! Implements the BosWellService trait generated from proto definitions.
 
 use std::sync::{Arc, Mutex};
 use tonic::{Request, Response, Status};
@@ -226,7 +226,10 @@ where
         }
         
         let mut inserted_count = 0;
-        let mut duplicate_count = 0;
+        // Duplicates cannot be distinguished from other failures at the generic
+        // ClaimStore layer (the error type is opaque), so they are reported under
+        // error_count and this stays 0. Revisit if the trait gains a typed error.
+        let duplicate_count = 0;
         let mut error_count = 0;
         let mut errors = Vec::new();
         

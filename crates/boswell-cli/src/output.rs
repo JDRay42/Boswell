@@ -36,7 +36,7 @@ impl Formatter {
 
     /// Format a single claim.
     pub fn format_claim(&self, claim: &Claim) -> Result<String> {
-        self.format_claims(&[claim.clone()])
+        self.format_claims(std::slice::from_ref(claim))
     }
 
     /// Format semantic-search results (claims paired with similarity scores).

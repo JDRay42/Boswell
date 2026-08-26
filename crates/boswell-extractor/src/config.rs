@@ -5,8 +5,10 @@ use std::time::Duration;
 
 /// Text chunking strategy for large documents
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum ChunkStrategy {
     /// Split by paragraphs (double newlines)
+    #[default]
     ByParagraph,
     /// Split by sections (markdown headers or numbered sections)
     BySection,
@@ -14,11 +16,6 @@ pub enum ChunkStrategy {
     ByTokenCount,
 }
 
-impl Default for ChunkStrategy {
-    fn default() -> Self {
-        ChunkStrategy::ByParagraph
-    }
-}
 
 /// Configuration for the Extractor
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -10,6 +10,7 @@
 //! - Health checks for instance monitoring
 
 // Include generated protobuf code
+#[allow(missing_docs)] // generated code; not subject to the crate's doc lint
 pub mod proto {
     //! Generated protobuf types and service definitions
     tonic::include_proto!("boswell.v1");

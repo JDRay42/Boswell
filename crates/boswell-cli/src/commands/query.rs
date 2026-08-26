@@ -35,7 +35,7 @@ pub async fn execute_query(
 
     // Apply confidence filter
     if let Some(min_conf) = args.min_confidence {
-        if min_conf < 0.0 || min_conf > 1.0 {
+        if !(0.0..=1.0).contains(&min_conf) {
             return Err(CliError::InvalidInput(
                 "Confidence must be between 0.0 and 1.0".to_string(),
             ));

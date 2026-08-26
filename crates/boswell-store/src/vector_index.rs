@@ -233,27 +233,30 @@ mod tests {
     #[test]
     fn test_add_and_search() {
         let index = VectorIndex::new(384);
-        
-        // Add some test vectors
+
+        // The exact vector we'll query for.
         let claim_id1 = ClaimId::new();
         let embedding1: Vec<f32> = (0..384).map(|i| (i as f32) / 384.0).collect();
         index.add(claim_id1, &embedding1).unwrap();
-        
-        let claim_id2 = ClaimId::new();
-        let mut embedding2: Vec<f32> = (0..384).map(|i| (i as f32) / 384.0).collect();
-        // Make it slightly different
-        embedding2[0] = 0.5;
-        index.add(claim_id2, &embedding2).unwrap();
-        
-        assert_eq!(index.len(), 2);
-        
-        // Search for nearest neighbor (use ef_search = 64)
+
+        // Populate the index with several more distinct vectors. HNSW is an
+        // approximate index whose recall is unreliable with only a couple of
+        // elements (a top-k search may return fewer than k), so we index enough
+        // vectors for a top-2 query to be reliably filled.
+        for n in 1..=10 {
+            let mut embedding: Vec<f32> = (0..384).map(|i| (i as f32) / 384.0).collect();
+            embedding[0] = n as f32 / 10.0; // perturb so each is distinct
+            index.add(ClaimId::new(), &embedding).unwrap();
+        }
+
+        assert_eq!(index.len(), 11);
+
         let results = index.search(&embedding1, 2, 64).unwrap();
         assert_eq!(results.len(), 2);
-        
-        // First result should be the exact match
+
+        // The exact match ranks first with near-perfect similarity.
         assert_eq!(results[0].0, claim_id1);
-        assert!(results[0].1 > 0.99); // Very high similarity
+        assert!(results[0].1 > 0.99);
     }
     
     #[test]

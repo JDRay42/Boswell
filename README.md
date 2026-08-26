@@ -126,9 +126,15 @@ of both claims. Pairs are rate-limited and already-related pairs are skipped.
 
 ## Project Status
 
-🚧 **In Development** - Phase 1: Foundation
+🚧 **In Development** — core lifecycle complete end-to-end.
 
-See [docs/development/plan-boswellDevelopment.prompt.md](docs/development/plan-boswellDevelopment.prompt.md) for the complete development roadmap.
+The full organic-memory loop runs across the two-process architecture (router +
+instance): assert claims → semantic retrieval via a local embedder → age-based
+confidence decay → decay-aware maintenance (tier demotion + GC) → LLM-backed
+synthesis of emergent insights → LLM-backed contradiction detection. All
+maintenance services run as opt-in background workers inside the instance server.
+
+See [docs/development/plan-boswellDevelopment.prompt.md](docs/development/plan-boswellDevelopment.prompt.md) for the development roadmap and [docs/architecture/](docs/architecture/) for component specs.
 
 ## Documentation
 

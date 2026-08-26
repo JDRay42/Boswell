@@ -38,7 +38,7 @@ pub async fn execute_learn(
     let default_tier: boswell_domain::Tier = args.tier.into();
     let claims: Vec<boswell_domain::Claim> = claim_defs
         .into_iter()
-        .map(|def| def.to_claim(default_tier))
+        .map(|def| def.into_claim(default_tier))
         .collect::<Result<Vec<_>>>()?;
 
     let claim_count = claims.len();
@@ -72,7 +72,7 @@ struct ConfidenceDef {
 }
 
 impl ClaimDefinition {
-    fn to_claim(self, default_tier: boswell_domain::Tier) -> Result<boswell_domain::Claim> {
+    fn into_claim(self, default_tier: boswell_domain::Tier) -> Result<boswell_domain::Claim> {
         let (subject_ns, subject_val) = parse_entity(&self.subject)?;
         let (predicate_ns, predicate_val) = parse_entity(&self.predicate)?;
         let (object_ns, object_val) = parse_entity(&self.object)?;

@@ -6,8 +6,8 @@ mod learn;
 mod forget;
 mod search;
 
-pub use assert::{handle_assert, AssertParams, AssertResult};
-pub use query::{handle_query, QueryParams, QueryResult};
-pub use learn::{handle_learn, LearnParams, LearnResult};
-pub use forget::{handle_forget, ForgetParams, ForgetResult};
-pub use search::{handle_search, SearchParams, SearchResult};
+pub use assert::{handle_assert, AssertParams};
+pub use query::{handle_query, QueryParams};
+pub use learn::{handle_learn, LearnParams};
+pub use forget::{handle_forget, ForgetParams};
+pub use search::{handle_search, SearchParams};

@@ -44,7 +44,7 @@ impl TextChunker {
         for line in text.lines() {
             // Detect markdown headers (# Header) or numbered sections (1. Section)
             let is_section_header = line.trim_start().starts_with('#')
-                || (line.trim_start().chars().next().map_or(false, |c| c.is_ascii_digit())
+                || (line.trim_start().chars().next().is_some_and(|c| c.is_ascii_digit())
                     && line.contains('.'));
             
             if is_section_header && !current_section.is_empty() {
@@ -77,7 +77,7 @@ impl TextChunker {
         
         // Split at sentence boundaries when possible
         let sentences: Vec<&str> = text
-            .split(|c| c == '.' || c == '!' || c == '?')
+            .split(['.', '!', '?'])
             .filter(|s| !s.trim().is_empty())
             .collect();
         

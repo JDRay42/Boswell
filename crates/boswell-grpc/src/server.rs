@@ -1,6 +1,6 @@
-///! gRPC server configuration and lifecycle management
-///!
-///! Handles server initialization, TLS setup, and graceful shutdown.
+//! gRPC server configuration and lifecycle management
+//!
+//! Handles server initialization, TLS setup, and graceful shutdown.
 
 use std::sync::{Arc, Mutex};
 use tonic::transport::Server;

@@ -114,7 +114,7 @@ impl BoswellClient {
             });
 
             let tier_i32 = tier
-                .map(|t| grpc_tier_from_domain_tier(t))
+                .map(grpc_tier_from_domain_tier)
                 .unwrap_or(GrpcTier::Unspecified as i32);
 
             let request = AssertRequest {

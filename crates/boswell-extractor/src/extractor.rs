@@ -323,6 +323,9 @@ where
 /// Result of processing a claim candidate
 enum ProcessResult {
     Created(ClaimResult),
+    /// Reserved for the not-yet-implemented corroboration path (when an extracted
+    /// claim matches an existing one, it should reinforce rather than duplicate).
+    #[allow(dead_code)]
     Corroborated(ClaimResult),
 }
 

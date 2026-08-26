@@ -3,7 +3,6 @@
 use boswell_mcp::McpServer;
 use std::env;
 use tracing::Level;
-use tracing_subscriber;
 
 fn main() {
     // Initialize tracing (log to stderr)

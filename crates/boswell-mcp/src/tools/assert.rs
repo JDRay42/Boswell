@@ -75,7 +75,7 @@ pub async fn handle_assert(
 
     Ok(AssertResult {
         claim_id: claim_id.to_string(),
-        message: format!("Claim asserted successfully"),
+        message: "Claim asserted successfully".to_string(),
     })
 }
 
