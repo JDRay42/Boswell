@@ -141,6 +141,7 @@ See [docs/development/roadmap.md](docs/development/roadmap.md) for the developme
 - [Architecture Documentation](docs/architecture/) - System design and component specifications
 - [Architecture Decision Records](docs/ADRs/) - Key technical decisions and rationale
 - [Development Plan](docs/development/roadmap.md) - Phased implementation roadmap
+- [Importing Personal Memory](docs/importing-personal-memory.md) - Seed an instance with facts about yourself
 
 ## Contributing
 

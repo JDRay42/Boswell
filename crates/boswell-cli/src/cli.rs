@@ -53,6 +53,9 @@ pub enum Command {
     /// Learn (batch assert) multiple claims
     Learn(LearnArgs),
 
+    /// Validate a learn JSON file offline (no server connection needed)
+    Validate(ValidateArgs),
+
     /// Forget (delete) claims
     Forget(ForgetArgs),
 
@@ -153,6 +156,17 @@ pub struct LearnArgs {
     /// Default tier for claims without explicit tier
     #[arg(short, long, value_enum, default_value = "task")]
     pub tier: TierArg,
+}
+
+/// Arguments for the validate command.
+#[derive(Debug, Parser)]
+pub struct ValidateArgs {
+    /// JSON file to validate (a JSON array of claim definitions)
+    pub file: Option<String>,
+
+    /// Read the JSON array from stdin instead of a file
+    #[arg(long)]
+    pub stdin: bool,
 }
 
 /// Arguments for the forget command.

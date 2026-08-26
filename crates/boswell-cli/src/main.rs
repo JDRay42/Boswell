@@ -50,6 +50,10 @@ async fn run() -> boswell_cli::Result<()> {
         Some(Command::Profile(args)) => {
             commands::execute_profile(args, &mut config, &formatter).await?;
         }
+        Some(Command::Validate(args)) => {
+            // Offline: no server connection required.
+            commands::execute_validate(args, &formatter).await?;
+        }
         Some(cmd) => {
             // Commands that require a connection
             let profile = config.get_active_profile()?;
