@@ -50,6 +50,25 @@ pub trait ClaimStore {
     fn supports_semantic_search(&self) -> bool {
         false
     }
+
+    /// Delete a claim by id, returning `true` if a claim was removed.
+    ///
+    /// The default implementation is a no-op returning `false`, so read-only or
+    /// mock stores compile unchanged; persistent stores override it. Deleting a
+    /// claim should also remove its dependent rows (relationships, provenance,
+    /// cached confidence).
+    fn delete_claim(&mut self, _id: ClaimId) -> Result<bool, Self::Error> {
+        Ok(false)
+    }
+
+    /// Move a claim to a new tier, returning `true` if a claim was updated.
+    ///
+    /// The default implementation is a no-op returning `false`; persistent stores
+    /// override it. Changing a claim's tier changes its decay rate, so any cached
+    /// effective confidence for the claim should be invalidated.
+    fn update_claim_tier(&mut self, _id: ClaimId, _new_tier: &str) -> Result<bool, Self::Error> {
+        Ok(false)
+    }
 }
 
 /// Query criteria for retrieving claims

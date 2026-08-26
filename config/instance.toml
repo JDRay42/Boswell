@@ -26,3 +26,11 @@ endpoint = "http://localhost:11434"
 
 # Vector dimension for the mock backend (used when backend = "mock").
 mock_dimension = 384
+
+[janitor]
+# Run the decay-aware maintenance sweep (tier demotion + stale-claim GC) in the
+# background. Off by default.
+enabled = false
+sweep_interval_minutes = 60
+# Dry-run logs what would be deleted/demoted without changing anything.
+dry_run = false

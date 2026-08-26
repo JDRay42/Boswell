@@ -231,6 +231,21 @@ mod tests {
         fn get_relationships(&self, _id: ClaimId) -> Result<Vec<boswell_domain::Relationship>, Self::Error> {
             Ok(Vec::new())
         }
+
+        fn delete_claim(&mut self, id: ClaimId) -> Result<bool, Self::Error> {
+            let before = self.claims.len();
+            self.claims.retain(|c| c.id != id);
+            Ok(self.claims.len() < before)
+        }
+
+        fn update_claim_tier(&mut self, id: ClaimId, new_tier: &str) -> Result<bool, Self::Error> {
+            if let Some(claim) = self.claims.iter_mut().find(|c| c.id == id) {
+                claim.tier = new_tier.to_string();
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        }
     }
 
     fn current_timestamp() -> u64 {

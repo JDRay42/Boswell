@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 boswell-grpc = { workspace = true }
 boswell-store = { workspace = true }
+boswell-janitor = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 serde = { workspace = true, features = ["derive"] }

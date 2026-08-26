@@ -34,6 +34,9 @@ pub struct InstanceConfig {
 
     /// Embedding backend settings.
     pub embedding: EmbeddingConfig,
+
+    /// Background maintenance (Janitor) settings.
+    pub janitor: JanitorSettings,
 }
 
 impl Default for InstanceConfig {
@@ -43,6 +46,41 @@ impl Default for InstanceConfig {
             bind_port: 50051,
             storage: StorageConfig::default(),
             embedding: EmbeddingConfig::default(),
+            janitor: JanitorSettings::default(),
+        }
+    }
+}
+
+/// Background maintenance settings for the in-process Janitor.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct JanitorSettings {
+    /// Whether to run the decay-aware Janitor sweep loop in the background.
+    pub enabled: bool,
+    /// Minutes between sweep cycles.
+    pub sweep_interval_minutes: u64,
+    /// Dry-run: log intended deletions/demotions without applying them.
+    pub dry_run: bool,
+}
+
+impl Default for JanitorSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false, // opt-in
+            sweep_interval_minutes: 60,
+            dry_run: false,
+        }
+    }
+}
+
+impl JanitorSettings {
+    /// Build the [`boswell_janitor::JanitorConfig`] this settings block describes,
+    /// keeping default TTLs and thresholds for everything not exposed here.
+    pub fn to_janitor_config(&self) -> boswell_janitor::JanitorConfig {
+        boswell_janitor::JanitorConfig {
+            sweep_interval_minutes: self.sweep_interval_minutes,
+            dry_run: self.dry_run,
+            ..boswell_janitor::JanitorConfig::default()
         }
     }
 }
@@ -140,6 +178,14 @@ endpoint = "http://localhost:11434"
 
 # Vector dimension for the mock backend (used when backend = "mock").
 mock_dimension = 384
+
+[janitor]
+# Run the decay-aware maintenance sweep (tier demotion + stale-claim GC) in the
+# background. Off by default.
+enabled = false
+sweep_interval_minutes = 60
+# Dry-run logs what would be deleted/demoted without changing anything.
+dry_run = false
 "#;
 
 #[cfg(test)]

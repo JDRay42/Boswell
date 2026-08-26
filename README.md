@@ -102,6 +102,13 @@ To run without Ollama (e.g. for offline development), set `backend = "mock"`
 under `[embedding]` in the config. A `boswell-router` can then register the
 instance at its `http://localhost:50051` endpoint (see `config/router.toml`).
 
+To keep memory healthy automatically, enable the background Janitor under
+`[janitor]` in the config (`enabled = true`). It runs decay-aware sweeps on a
+schedule: stale claims past their tier TTL are garbage-collected, and claims
+whose age-decayed confidence (ADR-007) has fallen below the demotion threshold
+are demoted a tier. Set `dry_run = true` to log intended changes without
+applying them.
+
 ## Project Status
 
 🚧 **In Development** - Phase 1: Foundation

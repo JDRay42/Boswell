@@ -1,7 +1,7 @@
 //! Core Janitor implementation for tier management and cleanup
 
 use crate::{JanitorConfig, JanitorError, JanitorMetrics};
-use boswell_domain::{Claim, ClaimId, Tier};
+use boswell_domain::{decayed_confidence, Claim, ClaimId, DecayConfig, Tier};
 use boswell_domain::traits::{ClaimStore, ClaimQuery};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -40,14 +40,28 @@ fn current_timestamp() -> u64 {
 /// ```
 pub struct Janitor {
     config: JanitorConfig,
+    decay: DecayConfig,
     metrics: JanitorMetrics,
 }
 
 impl Janitor {
-    /// Create a new Janitor with the given configuration
+    /// Create a new Janitor with the given configuration and default decay model.
     pub fn new(config: JanitorConfig) -> Self {
         Self {
             config,
+            decay: DecayConfig::default(),
+            metrics: JanitorMetrics::new(),
+        }
+    }
+
+    /// Create a Janitor with an explicit decay configuration.
+    ///
+    /// Tier decisions use age-decayed effective confidence (per ADR-007), so the
+    /// decay model determines how quickly claims become demotion candidates.
+    pub fn with_decay(config: JanitorConfig, decay: DecayConfig) -> Self {
+        Self {
+            config,
+            decay,
             metrics: JanitorMetrics::new(),
         }
     }
@@ -55,6 +69,11 @@ impl Janitor {
     /// Create a Janitor with default configuration
     pub fn default_config() -> Self {
         Self::new(JanitorConfig::default())
+    }
+
+    /// Effective (age-decayed) lower confidence bound for a claim, as of `now`.
+    fn effective_lower(&self, claim: &Claim, now: u64) -> f64 {
+        decayed_confidence(claim.confidence, &claim.tier, claim.created_at, now, &self.decay).0
     }
 
     /// Get a reference to the current metrics
@@ -180,13 +199,20 @@ impl Janitor {
             return Ok(0);
         }
 
-        // Delete stale claims
-        let deleted_count = stale_claims.len();
-        
-        // Note: ClaimStore doesn't have a delete method yet, so we'll just log for now
-        // In a full implementation, we'd call store.delete_claims(stale_claim_ids)
+        // Delete stale claims from the store.
+        let stale_ids: Vec<ClaimId> = stale_claims.iter().map(|c| c.id).collect();
+        let mut deleted_count = 0;
+        for id in stale_ids {
+            if store
+                .delete_claim(id)
+                .map_err(|e| JanitorError::Store(e.to_string()))?
+            {
+                deleted_count += 1;
+            }
+        }
+
         tracing::info!(
-            "Would delete {} stale claims from {:?} tier (created before {})",
+            "Deleted {} stale claims from {:?} tier (created before {})",
             deleted_count,
             tier,
             cutoff
@@ -276,11 +302,12 @@ impl Janitor {
     /// Determine if a claim should be promoted
     fn should_promote(&self, claim: &Claim) -> bool {
         // Promotion criteria:
-        // 1. Confidence is good (above demotion threshold)
+        // 1. Effective (decayed) confidence is good (above demotion threshold)
         // 2. Claim is not stale
-        
-        let confidence_good = claim.confidence.0 >= self.config.demotion_confidence_threshold;
-        
+        let now = current_timestamp();
+        let confidence_good =
+            self.effective_lower(claim, now) >= self.config.demotion_confidence_threshold;
+
         // Parse tier from string
         let tier = match Tier::parse(&claim.tier) {
             Some(t) => t,
@@ -310,31 +337,32 @@ impl Janitor {
     /// Determine if a claim should be demoted
     fn should_demote(&self, claim: &Claim) -> bool {
         // Demotion criteria:
-        // 1. Low confidence (below threshold)
+        // 1. Low effective (decayed) confidence (below threshold)
         // 2. Stale (approaching TTL)
-        
-        let confidence_low = claim.confidence.0 < self.config.demotion_confidence_threshold;
-        
+        let now = current_timestamp();
+        let effective_lower = self.effective_lower(claim, now);
+        let confidence_low = effective_lower < self.config.demotion_confidence_threshold;
+
         // Parse tier from string
         let tier = match Tier::parse(&claim.tier) {
             Some(t) => t,
             None => return false, // Invalid tier, skip
         };
-        
+
         // Check staleness based on tier-specific TTLs
         let is_stale = match tier {
             Tier::Ephemeral => false, // Don't demote from Ephemeral, just delete
             Tier::Task => {
-                let age_hours = (current_timestamp() - claim.created_at) / 3600;
+                let age_hours = (now - claim.created_at) / 3600;
                 age_hours > self.config.task_ttl_hours * 3 / 4 // In last 25% of TTL
             }
             Tier::Project => {
-                let age_days = (current_timestamp() - claim.created_at) / 86400;
+                let age_days = (now - claim.created_at) / 86400;
                 age_days > self.config.project_stale_days * 3 / 4
             }
             Tier::Permanent => {
-                // Only demote Permanent if confidence is very low
-                claim.confidence.0 < 0.2
+                // Only demote Permanent if effective confidence is very low.
+                effective_lower < 0.2
             }
         };
 
@@ -344,7 +372,7 @@ impl Janitor {
     /// Promote a claim to the next tier
     fn promote_claim<S: ClaimStore>(
         &self,
-        _store: &mut S,
+        store: &mut S,
         claim_id: ClaimId,
         from_tier: Tier,
         to_tier: Tier,
@@ -362,22 +390,19 @@ impl Janitor {
             return Ok(false);
         }
 
-        // Note: ClaimStore doesn't have an update_tier method yet
-        // In a full implementation, we'd call store.update_claim_tier(claim_id, to_tier)
-        tracing::info!(
-            "Would promote claim {} from {:?} to {:?}",
-            claim_id,
-            from_tier,
-            to_tier
-        );
-
-        Ok(true)
+        let updated = store
+            .update_claim_tier(claim_id, to_tier.as_str())
+            .map_err(|e| JanitorError::Store(e.to_string()))?;
+        if updated {
+            tracing::info!("Promoted claim {} from {:?} to {:?}", claim_id, from_tier, to_tier);
+        }
+        Ok(updated)
     }
 
     /// Demote a claim to the previous tier
     fn demote_claim<S: ClaimStore>(
         &self,
-        _store: &mut S,
+        store: &mut S,
         claim_id: ClaimId,
         from_tier: Tier,
         to_tier: Tier,
@@ -395,16 +420,13 @@ impl Janitor {
             return Ok(false);
         }
 
-        // Note: ClaimStore doesn't have an update_tier method yet
-        // In a full implementation, we'd call store.update_claim_tier(claim_id, to_tier)
-        tracing::info!(
-            "Would demote claim {} from {:?} to {:?}",
-            claim_id,
-            from_tier,
-            to_tier
-        );
-
-        Ok(true)
+        let updated = store
+            .update_claim_tier(claim_id, to_tier.as_str())
+            .map_err(|e| JanitorError::Store(e.to_string()))?;
+        if updated {
+            tracing::info!("Demoted claim {} from {:?} to {:?}", claim_id, from_tier, to_tier);
+        }
+        Ok(updated)
     }
 }
 
@@ -468,6 +490,21 @@ mod tests {
 
         fn get_relationships(&self, _id: ClaimId) -> Result<Vec<boswell_domain::Relationship>, Self::Error> {
             Ok(Vec::new())
+        }
+
+        fn delete_claim(&mut self, id: ClaimId) -> Result<bool, Self::Error> {
+            let before = self.claims.len();
+            self.claims.retain(|c| c.id != id);
+            Ok(self.claims.len() < before)
+        }
+
+        fn update_claim_tier(&mut self, id: ClaimId, new_tier: &str) -> Result<bool, Self::Error> {
+            if let Some(claim) = self.claims.iter_mut().find(|c| c.id == id) {
+                claim.tier = new_tier.to_string();
+                Ok(true)
+            } else {
+                Ok(false)
+            }
         }
     }
 
@@ -578,17 +615,78 @@ mod tests {
         let claim = create_test_claim(Tier::Task, 30, 0.2);
         assert!(janitor.should_demote(&claim));
 
-        // Task tier: fresh - should not demote
+        // Task tier: fresh - should not demote (not stale)
         let claim = create_test_claim(Tier::Task, 2, 0.2);
         assert!(!janitor.should_demote(&claim));
 
-        // Task tier: good confidence - should not demote
+        // Task tier: stale, and high base confidence that has decayed below the
+        // threshold (task half-life 12h; at 30h a 0.8 base decays to ~0.14).
         let claim = create_test_claim(Tier::Task, 30, 0.8);
+        assert!(janitor.should_demote(&claim));
+
+        // Task tier: stale, but base confidence high enough that the decayed
+        // value stays above the threshold (~0.33 at 19h) - should not demote.
+        let claim = create_test_claim(Tier::Task, 19, 0.99);
         assert!(!janitor.should_demote(&claim));
 
         // Ephemeral: should not demote (just delete)
         let claim = create_test_claim(Tier::Ephemeral, 30, 0.1);
         assert!(!janitor.should_demote(&claim));
+    }
+
+    #[test]
+    fn test_demote_is_decay_aware() {
+        // A task claim whose *base* confidence is well above the demotion
+        // threshold but whose *decayed* confidence has fallen below it must be
+        // demoted — this is the behavior that base-confidence logic would miss.
+        let janitor = Janitor::default_config();
+        let claim = create_test_claim(Tier::Task, 30, 0.8);
+
+        assert!(
+            claim.confidence.0 >= janitor.config.demotion_confidence_threshold,
+            "base confidence should be above the threshold"
+        );
+        assert!(
+            janitor.effective_lower(&claim, current_timestamp())
+                < janitor.config.demotion_confidence_threshold,
+            "decayed confidence should be below the threshold"
+        );
+        assert!(janitor.should_demote(&claim));
+    }
+
+    #[test]
+    fn test_sweep_actually_deletes_from_store() {
+        let mut store = MockStore::new();
+        let config = JanitorConfig {
+            ephemeral_ttl_hours: 12,
+            dry_run: false,
+            ..Default::default()
+        };
+        let mut janitor = Janitor::new(config);
+
+        store.add_claim(create_test_claim(Tier::Ephemeral, 20, 0.8)); // stale
+        store.add_claim(create_test_claim(Tier::Ephemeral, 2, 0.8)); // fresh
+        assert_eq!(store.claims.len(), 2);
+
+        let deleted = janitor.sweep_ephemeral(&mut store).unwrap();
+        assert_eq!(deleted, 1);
+        // The stale claim is really gone; the fresh one remains.
+        assert_eq!(store.claims.len(), 1);
+        assert!(store.claims.iter().all(|c| (current_timestamp() - c.created_at) / 3600 < 12));
+    }
+
+    #[test]
+    fn test_demote_updates_tier_in_store() {
+        let mut store = MockStore::new();
+        let mut janitor = Janitor::default_config();
+
+        // Stale task claim with decayed-low confidence → demoted to ephemeral.
+        store.add_claim(create_test_claim(Tier::Task, 30, 0.8));
+        janitor.demote_candidates(&mut store).unwrap();
+
+        assert_eq!(store.claims.len(), 1);
+        assert_eq!(store.claims[0].tier, Tier::Ephemeral.as_str());
+        assert_eq!(janitor.metrics().total_demoted(), 1);
     }
 
     #[test]

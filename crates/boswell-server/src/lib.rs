@@ -94,9 +94,17 @@ pub fn build_store(config: &InstanceConfig) -> Result<SqliteStore, ServerError> 
 }
 
 /// Build the store and run the gRPC server until it is shut down.
+///
+/// When `config.janitor.enabled` is set, a decay-aware Janitor sweep loop runs
+/// in the background against the same store (per ADR-007: tier demotion and
+/// stale-claim GC based on age-decayed confidence).
 pub async fn run(config: InstanceConfig) -> Result<(), ServerError> {
     let store = build_store(&config)?;
     let store = Arc::new(Mutex::new(store));
+
+    if config.janitor.enabled {
+        spawn_janitor(&config, Arc::clone(&store));
+    }
 
     let server_config = ServerConfig::new(config.bind_address.clone(), config.bind_port);
 
@@ -110,6 +118,42 @@ pub async fn run(config: InstanceConfig) -> Result<(), ServerError> {
     start_server(server_config, store)
         .await
         .map_err(|e| ServerError::Serve(e.to_string()))
+}
+
+/// Spawn the background Janitor sweep loop against the shared store.
+fn spawn_janitor(config: &InstanceConfig, store: Arc<Mutex<SqliteStore>>) {
+    use tokio::time::{interval, Duration};
+
+    let janitor_config = config.janitor.to_janitor_config();
+    let period = Duration::from_secs(config.janitor.sweep_interval_minutes.max(1) * 60);
+
+    tracing::info!(
+        "Janitor enabled: sweeping every {} min (dry_run: {})",
+        config.janitor.sweep_interval_minutes,
+        config.janitor.dry_run
+    );
+
+    tokio::spawn(async move {
+        let mut janitor = boswell_janitor::Janitor::new(janitor_config);
+        let mut ticker = interval(period);
+        loop {
+            ticker.tick().await;
+            // Hold the lock only for the synchronous sweep (no await inside).
+            let outcome = {
+                let mut guard = store.lock().unwrap();
+                janitor.sweep(&mut *guard)
+            };
+            match outcome {
+                Ok(m) => tracing::info!(
+                    "Janitor sweep: {} deleted, {} promoted, {} demoted",
+                    m.total_deleted(),
+                    m.total_promoted(),
+                    m.total_demoted()
+                ),
+                Err(e) => tracing::error!("Janitor sweep failed: {}", e),
+            }
+        }
+    });
 }
 
 #[cfg(test)]

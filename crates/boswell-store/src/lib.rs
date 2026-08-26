@@ -456,6 +456,33 @@ impl ClaimStore for SqliteStore {
     fn supports_semantic_search(&self) -> bool {
         self.vector_index.is_some() && self.embedding_model.is_some()
     }
+
+    fn delete_claim(&mut self, id: ClaimId) -> Result<bool, Self::Error> {
+        let id_bytes = Self::claim_id_to_bytes(id);
+        // ON DELETE CASCADE removes relationships, provenance, and confidence_cache.
+        let affected = self
+            .conn
+            .execute("DELETE FROM claims WHERE id = ?1", params![&id_bytes])?;
+        // Note: the vector index has no per-id removal; an orphaned vector is
+        // harmless because semantic_search filters hits whose claim is gone.
+        Ok(affected > 0)
+    }
+
+    fn update_claim_tier(&mut self, id: ClaimId, new_tier: &str) -> Result<bool, Self::Error> {
+        let id_bytes = Self::claim_id_to_bytes(id);
+        let affected = self.conn.execute(
+            "UPDATE claims SET tier = ?1 WHERE id = ?2",
+            params![new_tier, &id_bytes],
+        )?;
+        if affected > 0 {
+            // Tier changes the decay rate, so drop any cached effective confidence.
+            self.conn.execute(
+                "DELETE FROM confidence_cache WHERE claim_id = ?1",
+                params![&id_bytes],
+            )?;
+        }
+        Ok(affected > 0)
+    }
 }
 
 /// Default HNSW `ef_search` quality parameter for trait-level semantic search.
