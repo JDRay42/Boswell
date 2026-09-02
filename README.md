@@ -136,12 +136,26 @@ maintenance services run as opt-in background workers inside the instance server
 
 See [docs/development/roadmap.md](docs/development/roadmap.md) for the development roadmap and [docs/architecture/](docs/architecture/) for component specs.
 
+## Integrations
+
+### Claude Code hooks
+
+Give a coding agent persistent memory by wiring [Claude Code
+hooks](https://code.claude.com/docs/en/hooks) into Boswell: a `SessionStart` hook
+recalls stored claims into the session, and a `UserPromptSubmit` hook captures new
+ones. Runnable local examples (command hooks over `localhost`, no network exposure)
+live in [`examples/claude-code-hooks/`](examples/claude-code-hooks/). The
+[integration guide](docs/integrations/claude-code-hooks.md) also covers the native
+HTTP-hook transport and how to serve Boswell securely when it must be publicly
+reachable.
+
 ## Documentation
 
 - [Architecture Documentation](docs/architecture/) - System design and component specifications
 - [Architecture Decision Records](docs/ADRs/) - Key technical decisions and rationale
 - [Development Plan](docs/development/roadmap.md) - Phased implementation roadmap
 - [Importing Personal Memory](docs/importing-personal-memory.md) - Seed an instance with facts about yourself
+- [Claude Code Hooks Integration](docs/integrations/claude-code-hooks.md) - Wire an agent's lifecycle into Boswell's memory (local examples + secure public-serving design)
 
 ## Contributing
 

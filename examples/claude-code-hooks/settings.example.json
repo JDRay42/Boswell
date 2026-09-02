@@ -1,0 +1,43 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/examples/claude-code-hooks/hooks/session-start-recall.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/examples/claude-code-hooks/hooks/capture-claim.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "https://boswell.example.com/hooks/ingest",
+            "headers": {
+              "Authorization": "Bearer $BOSWELL_TOKEN",
+              "Content-Type": "application/json"
+            },
+            "allowedEnvVars": ["BOSWELL_TOKEN"],
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
