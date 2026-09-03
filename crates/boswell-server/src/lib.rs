@@ -163,6 +163,8 @@ fn spawn_janitor(config: &InstanceConfig, store: Arc<Mutex<SqliteStore>>) {
         config.janitor.dry_run
     );
 
+    let manage_procedures = janitor_config.auto_manage_procedures;
+
     tokio::spawn(async move {
         let mut janitor = boswell_janitor::Janitor::new(janitor_config);
         let mut ticker = interval(period);
@@ -171,9 +173,16 @@ fn spawn_janitor(config: &InstanceConfig, store: Arc<Mutex<SqliteStore>>) {
             // Hold the lock only for the synchronous sweep (no await inside).
             let outcome = {
                 let mut guard = store.lock().unwrap();
-                janitor.sweep(&mut *guard)
+                let claim_outcome = janitor.sweep(&mut *guard);
+                // Provenance-aware procedure promotion/demotion (Phase 3, §5.2).
+                let procedure_outcome = if manage_procedures {
+                    janitor.sweep_procedures(&mut guard)
+                } else {
+                    Ok(0)
+                };
+                (claim_outcome, procedure_outcome)
             };
-            match outcome {
+            match outcome.0 {
                 Ok(m) => tracing::info!(
                     "Janitor sweep: {} deleted, {} promoted, {} demoted",
                     m.total_deleted(),
@@ -181,6 +190,11 @@ fn spawn_janitor(config: &InstanceConfig, store: Arc<Mutex<SqliteStore>>) {
                     m.total_demoted()
                 ),
                 Err(e) => tracing::error!("Janitor sweep failed: {}", e),
+            }
+            match outcome.1 {
+                Ok(n) if n > 0 => tracing::info!("Janitor procedure sweep: {} tier changes", n),
+                Ok(_) => {}
+                Err(e) => tracing::error!("Janitor procedure sweep failed: {}", e),
             }
         }
     });

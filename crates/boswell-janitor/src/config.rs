@@ -68,6 +68,14 @@ pub struct JanitorConfig {
     /// Default: true
     #[serde(default = "default_auto_demote")]
     pub auto_demote: bool,
+
+    /// Enable provenance-aware tier promotion/demotion of procedures
+    /// (procedural memory Phase 3, design §5). When on, the sweep asks the
+    /// promotion Gatekeeper to climb/fall each procedure's tier based on its
+    /// provenance ledger, effectiveness, and staleness.
+    /// Default: true
+    #[serde(default = "default_auto_manage_procedures")]
+    pub auto_manage_procedures: bool,
 }
 
 fn default_auto_promote() -> bool {
@@ -75,6 +83,10 @@ fn default_auto_promote() -> bool {
 }
 
 fn default_auto_demote() -> bool {
+    true
+}
+
+fn default_auto_manage_procedures() -> bool {
     true
 }
 
@@ -98,6 +110,7 @@ impl Default for JanitorConfig {
             dry_run: false,
             auto_promote: true,
             auto_demote: true,
+            auto_manage_procedures: true,
         }
     }
 }
@@ -122,6 +135,7 @@ impl JanitorConfig {
             dry_run: false,
             auto_promote: true,
             auto_demote: true,
+            auto_manage_procedures: true,
         }
     }
 
@@ -144,6 +158,7 @@ impl JanitorConfig {
             dry_run: false,
             auto_promote: true,
             auto_demote: true,
+            auto_manage_procedures: true,
         }
     }
 

@@ -24,8 +24,10 @@
 
 mod config;
 mod error;
+mod promotion;
 mod validator;
 
 pub use config::ValidationConfig;
 pub use error::GatekeeperError;
+pub use promotion::{PromotionConfig, PromotionDecision, PromotionGatekeeper};
 pub use validator::{Gatekeeper, RejectionReason, ValidationResult, ValidationStatus};

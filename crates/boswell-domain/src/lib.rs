@@ -34,6 +34,7 @@ pub mod provenance;
 pub mod relationship;
 pub mod tier;
 pub mod traits;
+pub mod write_path;
 
 // Re-exports for convenience
 pub use claim::{Claim, ClaimId};
@@ -52,3 +53,7 @@ pub use procedure::{
 pub use provenance::ProvenanceEntry;
 pub use relationship::{Relationship, RelationshipType};
 pub use tier::Tier;
+pub use write_path::{
+    entry_tier, Assurance, Authority, CorroborationFacts, DelegationChain, EvidenceType, Op,
+    ProvenanceStamp,
+};

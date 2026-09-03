@@ -24,6 +24,7 @@ pub mod embedding;
 pub mod goal_store;
 pub mod ollama_embedding;
 pub mod procedure_store;
+pub mod provenance_store;
 pub mod vector_index;
 
 use boswell_domain::traits::{ClaimQuery, ClaimStore};
@@ -59,6 +60,11 @@ pub enum StoreError {
     /// A goal edge would introduce a cycle into the goal DAG (design §8, #6).
     #[error("Edge would create a cycle in the goal DAG: {0}")]
     Cycle(String),
+
+    /// A provenance-stamped write was refused because the author's authority does
+    /// not permit it (namespace or op out of scope; design §5, §6).
+    #[error("Unauthorized write: {0}")]
+    Unauthorized(String),
 }
 
 /// SQLite-based implementation of ClaimStore
