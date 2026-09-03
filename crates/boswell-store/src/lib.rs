@@ -777,6 +777,42 @@ mod migration_tests {
         assert!(store.column_exists("claims", "source_type").unwrap());
     }
 
+    /// A file-based database must be reopenable: `initialize_schema()` runs the
+    /// full `schema.sql` on every `SqliteStore::new`, so the schema_info seed
+    /// insert has to be idempotent (`INSERT OR IGNORE`). Opening the same path
+    /// twice must both succeed and preserve prior data.
+    #[test]
+    fn test_reopen_file_based_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("boswell.db");
+
+        // First open creates the schema and seeds schema_info(version = 1).
+        {
+            let mut store = SqliteStore::new(&path, false, 0).unwrap();
+            store
+                .assert_claim(Claim::new(
+                    ClaimId::from_value(7),
+                    "ns".into(),
+                    "s:1".into(),
+                    "p:1".into(),
+                    "o:1".into(),
+                    (0.4, 0.6),
+                    "task".into(),
+                    100,
+                ))
+                .unwrap();
+        }
+
+        // Second open re-runs schema.sql; without OR IGNORE this fails with
+        // "UNIQUE constraint failed: schema_info.version".
+        let store = SqliteStore::new(&path, false, 0).unwrap();
+        let back = store
+            .get_claim(ClaimId::from_value(7))
+            .unwrap()
+            .expect("claim from the first session should survive reopen");
+        assert_eq!(back.subject, "s:1");
+    }
+
     /// source_type persists through assert/get, and Claim::new defaults it.
     #[test]
     fn test_source_type_roundtrip_and_default() {
