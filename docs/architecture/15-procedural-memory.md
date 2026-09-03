@@ -423,6 +423,26 @@ Two cross-cutting principles make the unsolved ones safe to live with:
   only bite at multi-agent scale — by which point a running single-principal system has produced
   the data needed to attack them.
 
+### 8.2 Posture & trust boundary — a thorny hedge, not a wall
+
+Boswell does not aim to be perfect or unassailable; it aims to **work**. The target for the
+whole trust model is a *thorny hedge*: raise the cost of casual or careless memory poisoning,
+keep out the worst actors, and make damage recoverable — **not** immunity to a determined
+adversary who already controls the host.
+
+- **Local-first shifts the boundary to the implementer.** Boswell instances typically run on
+  the operator's own hardware with locally-hosted agents. So **identity and usage governance are
+  the implementer's responsibility.** Boswell supplies the tools — provenance, tiers,
+  gatekeeping, assurance-gated ceilings — and a safe default; the operator decides which agents
+  to run and what to trust with which tier. A lower-capability model *can* run away and dirty the
+  substrate; guarding against that is a shared responsibility, not something Boswell can fully
+  prevent from inside.
+- **Recovery is the backstop, in two grades.** The **provenance scalpel** — targeted removal by
+  author, tier, or time — handles most contamination without losing everyone else's memory;
+  **backups** (full restore) handle the rest. See `docs/architecture/16-backup-recovery.md`.
+  Together they make a bad actor's damage bounded and reversible, which is what lets us accept an
+  imperfect Sybil defense.
+
 ## 9. Suggested phasing
 
 1. `Procedure` entity + store + prose executor; retrieval by `goal`/intent + precondition
