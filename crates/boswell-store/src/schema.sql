@@ -123,8 +123,11 @@ CREATE TABLE IF NOT EXISTS schema_info (
     description TEXT
 );
 
--- Insert initial schema version
-INSERT INTO schema_info (version, applied_at, description) 
+-- Insert initial schema version.
+-- OR IGNORE keeps this idempotent: initialize_schema() runs the full schema on
+-- every SqliteStore::new(), so reopening an existing file-based database must not
+-- fail on the schema_info.version UNIQUE (PRIMARY KEY) constraint.
+INSERT OR IGNORE INTO schema_info (version, applied_at, description)
 VALUES (1, strftime('%s', 'now') * 1000, 'Initial schema with claims, relationships, provenance, and confidence cache');
 
 -- Notes on HNSW vector index:
