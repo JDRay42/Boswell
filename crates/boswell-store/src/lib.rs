@@ -22,6 +22,7 @@
 
 pub mod embedding;
 pub mod ollama_embedding;
+pub mod procedure_store;
 pub mod vector_index;
 
 use boswell_domain::traits::{ClaimQuery, ClaimStore};
