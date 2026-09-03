@@ -325,8 +325,14 @@ mod tests {
 
         let metrics = worker.metrics();
         assert_eq!(metrics.sweep_count, 1);
-        // Check that metrics are being updated (at least one value should be non-default)
-        assert!(metrics.total_deleted() > 0 || metrics.total_runtime_secs > 0);
+        // The stale ephemeral claim (age 20h, TTL 12h) must actually be collected,
+        // not merely "some metric moved" — a disjunction with runtime would pass
+        // even if nothing was ever deleted.
+        assert_eq!(
+            metrics.total_deleted(),
+            1,
+            "the stale ephemeral claim should have been collected"
+        );
     }
 
     #[tokio::test]

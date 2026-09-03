@@ -251,10 +251,10 @@ mod tests {
         let provider = OllamaProvider::default_endpoint("llama2");
         let result = provider.generate("Say 'hello' and nothing else").await;
 
-        // This test only runs if explicitly requested and Ollama is running
-        if let Ok(response) = result {
-            assert!(!response.is_empty());
-        }
+        // This test only runs when explicitly requested with Ollama available;
+        // it must then genuinely succeed (a silent pass on Err would test nothing).
+        let response = result.expect("Ollama generate should succeed when Ollama is running");
+        assert!(!response.is_empty());
     }
 
     #[tokio::test]

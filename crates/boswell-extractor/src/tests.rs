@@ -17,7 +17,7 @@ mod tests {
             r#"[
             {
                 "subject": "person:alice",
-                "predicate": "works_at",
+                "predicate": "rel:works_at",
                 "object": "company:acme",
                 "confidence_lower": 0.9,
                 "confidence_upper": 0.95,
@@ -40,18 +40,24 @@ mod tests {
             existing_context: None,
         };
 
-        let result = extractor.extract(request).await;
-        match &result {
-            Ok(r) => {
-                eprintln!(
-                    "Success! Created: {}, Corroborated: {}",
-                    r.claims_created.len(),
-                    r.claims_corroborated.len()
-                );
-            }
-            Err(e) => eprintln!("Extraction error: {:?}", e),
-        }
-        assert!(result.is_ok(), "Extraction should succeed");
+        let result = extractor
+            .extract(request)
+            .await
+            .expect("Extraction should succeed");
+
+        // The mock LLM returns exactly one valid claim, so the full pipeline
+        // (parse → gatekeeper validate → store assert) must actually create it.
+        assert_eq!(
+            result.claims_created.len(),
+            1,
+            "expected one created claim, got {} (failures: {:?})",
+            result.claims_created.len(),
+            result.failures
+        );
+        let created = &result.claims_created[0];
+        assert_eq!(created.subject, "person:alice");
+        assert_eq!(created.predicate, "rel:works_at");
+        assert_eq!(created.object, "company:acme");
     }
 
     #[tokio::test]
