@@ -508,3 +508,19 @@ All contributors must adhere to:
 - Synthesizes emergent insights in background
 - Exposes all functionality via MCP and CLI
 - Processes 100+ assertions/sec, queries <100ms p95
+
+## Backlog / Future Work
+
+Identified but not yet scheduled into a phase.
+
+- **Data-store migration tool.** Move all memories — claims, relationships, provenance, and
+  embeddings — between storage adapters (e.g. SQLite → Postgres + pgvector), preserving ids,
+  tiers, confidence, and timestamps. Supports the "start simple, grow" path
+  ([ADR-020](../ADRs/020-swappable-storage-backends.md); README *Choosing Your Data Store*).
+  Likely a `boswell migrate` CLI subcommand.
+- **PostgreSQL + pgvector storage adapter.** An optional `ClaimStore` implementation for
+  shared / multi-agent / hosted deployments ([ADR-020](../ADRs/020-swappable-storage-backends.md)).
+  Prerequisite: harden the `ClaimStore` contract (async methods; push query filters into
+  `ClaimQuery`).
+- **Backup / restore tooling.** `boswell backup` / `boswell restore` per
+  [Backup & Recovery](../architecture/16-backup-recovery.md).

@@ -178,6 +178,62 @@ authenticated HTTP/JSON API (`/v1`) over the full memory lifecycle — read, wri
 search, recall, delete, relationships, extract, and hook ingest — so any external
 agent can use Boswell over HTTPS.
 
+## Running Boswell — what's expected of implementers
+
+Boswell is **local-first**: instances typically run on your own hardware with your own
+agents. That makes the runtime environment — and its trust boundary — **your
+responsibility**. Boswell aims to be a *thorny hedge*, not an impenetrable wall: it raises
+the cost of casual or careless memory poisoning and keeps damage recoverable, but it is not
+designed to be immune to a determined actor who already controls the host. In practice, plan
+for the following.
+
+- **Identity & access are yours to govern.** Boswell provides provenance, tiers, gatekeeping,
+  and (by design) an identity-provider port with assurance-gated write tiers — but it does not
+  ship a production identity system. You decide which agents to run and what each may write,
+  especially to higher (project/permanent) tiers. Run only agents you're willing to trust with
+  the tier you grant them.
+- **Don't expose the instance carelessly.** The gRPC instance is meant to stay bound to
+  `127.0.0.1`. Reach it from remote agents only through the authenticated, TLS-fronted
+  [`boswell-gateway`](docs/integrations/http-api.md); see the
+  [security model](docs/architecture/10-security.md) and the
+  [hooks integration guide](docs/integrations/claude-code-hooks.md). Rotate the router
+  `jwt_secret` and gateway API keys; never ship the placeholder secrets to production.
+- **Back up your memory, and test the restore.** Memory is durable state. Run regular (e.g.
+  nightly) backups and periodically test restoring them; catastrophic poisoning or disk loss is
+  recovered from backups plus provenance-targeted cleanup. See
+  [Backup & Recovery](docs/architecture/16-backup-recovery.md).
+- **Maintenance behavior is opt-in.** The Janitor, Synthesizer, and Contradiction workers are
+  off by default; enabling them changes how memory decays, is garbage-collected, and is
+  reconciled. Turn them on deliberately.
+- **Provide the runtime dependencies.** Semantic search needs Ollama with an embedding model
+  (or `backend = "mock"` for offline/no-Ollama use); building needs a protobuf compiler.
+
+## Choosing Your Data Store
+
+Boswell's persistence sits behind a single storage port (the `ClaimStore` trait), so the engine
+underneath is a **swappable adapter** — the memory model, the API, and the gateway stay identical
+regardless of what stores the data (see
+[ADR-020](docs/ADRs/020-swappable-storage-backends.md)).
+
+**Start simple.** Today Boswell ships one adapter: an **embedded SQLite store** with a local
+vector index — zero-dependency, single-file, ideal for a local, single-agent instance. This is
+where almost everyone should begin.
+
+**Grow when you need to.** As you move toward shared, multi-agent, or hosted use, a **Postgres +
+pgvector** adapter is the planned growth path (not yet shipped — see the
+[backlog](docs/development/roadmap.md#backlog--future-work)): concurrent writers,
+networked/shared access, point-in-time recovery, and standard database operations.
+
+| If you have… | Prefer |
+|---|---|
+| One agent, one machine, getting started | **SQLite** (embedded, default) |
+| Many concurrent agents / a shared or hosted instance | **Postgres + pgvector** (planned) |
+| A hard "no external services" constraint | **SQLite** |
+| Existing Postgres ops, replication, and backups you trust | **Postgres + pgvector** (planned) |
+
+You aren't locked in: a planned **data-store migration tool** will move your memories from one
+adapter to another when you outgrow the simple setup, so starting small costs you nothing later.
+
 ## Documentation
 
 - [Architecture Documentation](docs/architecture/) - System design and component specifications
@@ -185,6 +241,7 @@ agent can use Boswell over HTTPS.
 - [Development Plan](docs/development/roadmap.md) - Phased implementation roadmap
 - [Importing Personal Memory](docs/importing-personal-memory.md) - Seed an instance with facts about yourself
 - [Claude Code Hooks Integration](docs/integrations/claude-code-hooks.md) - Wire an agent's lifecycle into Boswell's memory (local examples + secure public-serving design)
+- [Backup & Recovery](docs/architecture/16-backup-recovery.md) - Durability strategy: consistent snapshots of the store + vector index, and how to restore
 
 ## Contributing
 
