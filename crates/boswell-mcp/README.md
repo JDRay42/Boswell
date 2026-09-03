@@ -137,7 +137,7 @@ Assert a new claim into Boswell.
 - `predicate` (string, required) - Relationship or attribute
 - `object` (string, required) - Value or related entity
 - `confidence` (number, optional) - Confidence score 0.0-1.0
-- `tier` (string, optional) - Persistence tier: "Transient", "Session", "Permanent"
+- `tier` (string, optional) - Persistence tier: "ephemeral", "task", "project", "permanent"
 
 **Returns:**
 - `claim_id` - Unique ULID identifier

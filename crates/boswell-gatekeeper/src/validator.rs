@@ -260,6 +260,7 @@ impl Gatekeeper {
         let query = ClaimQuery {
             namespace: Some(claim.namespace.clone()),
             tier: Some(claim.tier.clone()),
+            source_type: None,
             min_confidence: None,
             semantic_text: None,
             limit: Some(100), // Check up to 100 existing claims

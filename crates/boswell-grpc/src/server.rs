@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use tonic::transport::Server;
 
 use crate::proto::bos_well_service_server::BosWellServiceServer;
-use crate::service::BosWellServiceImpl;
+use crate::service::{BosWellServiceImpl, ServerExtractor};
 
 /// Server configuration
 #[derive(Debug, Clone)]
@@ -64,7 +64,10 @@ impl ServerConfig {
     }
 }
 
-/// Start the gRPC server
+/// Start the gRPC server.
+///
+/// The `Extract` RPC returns `FailedPrecondition` under this entrypoint; use
+/// [`start_server_with_extractor`] to enable server-side LLM extraction.
 ///
 /// # Errors
 /// Returns error if server fails to start or bind to address
@@ -77,9 +80,30 @@ where
     S: ClaimStore + Send + 'static,
     S::Error: std::fmt::Debug,
 {
+    start_server_with_extractor(config, store, None).await
+}
+
+/// Start the gRPC server, optionally attaching a server-side [`ServerExtractor`]
+/// that backs the `Extract` RPC (and LLM-mode hook ingest).
+///
+/// # Errors
+/// Returns error if server fails to start or bind to address
+pub async fn start_server_with_extractor<S>(
+    config: ServerConfig,
+    store: Arc<Mutex<S>>,
+    extractor: Option<Arc<dyn ServerExtractor>>,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    // See `BosWellServiceImpl`: `Send` suffices because access is via `Arc<Mutex<S>>`.
+    S: ClaimStore + Send + 'static,
+    S::Error: std::fmt::Debug,
+{
     let addr = config.full_address().parse()?;
 
-    let service = BosWellServiceImpl::new(store);
+    let mut service = BosWellServiceImpl::new(store);
+    if let Some(extractor) = extractor {
+        service = service.with_extractor(extractor);
+    }
     let service_server = BosWellServiceServer::new(service);
 
     println!("BosWell gRPC server starting on {}", addr);

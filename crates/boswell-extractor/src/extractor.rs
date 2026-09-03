@@ -48,6 +48,28 @@ where
         }
     }
 
+    /// Create a new Extractor that shares an existing `Arc<Mutex<S>>` store with
+    /// other services (e.g. the gRPC server).
+    ///
+    /// Extraction never holds the store lock across the LLM call — it locks only
+    /// for the brief per-candidate `assert`, mirroring
+    /// [`Synthesizer::run_pass_shared`](../../boswell_synthesizer) — so concurrent
+    /// gRPC requests against the same store are not blocked during analysis.
+    pub fn with_shared_store(
+        llm_provider: L,
+        store: Arc<Mutex<S>>,
+        gatekeeper: Gatekeeper,
+        config: ExtractorConfig,
+    ) -> Self {
+        Self {
+            llm_provider: Arc::new(llm_provider),
+            store,
+            gatekeeper,
+            config,
+            model_name: "llm".to_string(),
+        }
+    }
+
     /// Create a new Extractor with a specific model name
     pub fn with_model_name(mut self, model_name: impl Into<String>) -> Self {
         self.model_name = model_name.into();

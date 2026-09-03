@@ -3,7 +3,10 @@
 //! Handles bidirectional conversion between gRPC protobuf types and internal domain types.
 
 use crate::proto;
-use boswell_domain::{Claim, ClaimId, ConfidenceInterval as DomainConfidence, Tier as DomainTier};
+use boswell_domain::{
+    Claim, ClaimId, ConfidenceInterval as DomainConfidence, Relationship as DomainRelationship,
+    RelationshipType as DomainRelationshipType, Tier as DomainTier,
+};
 
 /// Error type for conversion failures
 #[derive(Debug, thiserror::Error)]
@@ -19,6 +22,10 @@ pub enum ConversionError {
     /// Invalid tier value
     #[error("Invalid tier value: {0}")]
     InvalidTier(i32),
+
+    /// Invalid relationship-type value
+    #[error("Invalid relationship type value: {0}")]
+    InvalidRelationshipType(i32),
 
     /// Missing required field
     #[error("Missing required field: {0}")]
@@ -129,6 +136,59 @@ pub fn claim_to_proto(claim: Claim) -> proto::Claim {
     }
 }
 
+/// Convert a domain [`RelationshipType`](DomainRelationshipType) to its proto enum discriminant.
+pub fn relationship_type_to_proto(rt: DomainRelationshipType) -> proto::RelationshipType {
+    match rt {
+        DomainRelationshipType::Supports => proto::RelationshipType::Supports,
+        DomainRelationshipType::Contradicts => proto::RelationshipType::Contradicts,
+        DomainRelationshipType::DerivedFrom => proto::RelationshipType::DerivedFrom,
+        DomainRelationshipType::References => proto::RelationshipType::References,
+        DomainRelationshipType::Supersedes => proto::RelationshipType::Supersedes,
+    }
+}
+
+/// Convert a proto relationship-type discriminant back to the domain enum.
+///
+/// Returns [`ConversionError::InvalidRelationshipType`] for the unspecified/zero
+/// value or any value outside the known set.
+pub fn relationship_type_from_proto(value: i32) -> Result<DomainRelationshipType, ConversionError> {
+    match proto::RelationshipType::try_from(value) {
+        Ok(proto::RelationshipType::Supports) => Ok(DomainRelationshipType::Supports),
+        Ok(proto::RelationshipType::Contradicts) => Ok(DomainRelationshipType::Contradicts),
+        Ok(proto::RelationshipType::DerivedFrom) => Ok(DomainRelationshipType::DerivedFrom),
+        Ok(proto::RelationshipType::References) => Ok(DomainRelationshipType::References),
+        Ok(proto::RelationshipType::Supersedes) => Ok(DomainRelationshipType::Supersedes),
+        Ok(proto::RelationshipType::Unspecified) | Err(_) => {
+            Err(ConversionError::InvalidRelationshipType(value))
+        }
+    }
+}
+
+/// Convert a domain [`Relationship`](DomainRelationship) to its proto message.
+pub fn relationship_to_proto(rel: DomainRelationship) -> proto::Relationship {
+    proto::Relationship {
+        from_claim: rel.from_claim.to_string(),
+        to_claim: rel.to_claim.to_string(),
+        relationship_type: relationship_type_to_proto(rel.relationship_type) as i32,
+        strength: rel.strength,
+        created_at: rel.created_at as i64,
+    }
+}
+
+/// Convert a proto [`Relationship`](proto::Relationship) to the domain type.
+pub fn relationship_from_proto(
+    rel: proto::Relationship,
+) -> Result<DomainRelationship, ConversionError> {
+    Ok(DomainRelationship {
+        from_claim: ClaimId::from_string(&rel.from_claim)
+            .map_err(ConversionError::InvalidClaimId)?,
+        to_claim: ClaimId::from_string(&rel.to_claim).map_err(ConversionError::InvalidClaimId)?,
+        relationship_type: relationship_type_from_proto(rel.relationship_type)?,
+        strength: rel.strength,
+        created_at: rel.created_at.max(0) as u64,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,5 +252,45 @@ mod tests {
         assert_eq!(claim.confidence, back.confidence);
         assert_eq!(claim.tier, back.tier);
         assert_eq!(claim.source_type, back.source_type);
+    }
+
+    #[test]
+    fn test_relationship_roundtrip() {
+        let rel = DomainRelationship {
+            from_claim: ClaimId::new(),
+            to_claim: ClaimId::new(),
+            relationship_type: DomainRelationshipType::Supports,
+            strength: 0.75,
+            created_at: 1_700_000_000,
+        };
+
+        let proto = relationship_to_proto(rel.clone());
+        let back = relationship_from_proto(proto).unwrap();
+
+        assert_eq!(rel.from_claim, back.from_claim);
+        assert_eq!(rel.to_claim, back.to_claim);
+        assert_eq!(rel.relationship_type, back.relationship_type);
+        assert_eq!(rel.strength, back.strength);
+        assert_eq!(rel.created_at, back.created_at);
+    }
+
+    #[test]
+    fn test_relationship_type_all_variants_roundtrip() {
+        for rt in [
+            DomainRelationshipType::Supports,
+            DomainRelationshipType::Contradicts,
+            DomainRelationshipType::DerivedFrom,
+            DomainRelationshipType::References,
+            DomainRelationshipType::Supersedes,
+        ] {
+            let proto = relationship_type_to_proto(rt);
+            let back = relationship_type_from_proto(proto as i32).unwrap();
+            assert_eq!(rt, back);
+        }
+    }
+
+    #[test]
+    fn test_relationship_type_unspecified_is_error() {
+        assert!(relationship_type_from_proto(0).is_err());
     }
 }

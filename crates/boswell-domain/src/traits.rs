@@ -80,6 +80,9 @@ pub struct ClaimQuery {
     /// Filter by tier
     pub tier: Option<String>,
 
+    /// Filter by exact `source_type` (e.g. `assertion`, `extraction`, `inference`, `import`)
+    pub source_type: Option<String>,
+
     /// Filter by minimum confidence
     pub min_confidence: Option<f64>,
 

@@ -1,0 +1,30 @@
+# Boswell public HTTP API gateway configuration
+#
+# The gateway serves plain HTTP on localhost. Put a reverse proxy or tunnel in
+# front of it for TLS and public reach; keep the gRPC instance private.
+
+# Address and port the HTTP server binds to.
+bind_address = "127.0.0.1"
+bind_port = 8081
+
+# Router endpoint used internally to establish a session and reach the instance.
+router_endpoint = "http://127.0.0.1:8080"
+
+# Hardening.
+max_body_bytes = 1048576      # 1 MiB request-body cap
+request_timeout_secs = 30
+rate_limit_per_minute = 120   # per key; 0 disables
+
+# API keys. Store the SHA-256 hash of each key, never the raw key. Generate one:
+#   KEY=$(openssl rand -hex 32); echo "raw:   $KEY"; \
+#     printf '%s' "$KEY" | sha256sum | cut -d' ' -f1
+# Give the raw KEY to the client (Authorization: Bearer <key>); put the hash here.
+#
+# namespace: the key may only read/write within this namespace (or its children,
+#            i.e. "<namespace>:..."). Empty or "*" means unrestricted.
+# scopes:    any of "read", "write", "delete".
+[[api_keys]]
+id = "example-agent"
+key_hash = "0000000000000000000000000000000000000000000000000000000000000000"
+namespace = "agent"
+scopes = ["read", "write"]

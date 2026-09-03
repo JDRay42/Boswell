@@ -8,24 +8,65 @@ use std::sync::{Arc, Mutex};
 use tonic::{Request, Response, Status};
 
 use crate::conversions::{
-    claim_from_proto, claim_to_proto, confidence_from_proto, tier_from_proto,
+    claim_from_proto, claim_to_proto, confidence_from_proto, relationship_to_proto, tier_from_proto,
 };
 use crate::proto::bos_well_service_server::BosWellService;
 use crate::proto::*;
+
+/// Outcome of a server-side extraction pass, returned by a [`ServerExtractor`].
+pub struct ExtractOutcome {
+    /// Newly created claims, already persisted in the store.
+    pub created: Vec<Claim>,
+    /// Number of extracted claims that corroborated existing ones.
+    pub corroborated_count: usize,
+    /// Human-readable failure reasons for candidates that could not be stored.
+    pub failures: Vec<String>,
+}
+
+/// A server-side text→claims extractor that the [`Extract`](BosWellService::extract)
+/// RPC delegates to.
+///
+/// Implemented in `boswell-server` over the LLM-backed `boswell-extractor`,
+/// sharing the same store as the gRPC service. It is kept as a trait object so
+/// the service stays generic only over its store type `S` (the LLM provider type
+/// does not leak into the service or server signatures).
+#[tonic::async_trait]
+pub trait ServerExtractor: Send + Sync {
+    /// Extract claims from `text` into `namespace` at `tier`, tagging provenance
+    /// with `source_id`. Returns the created claims and per-candidate outcomes.
+    async fn extract(
+        &self,
+        text: String,
+        namespace: String,
+        tier: String,
+        source_id: String,
+    ) -> Result<ExtractOutcome, String>;
+}
 
 /// Implementation of the BosWellService
 pub struct BosWellServiceImpl<S: ClaimStore> {
     store: Arc<Mutex<S>>,
     start_time: std::time::Instant,
+    extractor: Option<Arc<dyn ServerExtractor>>,
 }
 
 impl<S: ClaimStore> BosWellServiceImpl<S> {
-    /// Create a new service instance
+    /// Create a new service instance without a server-side extractor. The
+    /// `Extract` RPC returns `FailedPrecondition` until one is attached with
+    /// [`BosWellServiceImpl::with_extractor`].
     pub fn new(store: Arc<Mutex<S>>) -> Self {
         Self {
             store,
             start_time: std::time::Instant::now(),
+            extractor: None,
         }
+    }
+
+    /// Attach a server-side extractor so the `Extract` RPC (and LLM-mode hook
+    /// ingest) can turn text into claims.
+    pub fn with_extractor(mut self, extractor: Arc<dyn ServerExtractor>) -> Self {
+        self.extractor = Some(extractor);
+        self
     }
 }
 
@@ -119,6 +160,7 @@ where
                     None
                 }
             }),
+            source_type: filter.source_type.filter(|s| !s.trim().is_empty()),
             min_confidence: filter.min_confidence.filter(|&c| c > 0.0),
             semantic_text: None,
             limit: if req.limit > 0 {
@@ -288,25 +330,128 @@ where
         let claim_id = ClaimId::from_string(&req.claim_id)
             .map_err(|e| Status::invalid_argument(format!("Invalid claim ID: {}", e)))?;
 
-        // Check if claim exists
-        let store = self.store.lock().unwrap();
-        match store.get_claim(claim_id) {
-            Ok(Some(_)) => {
-                // TODO: Implement actual eviction marking in Phase 3
-                Ok(Response::new(ForgetResponse {
-                    success: true,
-                    message: format!("Claim {} marked for eviction (stub)", req.claim_id),
-                }))
-            }
-            Ok(None) => Ok(Response::new(ForgetResponse {
+        // Real deletion: cascades to the claim's relationships, provenance, and
+        // cached confidence (see `SqliteStore::delete_claim`).
+        let mut store = self.store.lock().unwrap();
+        match store.delete_claim(claim_id) {
+            Ok(true) => Ok(Response::new(ForgetResponse {
+                success: true,
+                message: format!("Claim {} deleted", req.claim_id),
+            })),
+            Ok(false) => Ok(Response::new(ForgetResponse {
                 success: false,
                 message: "Claim not found".to_string(),
             })),
             Err(e) => Ok(Response::new(ForgetResponse {
                 success: false,
-                message: format!("Error checking claim: {:?}", e),
+                message: format!("Error deleting claim: {:?}", e),
             })),
         }
+    }
+
+    async fn get_claim(
+        &self,
+        request: Request<GetClaimRequest>,
+    ) -> Result<Response<GetClaimResponse>, Status> {
+        let req = request.into_inner();
+
+        if req.auth_token.is_empty() {
+            return Err(Status::unauthenticated("Missing authentication token"));
+        }
+
+        let claim_id = ClaimId::from_string(&req.claim_id)
+            .map_err(|e| Status::invalid_argument(format!("Invalid claim ID: {}", e)))?;
+
+        let store = self.store.lock().unwrap();
+        match store
+            .get_claim(claim_id)
+            .map_err(|e| Status::internal(format!("Failed to get claim: {:?}", e)))?
+        {
+            Some(claim) => Ok(Response::new(GetClaimResponse {
+                claim: Some(claim_to_proto(claim)),
+                found: true,
+            })),
+            None => Ok(Response::new(GetClaimResponse {
+                claim: None,
+                found: false,
+            })),
+        }
+    }
+
+    async fn get_relationships(
+        &self,
+        request: Request<GetRelationshipsRequest>,
+    ) -> Result<Response<GetRelationshipsResponse>, Status> {
+        let req = request.into_inner();
+
+        if req.auth_token.is_empty() {
+            return Err(Status::unauthenticated("Missing authentication token"));
+        }
+
+        let claim_id = ClaimId::from_string(&req.claim_id)
+            .map_err(|e| Status::invalid_argument(format!("Invalid claim ID: {}", e)))?;
+
+        let store = self.store.lock().unwrap();
+        let relationships = store
+            .get_relationships(claim_id)
+            .map_err(|e| Status::internal(format!("Failed to get relationships: {:?}", e)))?
+            .into_iter()
+            .map(relationship_to_proto)
+            .collect();
+
+        Ok(Response::new(GetRelationshipsResponse { relationships }))
+    }
+
+    async fn extract(
+        &self,
+        request: Request<ExtractRequest>,
+    ) -> Result<Response<ExtractResponse>, Status> {
+        let req = request.into_inner();
+
+        if req.auth_token.is_empty() {
+            return Err(Status::unauthenticated("Missing authentication token"));
+        }
+
+        let extractor = self.extractor.as_ref().ok_or_else(|| {
+            Status::failed_precondition("Extraction is not enabled on this instance")
+        })?;
+
+        if req.text.trim().is_empty() {
+            return Err(Status::invalid_argument("text must not be empty"));
+        }
+        if req.namespace.trim().is_empty() {
+            return Err(Status::invalid_argument("namespace must not be empty"));
+        }
+
+        let tier = if req.tier.trim().is_empty() {
+            "task".to_string()
+        } else {
+            req.tier
+        };
+        let source_id = if req.source_id.trim().is_empty() {
+            "gateway:extract".to_string()
+        } else {
+            req.source_id
+        };
+
+        let outcome = extractor
+            .extract(req.text, req.namespace, tier, source_id)
+            .await
+            .map_err(|e| Status::internal(format!("Extraction failed: {}", e)))?;
+
+        let created_count = outcome.created.len() as i32;
+        let corroborated_count = outcome.corroborated_count as i32;
+        let failed_count = outcome.failures.len() as i32;
+        let claims_created = outcome.created.into_iter().map(claim_to_proto).collect();
+
+        Ok(Response::new(ExtractResponse {
+            claims_created,
+            created_count,
+            corroborated_count,
+            failed_count,
+            failures: outcome.failures,
+            message: format!("Extracted {} claims", created_count),
+        }))
     }
 
     async fn health_check(
@@ -514,5 +659,218 @@ mod tests {
 
         assert_eq!(health.status, health_check_response::Status::Healthy as i32);
         assert!(health.claim_count >= 0);
+    }
+
+    // ---- Tests exercising the new RPCs against a real in-memory store ----
+
+    use boswell_store::SqliteStore;
+
+    fn sqlite_service() -> BosWellServiceImpl<SqliteStore> {
+        let store = SqliteStore::new(":memory:", false, 0).unwrap();
+        BosWellServiceImpl::new(Arc::new(Mutex::new(store)))
+    }
+
+    async fn assert_one(service: &BosWellServiceImpl<SqliteStore>, subject: &str) -> String {
+        let resp = service
+            .assert(Request::new(AssertRequest {
+                namespace: "test".to_string(),
+                subject: subject.to_string(),
+                predicate: "knows".to_string(),
+                object: "Bob".to_string(),
+                confidence: Some(ConfidenceInterval {
+                    lower: 0.8,
+                    upper: 0.9,
+                }),
+                tier: Tier::Task as i32,
+                provenance: vec![],
+                auth_token: "token".to_string(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        resp.claim_id
+    }
+
+    #[tokio::test]
+    async fn test_get_claim_roundtrip_and_missing() {
+        let service = sqlite_service();
+        let id = assert_one(&service, "Alice").await;
+
+        // Existing claim is found.
+        let found = service
+            .get_claim(Request::new(GetClaimRequest {
+                claim_id: id.clone(),
+                auth_token: "token".to_string(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(found.found);
+        assert_eq!(found.claim.unwrap().subject, "Alice");
+
+        // A random (valid) id that was never asserted is not found.
+        let missing = service
+            .get_claim(Request::new(GetClaimRequest {
+                claim_id: ClaimId::new().to_string(),
+                auth_token: "token".to_string(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(!missing.found);
+        assert!(missing.claim.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_claim_requires_auth() {
+        let service = sqlite_service();
+        let err = service
+            .get_claim(Request::new(GetClaimRequest {
+                claim_id: ClaimId::new().to_string(),
+                auth_token: String::new(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+    }
+
+    #[tokio::test]
+    async fn test_forget_deletes_claim() {
+        let service = sqlite_service();
+        let id = assert_one(&service, "Alice").await;
+
+        let forget = service
+            .forget(Request::new(ForgetRequest {
+                claim_id: id.clone(),
+                reason: String::new(),
+                auth_token: "token".to_string(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(forget.success);
+
+        // After deletion the claim is gone.
+        let found = service
+            .get_claim(Request::new(GetClaimRequest {
+                claim_id: id.clone(),
+                auth_token: "token".to_string(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(!found.found);
+
+        // Forgetting again reports not-found rather than success.
+        let again = service
+            .forget(Request::new(ForgetRequest {
+                claim_id: id,
+                reason: String::new(),
+                auth_token: "token".to_string(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(!again.success);
+    }
+
+    #[tokio::test]
+    async fn test_get_relationships_after_add() {
+        let store = SqliteStore::new(":memory:", false, 0).unwrap();
+        let store = Arc::new(Mutex::new(store));
+        let service = BosWellServiceImpl::new(Arc::clone(&store));
+
+        let a = assert_one(&service, "Alice").await;
+        let b = assert_one(&service, "Bob").await;
+        let a_id = ClaimId::from_string(&a).unwrap();
+        let b_id = ClaimId::from_string(&b).unwrap();
+
+        {
+            let mut guard = store.lock().unwrap();
+            guard
+                .add_relationship(Relationship {
+                    from_claim: a_id,
+                    to_claim: b_id,
+                    relationship_type: boswell_domain::RelationshipType::Supports,
+                    strength: 0.9,
+                    created_at: 1000,
+                })
+                .unwrap();
+        }
+
+        let rels = service
+            .get_relationships(Request::new(GetRelationshipsRequest {
+                claim_id: a,
+                auth_token: "token".to_string(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(rels.relationships.len(), 1);
+        assert_eq!(
+            rels.relationships[0].relationship_type,
+            RelationshipType::Supports as i32
+        );
+    }
+
+    #[tokio::test]
+    async fn test_query_by_source_type() {
+        let store = SqliteStore::new(":memory:", false, 0).unwrap();
+        let store = Arc::new(Mutex::new(store));
+        let service = BosWellServiceImpl::new(Arc::clone(&store));
+
+        // One assertion (default source_type) and one extraction.
+        assert_one(&service, "Alice").await;
+        {
+            let mut guard = store.lock().unwrap();
+            guard
+                .assert_claim(
+                    Claim::new(
+                        ClaimId::new(),
+                        "test".into(),
+                        "Carol".into(),
+                        "knows".into(),
+                        "Dave".into(),
+                        (0.7, 0.8),
+                        "task".into(),
+                        1000,
+                    )
+                    .with_source_type("extraction"),
+                )
+                .unwrap();
+        }
+
+        let extraction = service
+            .query(Request::new(QueryRequest {
+                filter: Some(QueryFilter {
+                    namespace: Some("test".to_string()),
+                    source_type: Some("extraction".to_string()),
+                    ..Default::default()
+                }),
+                mode: QueryMode::Fast as i32,
+                limit: 100,
+                auth_token: "token".to_string(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(extraction.claims.len(), 1);
+        assert_eq!(extraction.claims[0].subject, "Carol");
+    }
+
+    #[tokio::test]
+    async fn test_extract_disabled_without_extractor() {
+        let service = sqlite_service();
+        let err = service
+            .extract(Request::new(ExtractRequest {
+                text: "Alice works at Acme".to_string(),
+                namespace: "test".to_string(),
+                tier: "task".to_string(),
+                source_id: String::new(),
+                auth_token: "token".to_string(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
     }
 }

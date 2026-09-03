@@ -2,14 +2,47 @@
 
 use crate::error::SdkError;
 use crate::session::establish_session;
-use boswell_domain::{Claim, ClaimId, Tier};
+use boswell_domain::{Claim, ClaimId, Relationship, Tier};
+use boswell_grpc::conversions::relationship_from_proto;
 use boswell_grpc::proto::{
-    bos_well_service_client::BosWellServiceClient, AssertRequest, AssertResponse,
-    ConfidenceInterval, ForgetRequest, ForgetResponse, LearnRequest, LearnResponse,
+    bos_well_service_client::BosWellServiceClient, health_check_response, AssertRequest,
+    AssertResponse, ConfidenceInterval, ExtractRequest, ExtractResponse, ForgetRequest,
+    ForgetResponse, GetClaimRequest, GetClaimResponse, GetRelationshipsRequest,
+    GetRelationshipsResponse, HealthCheckRequest, HealthCheckResponse, LearnRequest, LearnResponse,
     QueryFilter as GrpcQueryFilter, QueryMode as GrpcQueryMode, QueryRequest, QueryResponse,
     SearchRequest, SearchResponse, Tier as GrpcTier,
 };
 use tonic::transport::Channel;
+
+/// Instance health as reported by the `HealthCheck` RPC.
+#[derive(Debug, Clone)]
+pub struct HealthStatus {
+    /// Health level: `healthy`, `degraded`, `unhealthy`, or `unspecified`.
+    pub status: String,
+    /// Instance software version.
+    pub version: String,
+    /// Seconds the instance has been running.
+    pub uptime_seconds: i64,
+    /// Number of claims currently stored.
+    pub claim_count: i64,
+    /// Optional human-readable message.
+    pub message: String,
+}
+
+/// Result of a server-side extraction (`Extract` RPC), as seen by the SDK.
+#[derive(Debug, Clone)]
+pub struct ExtractResult {
+    /// Claims newly created by the extraction (already persisted server-side).
+    pub claims_created: Vec<Claim>,
+    /// Number of claims created.
+    pub created_count: usize,
+    /// Number of extracted claims that corroborated existing claims.
+    pub corroborated_count: usize,
+    /// Number of candidates that failed validation or storage.
+    pub failed_count: usize,
+    /// Human-readable failure reasons.
+    pub failures: Vec<String>,
+}
 
 /// Query filter for claim queries
 #[derive(Debug, Default, Clone)]
@@ -26,6 +59,8 @@ pub struct QueryFilter {
     pub min_confidence: Option<f64>,
     /// Tier filter
     pub tier: Option<Tier>,
+    /// Source-type filter (e.g. `assertion`, `extraction`, `inference`, `import`)
+    pub source_type: Option<String>,
 }
 
 /// Boswell SDK client
@@ -156,6 +191,7 @@ impl BoswellClient {
                 object: filter.object.clone(),
                 min_confidence: filter.min_confidence,
                 tier: filter.tier.map(grpc_tier_from_domain_tier),
+                source_type: filter.source_type.clone(),
             };
 
             let request = QueryRequest {
@@ -306,6 +342,176 @@ impl BoswellClient {
 
             return Ok(true);
         }
+    }
+
+    /// Fetch a single claim by id. Returns `None` if no such claim exists.
+    pub async fn get_claim(&mut self, claim_id: ClaimId) -> Result<Option<Claim>, SdkError> {
+        let mut retried = false;
+
+        loop {
+            let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
+            let token = self.session_token.as_ref().ok_or(SdkError::NotConnected)?;
+
+            let request = GetClaimRequest {
+                claim_id: claim_id.to_string(),
+                auth_token: token.clone(),
+            };
+
+            match client.get_claim(request).await {
+                Ok(r) => {
+                    let response: GetClaimResponse = r.into_inner();
+                    if !response.found {
+                        return Ok(None);
+                    }
+                    let proto_claim = response.claim.ok_or_else(|| {
+                        SdkError::GrpcError("get_claim response missing claim".to_string())
+                    })?;
+                    let claim = grpc_claim_to_domain(&proto_claim).map_err(|e| {
+                        SdkError::GrpcError(format!("Failed to convert claim: {}", e))
+                    })?;
+                    return Ok(Some(claim));
+                }
+                Err(e) if matches!(e.code(), tonic::Code::Unauthenticated) && !retried => {
+                    self.reconnect().await?;
+                    retried = true;
+                }
+                Err(e) => return Err(SdkError::from(e)),
+            }
+        }
+    }
+
+    /// Fetch the relationships (provenance / contradiction graph) for a claim.
+    pub async fn get_relationships(
+        &mut self,
+        claim_id: ClaimId,
+    ) -> Result<Vec<Relationship>, SdkError> {
+        let mut retried = false;
+
+        loop {
+            let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
+            let token = self.session_token.as_ref().ok_or(SdkError::NotConnected)?;
+
+            let request = GetRelationshipsRequest {
+                claim_id: claim_id.to_string(),
+                auth_token: token.clone(),
+            };
+
+            match client.get_relationships(request).await {
+                Ok(r) => {
+                    let response: GetRelationshipsResponse = r.into_inner();
+                    let relationships: Result<Vec<Relationship>, _> = response
+                        .relationships
+                        .into_iter()
+                        .map(relationship_from_proto)
+                        .collect();
+                    return relationships.map_err(|e| {
+                        SdkError::GrpcError(format!("Failed to convert relationship: {}", e))
+                    });
+                }
+                Err(e) if matches!(e.code(), tonic::Code::Unauthenticated) && !retried => {
+                    self.reconnect().await?;
+                    retried = true;
+                }
+                Err(e) => return Err(SdkError::from(e)),
+            }
+        }
+    }
+
+    /// Extract claims from unstructured text via the server-side LLM Extractor.
+    ///
+    /// `tier` and `source_id` may be empty, in which case the server applies its
+    /// defaults (`task` tier, a synthetic source id).
+    pub async fn extract(
+        &mut self,
+        text: &str,
+        namespace: &str,
+        tier: &str,
+        source_id: &str,
+    ) -> Result<ExtractResult, SdkError> {
+        let mut retried = false;
+
+        loop {
+            let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
+            let token = self.session_token.as_ref().ok_or(SdkError::NotConnected)?;
+
+            let request = ExtractRequest {
+                text: text.to_string(),
+                namespace: namespace.to_string(),
+                tier: tier.to_string(),
+                source_id: source_id.to_string(),
+                auth_token: token.clone(),
+            };
+
+            match client.extract(request).await {
+                Ok(r) => {
+                    let response: ExtractResponse = r.into_inner();
+                    let claims_created: Result<Vec<Claim>, _> = response
+                        .claims_created
+                        .iter()
+                        .map(grpc_claim_to_domain)
+                        .collect();
+                    let claims_created = claims_created.map_err(|e| {
+                        SdkError::GrpcError(format!("Failed to convert claim: {}", e))
+                    })?;
+                    return Ok(ExtractResult {
+                        claims_created,
+                        created_count: response.created_count.max(0) as usize,
+                        corroborated_count: response.corroborated_count.max(0) as usize,
+                        failed_count: response.failed_count.max(0) as usize,
+                        failures: response.failures,
+                    });
+                }
+                Err(e) if matches!(e.code(), tonic::Code::Unauthenticated) && !retried => {
+                    self.reconnect().await?;
+                    retried = true;
+                }
+                Err(e) => return Err(SdkError::from(e)),
+            }
+        }
+    }
+
+    /// Whether the client has an established session and gRPC channel.
+    pub fn is_connected(&self) -> bool {
+        self.grpc_client.is_some() && self.session_token.is_some()
+    }
+
+    /// Connect if not already connected. Idempotent; safe to call before any
+    /// operation to recover from a cold start where the instance was initially
+    /// unreachable.
+    pub async fn ensure_connected(&mut self) -> Result<(), SdkError> {
+        if !self.is_connected() {
+            self.connect().await?;
+        }
+        Ok(())
+    }
+
+    /// Query instance health via the `HealthCheck` RPC.
+    ///
+    /// Connects on demand; the RPC itself is unauthenticated.
+    pub async fn health(&mut self) -> Result<HealthStatus, SdkError> {
+        self.ensure_connected().await?;
+        let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
+
+        let response: HealthCheckResponse = client
+            .health_check(HealthCheckRequest {})
+            .await?
+            .into_inner();
+
+        let status = match health_check_response::Status::try_from(response.status) {
+            Ok(health_check_response::Status::Healthy) => "healthy",
+            Ok(health_check_response::Status::Degraded) => "degraded",
+            Ok(health_check_response::Status::Unhealthy) => "unhealthy",
+            _ => "unspecified",
+        }
+        .to_string();
+
+        Ok(HealthStatus {
+            status,
+            version: response.version,
+            uptime_seconds: response.uptime_seconds,
+            claim_count: response.claim_count,
+            message: response.message,
+        })
     }
 }
 

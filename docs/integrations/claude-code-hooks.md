@@ -49,7 +49,7 @@ header env-var interpolation and an `allowedEnvVars` allowlist so secrets stay o
 ```json
 {
   "type": "http",
-  "url": "https://boswell.example.com/hooks/ingest",
+  "url": "https://boswell.example.com/v1/hooks/ingest",
   "headers": { "Authorization": "Bearer $BOSWELL_TOKEN" },
   "allowedEnvVars": ["BOSWELL_TOKEN"]
 }
@@ -59,23 +59,25 @@ Two things follow from this:
 
 1. **The payload is Claude Code *event* JSON** (`hook_event_name`, `tool_name`,
    `tool_input`, `prompt`, `cwd`, …) — **not** Boswell claim JSON, and it does not go
-   through the current `/session/establish` → gRPC flow. So an HTTP hook needs a
-   Boswell endpoint that accepts that shape and turns it into claims. **Boswell has no
-   such endpoint today** (the Router exposes only `/session/establish` and `/health`).
+   through the `/session/establish` → gRPC flow directly. It needs a Boswell endpoint
+   that accepts that shape and turns it into claims. **That endpoint now exists**:
+   `POST /v1/hooks/ingest` on the [`boswell-gateway`](http-api.md), which maps the
+   event to claims (deterministically, or via the LLM Extractor with `?mode=llm`).
 2. **The URL is reached over the network**, which is where "secure + publicly
    accessible" comes in.
 
-The rest of this guide designs that endpoint and its deployment. It is a **design, not
-yet implemented.**
+The `boswell-gateway` implements the authenticated, namespace-scoped endpoint this
+guide describes. See the [HTTP API guide](http-api.md) for the full surface; the rest
+of this section covers how to deploy it securely.
 
 ## Serving Boswell: local by default, public by opt-in
 
 ### Local (default, most secure)
 
 Run the hook and Boswell on the same machine. Command hooks talk to `localhost`;
-an HTTP hook would target `http://127.0.0.1:8080`. Nothing listens on a public
-interface, the gRPC instance stays bound to `127.0.0.1:50051`, and there is no attack
-surface beyond the machine itself. **Prefer this whenever the agent runs where Boswell
+an HTTP hook targets the gateway at `http://127.0.0.1:8081/v1/hooks/ingest`. Nothing
+listens on a public interface, the gRPC instance stays bound to `127.0.0.1:50051`, and
+there is no attack surface beyond the machine itself. **Prefer this whenever the agent runs where Boswell
 runs.** You only need the public path when a *remote* agent — Claude Code on the web,
 a cloud session, or a teammate's machine — must reach a hosted Boswell.
 
@@ -88,14 +90,13 @@ opening the instance's gRPC port to the world.
 expose the instance directly; the gRPC `auth_token` check is not a public-facing
 authorization boundary.
 
-**2. One public entrypoint — a proposed `POST /hooks/ingest`.** Add a single ingest
-handler to the Router (`crates/boswell-router/src/handlers.rs`, alongside
-`establish_session`) — or a slim separate service — that:
+**2. One public entrypoint — `POST /v1/hooks/ingest` on the gateway.** The
+`boswell-gateway` is a slim service in front of the private gRPC instance that:
 
 - accepts Claude Code hook event JSON,
-- maps it to claims (deterministic mapping first — e.g. `PostToolUse`/`Edit` →
-  `(person:<id>) rel:edited file:<path>`; later, hand the event to Boswell's
-  Extractor, which is already LLM-backed, for richer claims),
+- maps it to claims — deterministically (e.g. `PostToolUse`/`Edit` →
+  `agent:<session> edited file:<path>`) via `Learn`, or with `?mode=llm` hands the
+  salient text to Boswell's LLM Extractor for richer claims,
 - validates and asserts them through the existing store path.
 
 **3. Transport security — don't open an inbound port.**
@@ -145,6 +146,8 @@ TLS-fronted, namespace-scoped surface — rather than a replacement for it.
 
 - **Command-hook path:** implemented and runnable — see
   [`examples/claude-code-hooks/`](../../examples/claude-code-hooks/).
-- **HTTP-hook path (`/hooks/ingest` + auth + deployment):** designed here, **not yet
-  implemented**. The `type: "http"` block in `settings.example.json` is illustrative and
-  will not work until the endpoint exists.
+- **HTTP-hook path (`/v1/hooks/ingest` + auth + deployment):** implemented by the
+  [`boswell-gateway`](http-api.md). Point the `type: "http"` hook in
+  `settings.example.json` at your gateway (default
+  `http://127.0.0.1:8081/v1/hooks/ingest`) with a bearer key. Deployment (TLS via
+  proxy/tunnel) is still yours to run per the guidance above.

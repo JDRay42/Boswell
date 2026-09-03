@@ -240,7 +240,7 @@ impl McpServer {
                     "predicate": {"type": "string", "description": "Predicate (relationship or attribute)"},
                     "object": {"type": "string", "description": "Object (value or related entity)"},
                     "confidence": {"type": "number", "description": "Confidence score (0.0-1.0)", "minimum": 0.0, "maximum": 1.0},
-                    "tier": {"type": "string", "enum": ["Transient", "Session", "Permanent"], "description": "Persistence tier"}
+                    "tier": {"type": "string", "enum": ["ephemeral", "task", "project", "permanent"], "description": "Persistence tier"}
                 },
                 "required": ["namespace", "subject", "predicate", "object"]
             }),
@@ -259,7 +259,7 @@ impl McpServer {
                     "predicate": {"type": "string", "description": "Filter by predicate"},
                     "object": {"type": "string", "description": "Filter by object"},
                     "min_confidence": {"type": "number", "description": "Minimum confidence threshold"},
-                    "tier": {"type": "string", "enum": ["Transient", "Session", "Permanent"]}
+                    "tier": {"type": "string", "enum": ["ephemeral", "task", "project", "permanent"]}
                 }
             }),
         }
@@ -283,7 +283,7 @@ impl McpServer {
                                 "predicate": {"type": "string"},
                                 "object": {"type": "string"},
                                 "confidence": {"type": "number"},
-                                "tier": {"type": "string", "enum": ["Transient", "Session", "Permanent"]}
+                                "tier": {"type": "string", "enum": ["ephemeral", "task", "project", "permanent"]}
                             },
                             "required": ["namespace", "subject", "predicate", "object"]
                         }
