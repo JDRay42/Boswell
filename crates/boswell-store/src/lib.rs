@@ -21,6 +21,7 @@
 #![warn(missing_docs)]
 
 pub mod embedding;
+pub mod goal_store;
 pub mod ollama_embedding;
 pub mod procedure_store;
 pub mod vector_index;
@@ -54,6 +55,10 @@ pub enum StoreError {
     /// Duplicate claim detected
     #[error("Duplicate claim detected")]
     Duplicate,
+
+    /// A goal edge would introduce a cycle into the goal DAG (design §8, #6).
+    #[error("Edge would create a cycle in the goal DAG: {0}")]
+    Cycle(String),
 }
 
 /// SQLite-based implementation of ClaimStore
