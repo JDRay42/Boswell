@@ -16,34 +16,40 @@ Recovery is the backstop that lets Boswell take a pragmatic stance on adversaria
 poisoning, and recovery bounds the damage when something gets through. This document covers
 what to back up, how to do it consistently, and how to restore.
 
-## 2. What must be backed up — two coupled artifacts
+## 2. What must be backed up — the database is the source of truth
 
-A Boswell instance's durable state is **not a single file.** A correct backup must capture
-both, at a **consistent logical point**, or a restore will be subtly broken:
+For the default SQLite adapter, the essential artifact is a **single file: the SQLite
+database** — claims, relationships, provenance, the confidence cache, and the embedding
+vectors themselves (stored in the `embedding_vector` column; `boswell-store`, `schema.sql`).
 
-1. **The SQLite database** — claims, relationships, provenance, and the confidence cache
-   (`boswell-store`, `schema.sql`).
-2. **The HNSW vector index** — maintained in a **separate, memory-mapped file** alongside the
-   database (`boswell-store/src/vector_index.rs`; see the note in `schema.sql`). It holds the
-   embeddings that power semantic search.
+The **HNSW vector index** (a separate, memory-mapped file; `boswell-store/src/vector_index.rs`)
+is a **derived, rebuildable projection**, not a second source of truth. Per
+[ADR-005](../ADRs/005-sqlite-plus-hnsw.md) it holds only `(claim_id, embedding)` pairs and can
+be reconstructed in full by scanning the database and re-indexing. So:
 
-The failure mode of getting this wrong is quiet: if the two are snapshotted at different
-points, a restore yields a vector index that points at claims the database no longer contains
-(or misses ones it does), so semantic search returns ghosts or gaps while structured queries
-look fine. A naive `cp` of a live database also risks a **torn** file. So the backup path must
-be deliberate, not a filesystem copy.
+- **Back up the database.** That alone preserves everything; nothing is lost if the index is
+  gone.
+- **The index is optional to back up.** On restore you can either rebuild it from the database
+  (a normal offline reindex, per ADR-005) or copy the index file as a speed optimization for
+  large stores — and even a slightly stale copy self-heals, since a missing/extra vector only
+  means a claim is briefly un-searchable or a dangling hit is filtered.
+
+The one real hazard is a **torn** SQLite file from copying it mid-write, which §3 avoids.
+
+> Adapter note: this is the SQLite story. A Postgres + pgvector adapter (see
+> [ADR-020](../ADRs/020-swappable-storage-backends.md)) keeps claims and embeddings in one
+> transactional database, so its backup is a single `pg_dump` / WAL PITR with no separate index
+> at all. Backup mechanics are adapter-specific.
 
 ## 3. Consistency strategy
 
 - **SQLite:** use SQLite's own online snapshot — `VACUUM INTO 'snapshot.db'` or the backup API
   (`.backup`) — which produces a consistent copy even under concurrent writes. Never `cp` a live
   database file. Account for WAL mode (checkpoint as part of the snapshot).
-- **Vector index:** snapshot it at the **same** logical point as the database. The instance runs
-  opt-in maintenance workers (Janitor, Synthesizer, Contradiction detector) that mutate the store
-  in the background, so the backup must briefly **quiesce writers** — pause those workers and let
-  in-flight writes drain — take both snapshots, then resume. A short, well-defined pause is
-  acceptable for a nightly job; the alternative (a checkpoint/generation marker the index and DB
-  share) is a larger change and can come later.
+- **Vector index:** because it is a rebuildable projection (§2), it does **not** need a
+  point-consistent joint snapshot with the database. Simplest correct approach: back up only the
+  database and **rebuild the index on restore**. If a reindex is too slow for a large store, copy
+  the index file too as an optimization — no quiescing required, since a stale copy self-heals.
 - **Integrity check:** after snapshotting, verify the copy opens and its claim count matches
   before declaring the backup good. A backup that has never been opened is not a backup.
 
@@ -78,7 +84,8 @@ Restore is the actual deliverable — design and test it, don't assume it.
 
 1. Stop the instance (or put it in a maintenance mode that rejects writes).
 2. Move the current DB + vector index aside (never delete the thing you're replacing).
-3. Put the snapshot's DB and vector index in place **as a pair**.
+3. Put the snapshot's database in place, then **rebuild the vector index** from it (or drop in a
+   copied index file if you kept one).
 4. Restart; verify claim counts and run a sample semantic query to confirm the index and DB
    agree.
 5. Keep a **periodic restore-test** in the operator's routine — restore into a scratch instance
@@ -113,7 +120,10 @@ itself stays in the operator's cron/timer.
 ## 9. Relationship to existing components
 
 - **Store** (`04-claim-store`) — owns both artifacts; the snapshot/restore primitives live here.
-- **Janitor / Synthesizer / Contradiction** (`06`, `07`) — the background writers that must be
-  quiesced for a consistent snapshot.
+- **Janitor / Synthesizer / Contradiction** (`06`, `07`) — background writers; SQLite's online
+  backup captures a consistent database snapshot without stopping them.
+- **Storage backends** ([ADR-005](../ADRs/005-sqlite-plus-hnsw.md),
+  [ADR-020](../ADRs/020-swappable-storage-backends.md)) — the database is the source of truth and
+  the vector index is a rebuildable projection; backup mechanics are adapter-specific.
 - **Provenance / write path** (`15-procedural-memory.md`) — enables the surgical recovery grade.
 - **Security** (`10-security`) — backup-at-rest encryption belongs with that roadmap.

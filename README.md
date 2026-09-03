@@ -208,6 +208,32 @@ for the following.
 - **Provide the runtime dependencies.** Semantic search needs Ollama with an embedding model
   (or `backend = "mock"` for offline/no-Ollama use); building needs a protobuf compiler.
 
+## Choosing Your Data Store
+
+Boswell's persistence sits behind a single storage port (the `ClaimStore` trait), so the engine
+underneath is a **swappable adapter** — the memory model, the API, and the gateway stay identical
+regardless of what stores the data (see
+[ADR-020](docs/ADRs/020-swappable-storage-backends.md)).
+
+**Start simple.** Today Boswell ships one adapter: an **embedded SQLite store** with a local
+vector index — zero-dependency, single-file, ideal for a local, single-agent instance. This is
+where almost everyone should begin.
+
+**Grow when you need to.** As you move toward shared, multi-agent, or hosted use, a **Postgres +
+pgvector** adapter is the planned growth path (not yet shipped — see the
+[backlog](docs/development/roadmap.md#backlog--future-work)): concurrent writers,
+networked/shared access, point-in-time recovery, and standard database operations.
+
+| If you have… | Prefer |
+|---|---|
+| One agent, one machine, getting started | **SQLite** (embedded, default) |
+| Many concurrent agents / a shared or hosted instance | **Postgres + pgvector** (planned) |
+| A hard "no external services" constraint | **SQLite** |
+| Existing Postgres ops, replication, and backups you trust | **Postgres + pgvector** (planned) |
+
+You aren't locked in: a planned **data-store migration tool** will move your memories from one
+adapter to another when you outgrow the simple setup, so starting small costs you nothing later.
+
 ## Documentation
 
 - [Architecture Documentation](docs/architecture/) - System design and component specifications
