@@ -105,6 +105,7 @@ pub async fn handle_query(
         object: params.object,
         min_confidence: params.min_confidence,
         tier,
+        source_type: None,
     };
 
     // Execute query

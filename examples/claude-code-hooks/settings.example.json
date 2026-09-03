@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "http",
-            "url": "https://boswell.example.com/hooks/ingest",
+            "url": "https://boswell.example.com/v1/hooks/ingest",
             "headers": {
               "Authorization": "Bearer $BOSWELL_TOKEN",
               "Content-Type": "application/json"

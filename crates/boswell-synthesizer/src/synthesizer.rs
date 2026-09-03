@@ -253,6 +253,7 @@ where
                 let query = ClaimQuery {
                     namespace: ns.clone(),
                     tier: Some(tier.clone()),
+                    source_type: None,
                     min_confidence: None,
                     semantic_text: None,
                     limit: None,

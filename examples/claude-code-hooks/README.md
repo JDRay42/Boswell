@@ -86,8 +86,9 @@ memory being down never blocks your session.
 ## The `PostToolUse` HTTP hook in the example
 
 `settings.example.json` also shows a native `type: "http"` hook posting to
-`https://boswell.example.com/hooks/ingest`. That endpoint is a **proposed design, not
-yet implemented** — Boswell's Router today exposes only `/session/establish` and
-`/health`. It is included so the config shows both integration styles side by side; see
-the [integration guide](../../docs/integrations/claude-code-hooks.md) for the endpoint
-and security design. Remove that block until the endpoint exists.
+`https://boswell.example.com/v1/hooks/ingest`. That endpoint is **implemented** by the
+[`boswell-gateway`](../../docs/integrations/http-api.md): it accepts Claude Code hook
+event JSON and turns it into claims (deterministically, or via the LLM Extractor with
+`?mode=llm`). Point the URL at your gateway (default
+`http://127.0.0.1:8081/v1/hooks/ingest`) and supply a bearer API key. See the
+[HTTP API guide](../../docs/integrations/http-api.md) for auth and deployment.

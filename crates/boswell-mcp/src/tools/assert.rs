@@ -19,7 +19,7 @@ pub struct AssertParams {
     /// Confidence score (0.0 - 1.0)
     #[serde(default)]
     pub confidence: Option<f64>,
-    /// Tier (Transient, Session, Permanent)
+    /// Tier (ephemeral, task, project, permanent)
     #[serde(default)]
     pub tier: Option<String>,
 }

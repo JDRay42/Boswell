@@ -21,7 +21,16 @@ service BosWellService {
     
     // Mark a claim for eviction/forgetting
     rpc Forget(ForgetRequest) returns (ForgetResponse);
-    
+
+    // Fetch a single claim by id
+    rpc GetClaim(GetClaimRequest) returns (GetClaimResponse);
+
+    // Fetch the relationships (provenance / contradiction graph) for a claim
+    rpc GetRelationships(GetRelationshipsRequest) returns (GetRelationshipsResponse);
+
+    // Extract claims from unstructured text via the server-side LLM Extractor
+    rpc Extract(ExtractRequest) returns (ExtractResponse);
+
     // Health check for instance status
     rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
 }
@@ -62,6 +71,25 @@ message ProvenanceEntry {
     string metadata = 3;    // Optional JSON metadata
 }
 
+// Type of relationship between two claims (mirrors the domain RelationshipType).
+enum RelationshipType {
+    RELATIONSHIP_TYPE_UNSPECIFIED = 0;
+    RELATIONSHIP_TYPE_SUPPORTS = 1;      // One claim supports another
+    RELATIONSHIP_TYPE_CONTRADICTS = 2;   // One claim contradicts another
+    RELATIONSHIP_TYPE_DERIVED_FROM = 3;  // One claim was derived from another
+    RELATIONSHIP_TYPE_REFERENCES = 4;    // One claim references another
+    RELATIONSHIP_TYPE_SUPERSEDES = 5;    // One claim supersedes another
+}
+
+// A pairwise relationship between two claims (per ADR-002).
+message Relationship {
+    string from_claim = 1;                     // ULID of the source claim
+    string to_claim = 2;                       // ULID of the target claim
+    RelationshipType relationship_type = 3;    // Kind of relationship
+    double strength = 4;                        // Strength in [0.0, 1.0]
+    int64 created_at = 5;                       // Unix timestamp (seconds)
+}
+
 // ========== Assert Operation ==========
 
 message AssertRequest {
@@ -96,6 +124,7 @@ message QueryFilter {
     optional string object = 4;
     optional Tier tier = 5;
     optional double min_confidence = 6;  // Minimum confidence midpoint
+    optional string source_type = 7;     // Origin filter: assertion | extraction | inference | import
 }
 
 message QueryRequest {
@@ -159,6 +188,48 @@ message ForgetRequest {
 message ForgetResponse {
     bool success = 1;
     string message = 2;
+}
+
+// ========== GetClaim Operation ==========
+
+message GetClaimRequest {
+    string claim_id = 1;                 // ULID of the claim to fetch
+    string auth_token = 2;
+}
+
+message GetClaimResponse {
+    Claim claim = 1;                     // The claim, present only when found
+    bool found = 2;                      // True if a claim with this id exists
+}
+
+// ========== GetRelationships Operation ==========
+
+message GetRelationshipsRequest {
+    string claim_id = 1;                 // ULID whose relationships to fetch
+    string auth_token = 2;
+}
+
+message GetRelationshipsResponse {
+    repeated Relationship relationships = 1;
+}
+
+// ========== Extract Operation (text -> claims via LLM) ==========
+
+message ExtractRequest {
+    string text = 1;                     // Unstructured text to extract claims from
+    string namespace = 2;                // Target namespace for extracted claims
+    string tier = 3;                     // Optional tier (default: "task")
+    string source_id = 4;                // Optional source identifier for provenance
+    string auth_token = 5;
+}
+
+message ExtractResponse {
+    repeated Claim claims_created = 1;   // Newly created claims (source_type="extraction")
+    int32 created_count = 2;
+    int32 corroborated_count = 3;
+    int32 failed_count = 4;
+    repeated string failures = 5;        // Human-readable failure reasons
+    string message = 6;
 }
 
 // ========== Health Check ==========

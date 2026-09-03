@@ -33,10 +33,12 @@ Boswell follows Clean Architecture principles with clear separation of concerns:
 - `boswell-sdk` - Rust client SDK
 - `boswell-mcp` - MCP (Model Context Protocol) server
 - `boswell-cli` - Command-line interface
+- `boswell-gateway` - Public, authenticated HTTP/JSON API (see [HTTP API guide](docs/integrations/http-api.md))
 
 ### Runtime Binaries
 - `boswell-server` - Instance gRPC daemon (serves the claim store + embedder)
 - `boswell-router` - Session management and instance registry (HTTP)
+- `boswell-gateway` - Public HTTP/JSON API in front of the private gRPC instance
 
 ## Development Setup
 
@@ -124,6 +126,26 @@ share a subject, asks the LLM whether each pair is incompatible, and records a
 computation (ADR-007) folds in as a penalty, lowering the effective confidence
 of both claims. Pairs are rate-limited and already-related pairs are skipped.
 
+### Running the HTTP gateway
+
+The gateway (`boswell-gateway`) exposes the full memory lifecycle as a public,
+authenticated HTTP/JSON API so remote agents (e.g. Claude on the web) can use
+Boswell over HTTPS. It reuses the SDK internally and keeps the gRPC instance
+private; serve TLS and public reach via a reverse proxy or tunnel in front of it.
+
+```bash
+# Write a starter config and add your API-key hashes (see the file's comments)
+cargo run -p boswell-gateway -- init config/gateway.toml
+
+# Start the gateway (defaults to 127.0.0.1:8081)
+cargo run -p boswell-gateway -- --config config/gateway.toml
+```
+
+Server-side LLM extraction (`POST /v1/extract` and LLM-mode `/v1/hooks/ingest`)
+requires enabling `[extraction]` in the instance config. See the full
+[HTTP API guide](docs/integrations/http-api.md) for endpoints, auth scopes, the
+claim DTO, and deployment.
+
 ## Project Status
 
 🚧 **In Development** — core lifecycle complete end-to-end.
@@ -146,8 +168,15 @@ recalls stored claims into the session, and a `UserPromptSubmit` hook captures n
 ones. Runnable local examples (command hooks over `localhost`, no network exposure)
 live in [`examples/claude-code-hooks/`](examples/claude-code-hooks/). The
 [integration guide](docs/integrations/claude-code-hooks.md) also covers the native
-HTTP-hook transport and how to serve Boswell securely when it must be publicly
-reachable.
+HTTP-hook transport, now backed by the gateway's real `POST /v1/hooks/ingest`
+endpoint.
+
+### HTTP API
+
+The [`boswell-gateway`](docs/integrations/http-api.md) serves a public,
+authenticated HTTP/JSON API (`/v1`) over the full memory lifecycle — read, write,
+search, recall, delete, relationships, extract, and hook ingest — so any external
+agent can use Boswell over HTTPS.
 
 ## Documentation
 

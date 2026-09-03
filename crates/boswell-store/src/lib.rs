@@ -352,6 +352,11 @@ impl ClaimStore for SqliteStore {
             params.push(Box::new(tier.clone()));
         }
 
+        if let Some(source_type) = &query.source_type {
+            sql.push_str(" AND source_type = ?");
+            params.push(Box::new(source_type.clone()));
+        }
+
         if let Some(min_conf) = query.min_confidence {
             sql.push_str(" AND base_lower >= ?");
             params.push(Box::new(min_conf));
@@ -806,5 +811,55 @@ mod migration_tests {
             100,
         );
         assert_eq!(d.source_type, "assertion");
+    }
+
+    /// `query_claims` filters on `source_type` when the query specifies one.
+    #[test]
+    fn test_query_filter_by_source_type() {
+        let mut store = SqliteStore::new(":memory:", false, 0).unwrap();
+
+        store
+            .assert_claim(
+                Claim::new(
+                    ClaimId::new(),
+                    "ns".into(),
+                    "s:a".into(),
+                    "p".into(),
+                    "o".into(),
+                    (0.5, 0.6),
+                    "task".into(),
+                    100,
+                )
+                .with_source_type("assertion"),
+            )
+            .unwrap();
+        store
+            .assert_claim(
+                Claim::new(
+                    ClaimId::new(),
+                    "ns".into(),
+                    "s:b".into(),
+                    "p".into(),
+                    "o".into(),
+                    (0.5, 0.6),
+                    "task".into(),
+                    100,
+                )
+                .with_source_type("extraction"),
+            )
+            .unwrap();
+
+        let extraction_only = ClaimQuery {
+            source_type: Some("extraction".to_string()),
+            ..ClaimQuery::default()
+        };
+        let hits = store.query_claims(&extraction_only).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].source_type, "extraction");
+        assert_eq!(hits[0].subject, "s:b");
+
+        // No source_type filter returns both.
+        let all = store.query_claims(&ClaimQuery::default()).unwrap();
+        assert_eq!(all.len(), 2);
     }
 }

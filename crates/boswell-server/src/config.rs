@@ -43,6 +43,9 @@ pub struct InstanceConfig {
 
     /// Background contradiction-detection settings.
     pub contradiction: ContradictionSettings,
+
+    /// Server-side LLM extraction settings (backs the `Extract` RPC).
+    pub extraction: ExtractionSettings,
 }
 
 impl Default for InstanceConfig {
@@ -55,6 +58,46 @@ impl Default for InstanceConfig {
             janitor: JanitorSettings::default(),
             synthesizer: SynthesizerSettings::default(),
             contradiction: ContradictionSettings::default(),
+            extraction: ExtractionSettings::default(),
+        }
+    }
+}
+
+/// Server-side extraction settings. When enabled, the gRPC `Extract` RPC (and
+/// LLM-mode hook ingest via the gateway) turns text into claims using a local
+/// Ollama chat model. Off by default (LLM cost); deterministic ingest via
+/// `Learn` works regardless.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ExtractionSettings {
+    /// Whether the server-side Extractor is available for the `Extract` RPC.
+    pub enabled: bool,
+    /// Ollama chat model used for extraction.
+    pub model: String,
+    /// Ollama endpoint for the extraction model.
+    pub endpoint: String,
+    /// Maximum input text length in characters (rejects larger requests).
+    pub max_text_length: usize,
+}
+
+impl Default for ExtractionSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false, // opt-in (LLM cost)
+            model: "qwen2.5:7b".to_string(),
+            endpoint: "http://localhost:11434".to_string(),
+            max_text_length: 50_000,
+        }
+    }
+}
+
+impl ExtractionSettings {
+    /// Build the [`boswell_extractor::ExtractorConfig`] this settings block
+    /// describes, keeping extractor defaults for everything not exposed here.
+    pub fn to_extractor_config(&self) -> boswell_extractor::ExtractorConfig {
+        boswell_extractor::ExtractorConfig {
+            max_text_length: self.max_text_length,
+            ..boswell_extractor::ExtractorConfig::default()
         }
     }
 }
@@ -310,6 +353,16 @@ interval_hours = 12
 min_tier = "task"
 # Dry-run detects and logs contradictions without recording them.
 dry_run = false
+
+[extraction]
+# Server-side LLM extraction that turns text into claims, backing the gRPC
+# Extract RPC and the gateway's /v1/extract and LLM-mode /v1/hooks/ingest.
+# Off by default (LLM cost). Requires the chat model:
+#   ollama pull qwen2.5:7b
+enabled = false
+model = "qwen2.5:7b"
+endpoint = "http://localhost:11434"
+max_text_length = 50000
 "#;
 
 #[cfg(test)]

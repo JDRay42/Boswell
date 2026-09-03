@@ -19,14 +19,19 @@
 //! ```
 
 pub mod config;
+pub mod extraction;
 
 use std::sync::{Arc, Mutex};
 
-use boswell_grpc::{start_server, ServerConfig};
+use boswell_grpc::{start_server_with_extractor, ServerConfig, ServerExtractor};
 use boswell_store::{EmbeddingModel, OllamaEmbeddingModel, SqliteStore};
 use thiserror::Error;
 
-pub use config::{ConfigError, EmbeddingBackend, EmbeddingConfig, InstanceConfig, StorageConfig};
+pub use config::{
+    ConfigError, EmbeddingBackend, EmbeddingConfig, ExtractionSettings, InstanceConfig,
+    StorageConfig,
+};
+pub use extraction::SharedExtractor;
 
 /// Errors that can occur while starting or running the instance server.
 #[derive(Debug, Error)]
@@ -112,6 +117,25 @@ pub async fn run(config: InstanceConfig) -> Result<(), ServerError> {
         spawn_contradiction(&config, Arc::clone(&store));
     }
 
+    // Build the optional server-side extractor (backs the Extract RPC). It shares
+    // the same store as the gRPC service so extracted claims are immediately
+    // queryable through the rest of the API.
+    let extractor: Option<Arc<dyn ServerExtractor>> = if config.extraction.enabled {
+        tracing::info!(
+            "Server-side extraction enabled: model='{}' at {}",
+            config.extraction.model,
+            config.extraction.endpoint
+        );
+        Some(Arc::new(SharedExtractor::new(
+            Arc::clone(&store),
+            &config.extraction.endpoint,
+            &config.extraction.model,
+            config.extraction.to_extractor_config(),
+        )))
+    } else {
+        None
+    };
+
     let server_config = ServerConfig::new(config.bind_address.clone(), config.bind_port);
 
     tracing::info!(
@@ -121,7 +145,7 @@ pub async fn run(config: InstanceConfig) -> Result<(), ServerError> {
         config.storage.db_path
     );
 
-    start_server(server_config, store)
+    start_server_with_extractor(server_config, store, extractor)
         .await
         .map_err(|e| ServerError::Serve(e.to_string()))
 }
