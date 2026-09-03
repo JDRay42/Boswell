@@ -149,6 +149,42 @@ precondition to run it at all). "Prefer eggs here when LDL is low" is *edge-cont
 pick this child *under prepare-breakfast*). Intrinsic preconditions live on the entity;
 contextual selection signals live on the edge.
 
+### 3.3 The effectiveness-reporting contract
+
+Effectiveness is only as good as the reports that feed it, so **retrieving a procedure for
+execution carries an obligation to report the outcome** — the report is not an optional
+hook. When the store hands out a procedure it issues an execution receipt:
+
+```
+execution_contract: {
+  receipt_id, procedure_id, version,
+  issued_to: <principal>, task_id, session_id,
+  expires_at, report_to,
+  required: [outcome], optional: [failure_mode, executor_confidence, cost, notes]
+}
+```
+
+The executor is obliged to report before `expires_at`:
+
+```
+report: { receipt_id, outcome: success | failure | abandoned,
+          failure_mode?: preconditions_stale | step_failed(step) | bad_result | executor_error,
+          executor_confidence?, cost?, notes? }
+```
+
+Rules:
+- **The report is a provenance-stamped, gatekept write** (§5). A low-assurance executor's
+  self-report is weak evidence and needs corroboration to move team-tier effectiveness, so a
+  malicious or confused executor cannot tank a shared procedure with false failures.
+- **`failure_mode` supplies attribution** (this is what open-problem #2 needs):
+  `executor_error` does **not** demote the procedure; `bad_result`/`step_failed` do;
+  `preconditions_stale` demotes the *precondition check*, not the body.
+- **Silence is not success.** An unreported, expired receipt counts as `unknown` — mildly
+  negative for reliability — so an agent cannot game stats by running a procedure and staying
+  quiet on failure. Chronic non-reporting is itself an authority/provenance signal against the
+  principal.
+- Enforced operationally by the capture hooks (`SubagentStop`/`Stop`/`PostToolUse`).
+
 ## 4. Retrieval & traversal
 
 **Stateless, agent-driven recursive descent.** The agent holds the cursor (consistent with
@@ -340,8 +376,10 @@ devAuth is a bring-up and demonstration tool for the trust model — never a sho
 1. **Sybil independence.** "N distinct authors corroborate" is gameable by correlated clones;
    corroboration needs an independence notion we don't have.
 2. **Effectiveness attribution.** On failure, was it the *procedure* or the *executor*?
-   Demoting a good procedure for a bad executor's mistake is unfair; separating execution- from
-   procedure-quality is unsolved beyond a gesture.
+   Demoting a good procedure for a bad executor's mistake is unfair. **Largely addressed** by
+   the reporting contract (§3.3): the reporter supplies `failure_mode`, the gatekeeper weights
+   it by reporter trust. What remains is *trusting the attribution*, which the trust gradient
+   already bounds.
 3. **Authoring & learning.** How Goals/Procedures get *into* memory and refine — hand-authored
    is fine to start, but "learned from experience" implies a procedure/goal extractor
    (inducing control flow and decomposition), meaningfully harder than claim extraction.
@@ -351,6 +389,39 @@ devAuth is a bring-up and demonstration tool for the trust model — never a sho
    navigable graph; need a rule (an edge pins its child, or GC cascades/re-parents).
 6. **Cycle guards.** The DAG must be kept acyclic (a `decide` procedure that re-enters a parent
    could loop); traversal needs guards.
+
+### 8.1 How we intend to make these tractable
+
+Sorted by what actually resolves each — only one is genuine research:
+
+- **Decide and test (engineering, not research):** promotion timing (#4 — a Janitor-style
+  background pass, interval configurable, with a synchronous fast-track for authority
+  endorsements); graph integrity under decay (#5 — pick a rule: an edge pins its child against
+  GC, *or* cascade + re-parent orphans to the nearest live ancestor; prototype both, choose by
+  behavior); cycle guards (#6 — reject on write any edge that would close a cycle, plus a
+  visited-set + depth cap at traversal).
+- **Largely handled by the reporting contract (§3.3):** attribution (#2). The reporter supplies
+  `failure_mode`; the gatekeeper weights it by reporter trust.
+- **Empirical — needs a running system + devAuth, not more design:** Sybil independence (#1).
+  Stand up devAuth, script the four identities through cooperative and adversarial (clone-swarm)
+  scenarios, and measure. Pragmatic proxy for independence: weight corroboration by **provenance
+  diversity** — distinct delegation-chain roots, distinct sessions spread over time, distinct
+  evidence types — and require **cross-authority** endorsement (a different org branch) for
+  top-tier promotion. Accept it as mitigated, not solved; borrow from web-of-trust and
+  reputation-system literature.
+- **Sequence, don't block:** authoring & learning (#3). Ship hand-authoring; instrument real
+  usage; build a procedure/goal extractor once there is a corpus of real episodes to learn from
+  (the `Extractor` is the model). Both attribution and authoring echo **reinforcement-learning
+  credit assignment** — borrow that framing rather than reinventing it.
+
+Two cross-cutting principles make the unsolved ones safe to live with:
+- **Bound the damage.** Where a problem can't be fully solved (Sybil), ensure the worst case is
+  a *reversible* false promotion a `memory-manager` can demote — never irreversible corruption.
+  Reversibility is the safety net.
+- **Phase the risk.** Single-principal procedural memory (one agent's how-to across its own
+  sessions) is useful on its own and trips almost none of these problems; the team-trust problems
+  only bite at multi-agent scale — by which point a running single-principal system has produced
+  the data needed to attack them.
 
 ## 9. Suggested phasing
 
