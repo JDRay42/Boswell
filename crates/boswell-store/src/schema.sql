@@ -130,6 +130,64 @@ CREATE TABLE IF NOT EXISTS schema_info (
 INSERT OR IGNORE INTO schema_info (version, applied_at, description)
 VALUES (1, strftime('%s', 'now') * 1000, 'Initial schema with claims, relationships, provenance, and confidence cache');
 
+-- Procedures table - procedural memory (per docs/architecture/15-procedural-memory.md)
+-- A procedure is a first-class entity (sibling to claims, NOT made of claims): a
+-- typed, uniform signature plus an opaque, format-tagged body. Effectiveness is
+-- DERIVED at read time (success-rate x recency), never stored. Collection-valued
+-- signature fields are stored as JSON text; scalar/filterable fields are columns.
+CREATE TABLE IF NOT EXISTS procedures (
+    -- UUIDv7 as 128-bit integer (stored as BLOB for efficient indexing)
+    id BLOB PRIMARY KEY NOT NULL,
+
+    -- Identity / versioning
+    namespace TEXT NOT NULL,
+    name TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    supersedes BLOB,                       -- prior-version id, or NULL
+    is_current INTEGER NOT NULL DEFAULT 1 CHECK (is_current IN (0, 1)),
+    source TEXT NOT NULL CHECK (source IN ('authored', 'learned', 'imported')),
+
+    -- Grouping: handle for variants/versions pursuing the same outcome
+    goal TEXT NOT NULL,
+
+    -- Signature (uniform; drives retrieval + gating)
+    intent TEXT NOT NULL,
+    tags TEXT NOT NULL DEFAULT '[]',            -- JSON array of strings
+    parameters TEXT NOT NULL DEFAULT '[]',      -- JSON array of parameter objects
+    preconditions TEXT NOT NULL DEFAULT '[]',   -- JSON array of precondition objects
+    required_tools TEXT NOT NULL DEFAULT '[]',  -- JSON array of strings
+    postconditions TEXT NOT NULL DEFAULT '[]',  -- JSON array of strings
+    est_duration_sec INTEGER,
+
+    -- Selection hints (soft; ranking among siblings)
+    usage_notes TEXT NOT NULL DEFAULT '',
+    context_tags TEXT NOT NULL DEFAULT '[]',    -- JSON array of strings
+
+    -- Body (opaque, format-tagged)
+    body_format TEXT NOT NULL CHECK (body_format IN ('prose', 'dsl', 'code')),
+    content_type TEXT NOT NULL,
+    body TEXT NOT NULL,
+
+    -- Effectiveness & lifecycle
+    tier TEXT NOT NULL CHECK (tier IN ('ephemeral', 'task', 'project', 'permanent')),
+    use_count INTEGER NOT NULL DEFAULT 0,
+    success_count INTEGER NOT NULL DEFAULT 0,
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    last_used_at INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    stale_at INTEGER,
+
+    -- Optional embedding of `intent` for future semantic retrieval (ADR-005).
+    -- Phase 1 matches goal/intent exactly or by substring; see TODO in the store.
+    embedding_vector TEXT
+);
+
+-- Indexes for common procedure query patterns
+CREATE INDEX IF NOT EXISTS idx_procedures_goal ON procedures(goal);
+CREATE INDEX IF NOT EXISTS idx_procedures_namespace ON procedures(namespace);
+CREATE INDEX IF NOT EXISTS idx_procedures_is_current ON procedures(is_current);
+
 -- Notes on HNSW vector index:
 -- The HNSW index is maintained separately in a memory-mapped file alongside this SQLite database.
 -- The embedding_vector column in the claims table is primarily for reconstruction/debugging.
