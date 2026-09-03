@@ -658,7 +658,9 @@ mod tests {
         let health = response.into_inner();
 
         assert_eq!(health.status, health_check_response::Status::Healthy as i32);
-        assert!(health.claim_count >= 0);
+        // health_check counts claims via query_claims; MockStore returns exactly
+        // one canned claim, so the count path is actually verified (not just >= 0).
+        assert_eq!(health.claim_count, 1);
     }
 
     // ---- Tests exercising the new RPCs against a real in-memory store ----

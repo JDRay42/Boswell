@@ -329,3 +329,105 @@ impl McpServer {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `new()` builds a runtime + SDK client but performs no network I/O until
+    /// `connect()`, so it is safe to construct offline for handler tests. These
+    /// tests drive the real `handle_request` dispatch and handler code — no live
+    /// Router/instance is needed for `initialize`, `tools/list`, or the error
+    /// paths (those never touch the client).
+    fn test_server() -> McpServer {
+        McpServer::new("http://127.0.0.1:8080".to_string()).unwrap()
+    }
+
+    fn request(method: &str, params: Value) -> JsonRpcRequest {
+        serde_json::from_value(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": method,
+            "params": params,
+        }))
+        .expect("valid JsonRpcRequest")
+    }
+
+    #[test]
+    fn test_initialize_reports_protocol_and_server_info() {
+        let mut server = test_server();
+        let resp = server.handle_request(request("initialize", json!({})));
+        let result = &resp["result"];
+        assert_eq!(result["protocolVersion"], "0.1.0");
+        assert_eq!(result["serverInfo"]["name"], "boswell-mcp");
+        assert_eq!(result["capabilities"]["tools"]["supported"], true);
+    }
+
+    #[test]
+    fn test_tools_list_advertises_the_five_tools() {
+        let mut server = test_server();
+        let resp = server.handle_request(request("tools/list", json!({})));
+        let tools = resp["result"]["tools"]
+            .as_array()
+            .expect("tools should be an array");
+        assert_eq!(tools.len(), 5);
+
+        let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+        for expected in [
+            "boswell_assert",
+            "boswell_query",
+            "boswell_learn",
+            "boswell_forget",
+            "boswell_semantic_search",
+        ] {
+            assert!(names.contains(&expected), "missing tool: {}", expected);
+        }
+    }
+
+    #[test]
+    fn test_tools_list_uses_valid_lowercase_tier_enum() {
+        // Regression guard: the advertised tier enum must be the real domain
+        // tiers, not the old bogus "Transient"/"Session"/"Permanent" values.
+        let mut server = test_server();
+        let resp = server.handle_request(request("tools/list", json!({})));
+        let serialized = resp.to_string();
+        for tier in ["ephemeral", "task", "project", "permanent"] {
+            assert!(
+                serialized.contains(&format!("\"{}\"", tier)),
+                "tier enum should advertise '{}'",
+                tier
+            );
+        }
+        assert!(!serialized.contains("Transient"));
+        assert!(!serialized.contains("Session"));
+        assert!(!serialized.contains("\"Permanent\""));
+    }
+
+    #[test]
+    fn test_unknown_method_returns_method_not_found() {
+        let mut server = test_server();
+        let resp = server.handle_request(request("does/not/exist", json!({})));
+        assert_eq!(resp["error"]["code"], -32601);
+    }
+
+    #[test]
+    fn test_tool_call_unknown_tool_returns_not_found() {
+        let mut server = test_server();
+        let resp = server.handle_request(request(
+            "tools/call",
+            json!({ "name": "boswell_nonexistent", "arguments": {} }),
+        ));
+        assert_eq!(resp["error"]["code"], -32601);
+        assert!(resp["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Tool not found"));
+    }
+
+    #[test]
+    fn test_tool_call_missing_name_returns_invalid_params() {
+        let mut server = test_server();
+        let resp = server.handle_request(request("tools/call", json!({ "arguments": {} })));
+        assert_eq!(resp["error"]["code"], -32602);
+    }
+}

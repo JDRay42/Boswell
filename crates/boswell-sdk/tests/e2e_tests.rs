@@ -211,9 +211,18 @@ async fn test_e2e_confidence_filtering() {
         .await
         .expect("Failed to query high confidence");
 
-    // Should only get the high confidence claim
+    // Should get the high-confidence claim and NOT the low-confidence one —
+    // asserting both presence and exclusion so a broken min_confidence filter
+    // (returning everything) actually fails the test.
     let high_subjects: Vec<_> = high_conf.iter().map(|c| c.subject.as_str()).collect();
-    assert!(high_subjects.contains(&"high"));
+    assert!(
+        high_subjects.contains(&"high"),
+        "high-confidence claim missing"
+    );
+    assert!(
+        !high_subjects.contains(&"low"),
+        "low-confidence claim should have been filtered out"
+    );
 
     // Clean up
     client.forget(vec![id_high, id_low]).await.ok();
