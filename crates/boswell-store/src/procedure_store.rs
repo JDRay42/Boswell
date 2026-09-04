@@ -188,14 +188,14 @@ impl SqliteStore {
                 est_duration_sec, usage_notes, context_tags,
                 body_format, content_type, body,
                 tier, use_count, success_count, failure_count,
-                last_used_at, created_at, updated_at, stale_at
+                last_used_at, created_at, updated_at, stale_at, unknown_count
              ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
                 ?9, ?10, ?11, ?12, ?13, ?14,
                 ?15, ?16, ?17,
                 ?18, ?19, ?20,
                 ?21, ?22, ?23, ?24,
-                ?25, ?26, ?27, ?28
+                ?25, ?26, ?27, ?28, ?29
              )
              ON CONFLICT(id) DO UPDATE SET
                 namespace = excluded.namespace, name = excluded.name,
@@ -212,7 +212,7 @@ impl SqliteStore {
                 use_count = excluded.use_count, success_count = excluded.success_count,
                 failure_count = excluded.failure_count, last_used_at = excluded.last_used_at,
                 created_at = excluded.created_at, updated_at = excluded.updated_at,
-                stale_at = excluded.stale_at",
+                stale_at = excluded.stale_at, unknown_count = excluded.unknown_count",
             params![
                 &id_bytes,
                 &procedure.namespace,
@@ -242,6 +242,7 @@ impl SqliteStore {
                 procedure.created_at as i64,
                 procedure.updated_at as i64,
                 procedure.stale_at.map(|t| t as i64),
+                procedure.unknown_count as i64,
             ],
         )?;
 
@@ -499,6 +500,7 @@ impl SqliteStore {
                 use_count: row.get::<_, i64>("use_count")? as u64,
                 success_count: row.get::<_, i64>("success_count")? as u64,
                 failure_count: row.get::<_, i64>("failure_count")? as u64,
+                unknown_count: row.get::<_, i64>("unknown_count")? as u64,
                 last_used_at: last_used_at.map(|t| t as u64),
                 created_at: row.get::<_, i64>("created_at")? as u64,
                 updated_at: row.get::<_, i64>("updated_at")? as u64,
@@ -514,7 +516,8 @@ impl SqliteStore {
 const PROCEDURE_COLUMNS: &str = "id, namespace, name, version, supersedes, is_current, source, \
      goal, intent, tags, parameters, preconditions, required_tools, postconditions, \
      est_duration_sec, usage_notes, context_tags, body_format, content_type, body, tier, \
-     use_count, success_count, failure_count, last_used_at, created_at, updated_at, stale_at";
+     use_count, success_count, failure_count, unknown_count, last_used_at, created_at, \
+     updated_at, stale_at";
 
 /// Escape `%`, `_`, and `\` for a `LIKE ... ESCAPE '\'` substring match so that
 /// user-supplied intent text matches literally.
@@ -568,6 +571,7 @@ mod tests {
             use_count: 0,
             success_count: 0,
             failure_count: 0,
+            unknown_count: 0,
             last_used_at: None,
             created_at: NOW,
             updated_at: NOW,

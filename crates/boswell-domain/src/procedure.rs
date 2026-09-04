@@ -299,6 +299,10 @@ pub struct Procedure {
     pub success_count: u64,
     /// Number of trials reported as a failure attributable to the procedure.
     pub failure_count: u64,
+    /// Number of handed-out executions whose receipt expired unreported
+    /// ("silence is not success", design §3.3). Each counts, mildly, against
+    /// effectiveness.
+    pub unknown_count: u64,
     /// When this procedure was last used (Unix ms), if ever.
     pub last_used_at: Option<u64>,
     /// When this procedure was created (Unix ms).
@@ -318,9 +322,10 @@ pub const EFFECTIVENESS_RECENCY_HALF_LIFE_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 impl Procedure {
     /// Derive effectiveness (`success-rate × recency`) as of `now` (Unix ms).
     ///
-    /// - **success-rate** is `success_count / (success_count + failure_count)`,
-    ///   and `0.0` when there have been no counted trials (an unproven procedure
-    ///   ranks below any proven one).
+    /// - **success-rate** is `success / (success + failure + ½·unknown)`, and
+    ///   `0.0` when there have been no trials at all (an unproven procedure ranks
+    ///   below any proven one). Unknowns (unreported, expired receipts) count as
+    ///   half a failure — mildly negative, per "silence is not success".
     /// - **recency** decays exponentially from the last use (or, if never used,
     ///   from creation) with a half-life of
     ///   [`EFFECTIVENESS_RECENCY_HALF_LIFE_MS`], clamped to `[0.0, 1.0]`.
@@ -328,11 +333,13 @@ impl Procedure {
     /// This is a deterministic ranking signal; the store surfaces and ranks, it
     /// never decides.
     pub fn effectiveness(&self, now: u64) -> f64 {
-        let trials = self.success_count + self.failure_count;
-        let success_rate = if trials == 0 {
+        // Unknowns weigh half a failure: mildly negative for reliability (§3.3).
+        let denom =
+            self.success_count as f64 + self.failure_count as f64 + 0.5 * self.unknown_count as f64;
+        let success_rate = if denom == 0.0 {
             0.0
         } else {
-            self.success_count as f64 / trials as f64
+            self.success_count as f64 / denom
         };
 
         let reference = self.last_used_at.unwrap_or(self.created_at);
@@ -400,6 +407,46 @@ impl Procedure {
         }
 
         effect
+    }
+
+    /// Record that a handed-out execution's receipt expired unreported (design
+    /// §3.3): bumps `unknown_count` and `updated_at`. This is *not* a use — it does
+    /// not touch `last_used_at` — so it cannot flatter the recency term.
+    pub fn record_unknown(&mut self, now: u64) {
+        self.unknown_count += 1;
+        self.updated_at = now;
+    }
+}
+
+/// The lifecycle status of an [`ExecutionReceipt`] (design §3.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReceiptStatus {
+    /// Issued and awaiting a report.
+    Pending,
+    /// A report was received and applied.
+    Reported,
+    /// The receipt expired unreported (counts as `unknown`).
+    Expired,
+}
+
+impl ReceiptStatus {
+    /// Stable storage string.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ReceiptStatus::Pending => "pending",
+            ReceiptStatus::Reported => "reported",
+            ReceiptStatus::Expired => "expired",
+        }
+    }
+
+    /// Parse from the storage string.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "pending" => Some(ReceiptStatus::Pending),
+            "reported" => Some(ReceiptStatus::Reported),
+            "expired" => Some(ReceiptStatus::Expired),
+            _ => None,
+        }
     }
 }
 
@@ -601,6 +648,7 @@ mod tests {
             use_count: 0,
             success_count: 0,
             failure_count: 0,
+            unknown_count: 0,
             last_used_at: None,
             created_at: now,
             updated_at: now,
@@ -624,6 +672,24 @@ mod tests {
         p.last_used_at = Some(now);
         // recency == 1.0 at zero age, so effectiveness == success rate (0.75).
         assert!((p.effectiveness(now) - 0.75).abs() < 1e-9);
+    }
+
+    #[test]
+    fn unknown_counts_as_half_a_failure() {
+        let now = 1_000_000;
+        let mut p = sample(now);
+        p.success_count = 2;
+        p.last_used_at = Some(now);
+        // 2 successes, no failures -> 1.0.
+        assert!((p.effectiveness(now) - 1.0).abs() < 1e-9);
+
+        // Two unknowns weigh as one failure: 2 / (2 + 0 + 1) = 0.666...
+        p.record_unknown(now);
+        p.record_unknown(now);
+        assert_eq!(p.unknown_count, 2);
+        assert!((p.effectiveness(now) - (2.0 / 3.0)).abs() < 1e-9);
+        // record_unknown is not a use: recency reference is untouched.
+        assert_eq!(p.last_used_at, Some(now));
     }
 
     #[test]

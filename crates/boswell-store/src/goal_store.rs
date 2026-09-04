@@ -566,6 +566,7 @@ mod tests {
             use_count: 0,
             success_count: 0,
             failure_count: 0,
+            unknown_count: 0,
             last_used_at: None,
             created_at: NOW,
             updated_at: NOW,

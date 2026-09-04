@@ -76,6 +76,13 @@ pub struct JanitorConfig {
     /// Default: true
     #[serde(default = "default_auto_manage_procedures")]
     pub auto_manage_procedures: bool,
+
+    /// Expire overdue, unreported execution receipts (procedural memory Phase 5,
+    /// design §3.3 "silence is not success"). Each expiry records an `unknown`
+    /// against the procedure's effectiveness.
+    /// Default: true
+    #[serde(default = "default_auto_expire_receipts")]
+    pub auto_expire_receipts: bool,
 }
 
 fn default_auto_promote() -> bool {
@@ -87,6 +94,10 @@ fn default_auto_demote() -> bool {
 }
 
 fn default_auto_manage_procedures() -> bool {
+    true
+}
+
+fn default_auto_expire_receipts() -> bool {
     true
 }
 
@@ -111,6 +122,7 @@ impl Default for JanitorConfig {
             auto_promote: true,
             auto_demote: true,
             auto_manage_procedures: true,
+            auto_expire_receipts: true,
         }
     }
 }
@@ -136,6 +148,7 @@ impl JanitorConfig {
             auto_promote: true,
             auto_demote: true,
             auto_manage_procedures: true,
+            auto_expire_receipts: true,
         }
     }
 
@@ -159,6 +172,7 @@ impl JanitorConfig {
             auto_promote: true,
             auto_demote: true,
             auto_manage_procedures: true,
+            auto_expire_receipts: true,
         }
     }
 

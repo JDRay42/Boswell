@@ -53,7 +53,7 @@ pub use namespace::Namespace;
 pub use procedure::{
     BodyFormat, ClaimMatch, ExecutionReceipt, Expect, FailureMode, Outcome, OutcomeReport,
     Parameter, Precondition, PreconditionCheck, Procedure, ProcedureId, ProcedureQuery,
-    ProcedureSource, ReportEffect,
+    ProcedureSource, ReceiptStatus, ReportEffect,
 };
 pub use provenance::ProvenanceEntry;
 pub use relationship::{Relationship, RelationshipType};

@@ -91,6 +91,27 @@ impl Janitor {
         Ok(changed)
     }
 
+    /// Expire overdue, unreported execution receipts ("silence is not success",
+    /// design §3.3), returning the number expired. Each expiry records an
+    /// `unknown` against its procedure's effectiveness. Honors `dry_run` (skips
+    /// the mutation and logs instead).
+    pub fn sweep_receipts(&mut self, store: &mut SqliteStore) -> Result<usize, JanitorError> {
+        if self.dry_run() {
+            let pending = store
+                .count_receipts(boswell_domain::ReceiptStatus::Pending)
+                .map_err(|e| JanitorError::Store(e.to_string()))?;
+            tracing::info!(
+                "DRY RUN: would expire overdue receipts among {} pending",
+                pending
+            );
+            return Ok(0);
+        }
+        let now = current_timestamp_ms();
+        store
+            .expire_receipts(now)
+            .map_err(|e| JanitorError::Store(e.to_string()))
+    }
+
     /// Set the Janitor-owned lifecycle fields on `facts`: a procedure is *failing*
     /// when its losses outweigh its wins over enough trials, and *stale* when its
     /// `stale_at` has passed or it has been idle past the project staleness window.
@@ -150,6 +171,7 @@ mod tests {
             use_count: 0,
             success_count: 0,
             failure_count: 0,
+            unknown_count: 0,
             last_used_at: Some(now),
             created_at: now,
             updated_at: now,
@@ -251,6 +273,26 @@ mod tests {
             store.get_procedure(proc.id).unwrap().unwrap().tier,
             Tier::Task
         );
+    }
+
+    #[test]
+    fn sweep_receipts_expires_overdue() {
+        use boswell_domain::{ExecutionReceipt, ReceiptStatus};
+        let mut store = SqliteStore::new(":memory:", false, 0).unwrap();
+        let now = now_ms();
+        let proc = procedure("p", Tier::Task, now);
+        store.upsert_procedure(&proc).unwrap();
+        let overdue = ExecutionReceipt::issue(&proc, "agent:worker", now - 5000, 1000);
+        store.issue_receipt(&overdue).unwrap();
+
+        let mut janitor = Janitor::default_config();
+        let expired = janitor.sweep_receipts(&mut store).unwrap();
+        assert_eq!(expired, 1);
+        assert_eq!(
+            store.get_procedure(proc.id).unwrap().unwrap().unknown_count,
+            1
+        );
+        assert_eq!(store.count_receipts(ReceiptStatus::Expired).unwrap(), 1);
     }
 
     #[test]
