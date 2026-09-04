@@ -88,6 +88,26 @@ impl Janitor {
         &self.metrics
     }
 
+    /// Whether dry-run mode is on (used by the procedure sweep).
+    pub(crate) fn dry_run(&self) -> bool {
+        self.config.dry_run
+    }
+
+    /// Project staleness window in days (used by the procedure sweep).
+    pub(crate) fn project_stale_days(&self) -> u64 {
+        self.config.project_stale_days
+    }
+
+    /// Record a procedure tier promotion from `from` (used by the procedure sweep).
+    pub(crate) fn record_procedure_promotion(&mut self, from: Tier) {
+        self.metrics.record_promotion(from);
+    }
+
+    /// Record a procedure tier demotion from `from` (used by the procedure sweep).
+    pub(crate) fn record_procedure_demotion(&mut self, from: Tier) {
+        self.metrics.record_demotion(from);
+    }
+
     /// Reset metrics counters
     pub fn reset_metrics(&mut self) {
         self.metrics.reset();

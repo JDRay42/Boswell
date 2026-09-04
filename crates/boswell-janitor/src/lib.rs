@@ -122,6 +122,7 @@ mod contradiction;
 mod error;
 mod janitor;
 mod metrics;
+mod procedure_sweep;
 mod worker;
 
 pub use config::JanitorConfig;

@@ -245,6 +245,35 @@ CREATE TABLE IF NOT EXISTS goal_edges (
 
 CREATE INDEX IF NOT EXISTS idx_goal_edges_parent ON goal_edges(parent_goal_id);
 
+-- Provenance stamps - the write-path ledger (procedural memory Phase 3, per
+-- docs/architecture/15-procedural-memory.md §5). Every stamped write, endorsement,
+-- and outcome report appends one append-only row here, so the Gatekeeper can count
+-- distinct authors, find higher-authority endorsements, and see the strongest
+-- evidence/assurance behind an entry without mutating history. entity_id is a
+-- canonical string (a UUID for a procedure; parent|childkind|childid|role for a
+-- goal edge), keeping the ledger uniform across entity kinds.
+CREATE TABLE IF NOT EXISTS provenance_stamps (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    entity_kind TEXT NOT NULL CHECK (entity_kind IN ('procedure', 'goal_edge')),
+    entity_id TEXT NOT NULL,
+    stamp_kind TEXT NOT NULL CHECK (stamp_kind IN ('write', 'endorse', 'report')),
+
+    author TEXT NOT NULL,
+    delegation_chain TEXT NOT NULL DEFAULT '[]',   -- JSON array of principals
+    authority_namespaces TEXT NOT NULL DEFAULT '[]', -- JSON array of strings
+    authority_max_tier TEXT NOT NULL CHECK (authority_max_tier IN ('ephemeral', 'task', 'project', 'permanent')),
+    authority_ops TEXT NOT NULL DEFAULT '[]',      -- JSON array of op strings
+    evidence TEXT NOT NULL CHECK (evidence IN ('observed', 'inferred', 'reported', 'tool_output')),
+    assurance TEXT NOT NULL CHECK (assurance IN ('none', 'asserted', 'verified', 'attested')),
+    task_id TEXT,
+    session_id TEXT,
+    timestamp INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_provenance_stamps_entity
+    ON provenance_stamps(entity_kind, entity_id);
+
 -- Notes on HNSW vector index:
 -- The HNSW index is maintained separately in a memory-mapped file alongside this SQLite database.
 -- The embedding_vector column in the claims table is primarily for reconstruction/debugging.

@@ -509,6 +509,19 @@ impl OutcomeReport {
         }
     }
 
+    /// Whether this report is a failure attributable to the procedure *body* —
+    /// `bad_result`, `step_failed`, or an unspecified failure. This is the
+    /// negative signal that moves failure counters and that the gatekept write
+    /// path guards at team tier; `executor_error` and `preconditions_stale` are
+    /// deliberately not procedure-negative (design §3.3).
+    pub fn is_negative(&self) -> bool {
+        matches!(self.outcome, Outcome::Failure)
+            && matches!(
+                self.failure_mode,
+                Some(FailureMode::BadResult) | Some(FailureMode::StepFailed(_)) | None
+            )
+    }
+
     /// A `Failure` report with the given attribution.
     pub fn failure(receipt_id: ProcedureId, failure_mode: FailureMode) -> Self {
         Self {

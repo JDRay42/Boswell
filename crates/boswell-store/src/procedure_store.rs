@@ -363,6 +363,47 @@ impl SqliteStore {
         })
     }
 
+    /// List procedures without precondition filtering — the enumeration a
+    /// maintenance sweep (e.g. the Janitor promotion pass) uses.
+    ///
+    /// Unlike [`SqliteStore::query_procedures`], this applies no goal/intent filter
+    /// and does not resolve preconditions; it simply returns rows. By default only
+    /// current (`is_current`) procedures are returned.
+    pub fn list_procedures(&self, include_superseded: bool) -> Result<Vec<Procedure>, StoreError> {
+        let sql = if include_superseded {
+            format!("SELECT {} FROM procedures", PROCEDURE_COLUMNS)
+        } else {
+            format!(
+                "SELECT {} FROM procedures WHERE is_current = 1",
+                PROCEDURE_COLUMNS
+            )
+        };
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt
+            .query_map([], Self::row_to_procedure)?
+            .collect::<Result<Vec<Result<Procedure, StoreError>>, rusqlite::Error>>()?;
+        rows.into_iter().collect()
+    }
+
+    /// Set a procedure's tier directly, returning `true` if a row was updated.
+    ///
+    /// This is the low-level apply used by promotion/demotion; entry-tier gating on
+    /// the write path lives in [`SqliteStore::write_procedure_stamped`], and the
+    /// climb/fall decision lives in the Gatekeeper.
+    pub fn set_procedure_tier(
+        &mut self,
+        id: ProcedureId,
+        tier: Tier,
+        now: u64,
+    ) -> Result<bool, StoreError> {
+        let id_bytes = Self::procedure_id_to_bytes(id);
+        let affected = self.conn.execute(
+            "UPDATE procedures SET tier = ?1, updated_at = ?2 WHERE id = ?3",
+            params![tier.as_str(), now as i64, &id_bytes],
+        )?;
+        Ok(affected > 0)
+    }
+
     /// Apply an outcome report to a stored procedure's effectiveness counters
     /// (design §3.3), persisting the result.
     ///

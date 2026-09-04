@@ -44,6 +44,35 @@ impl Tier {
         }
     }
 
+    /// Ordinal rank of this tier, ascending from `Ephemeral` (0) to
+    /// `Permanent` (3). Useful for comparing and taking the min/max of tiers.
+    pub fn rank(&self) -> u8 {
+        match self {
+            Tier::Ephemeral => 0,
+            Tier::Task => 1,
+            Tier::Project => 2,
+            Tier::Permanent => 3,
+        }
+    }
+
+    /// The lower of two tiers by [`Tier::rank`] (ties return `self`).
+    pub fn min(self, other: Self) -> Self {
+        if other.rank() < self.rank() {
+            other
+        } else {
+            self
+        }
+    }
+
+    /// The higher of two tiers by [`Tier::rank`] (ties return `self`).
+    pub fn max(self, other: Self) -> Self {
+        if other.rank() > self.rank() {
+            other
+        } else {
+            self
+        }
+    }
+
     /// Get the next tier in the hierarchy (for promotion)
     pub fn next(&self) -> Option<Self> {
         match self {
