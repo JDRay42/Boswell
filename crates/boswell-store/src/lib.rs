@@ -25,6 +25,7 @@ pub mod goal_store;
 pub mod ollama_embedding;
 pub mod procedure_store;
 pub mod provenance_store;
+pub mod receipt_store;
 pub mod vector_index;
 
 use boswell_domain::traits::{ClaimQuery, ClaimStore};
@@ -195,6 +196,14 @@ impl SqliteStore {
         {
             self.conn.execute_batch(
                 "ALTER TABLE provenance_stamps ADD COLUMN dev_provider INTEGER NOT NULL DEFAULT 0;",
+            )?;
+        }
+
+        // Migration: add `unknown_count` to procedures if it is missing
+        // (procedural memory Phase 5, "silence is not success").
+        if self.table_exists("procedures")? && !self.column_exists("procedures", "unknown_count")? {
+            self.conn.execute_batch(
+                "ALTER TABLE procedures ADD COLUMN unknown_count INTEGER NOT NULL DEFAULT 0;",
             )?;
         }
 

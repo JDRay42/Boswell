@@ -173,6 +173,9 @@ CREATE TABLE IF NOT EXISTS procedures (
     use_count INTEGER NOT NULL DEFAULT 0,
     success_count INTEGER NOT NULL DEFAULT 0,
     failure_count INTEGER NOT NULL DEFAULT 0,
+    -- Handed-out executions whose receipt expired unreported ("silence is not
+    -- success", design §3.3); counts mildly against effectiveness.
+    unknown_count INTEGER NOT NULL DEFAULT 0,
     last_used_at INTEGER,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
@@ -278,6 +281,28 @@ CREATE TABLE IF NOT EXISTS provenance_stamps (
 
 CREATE INDEX IF NOT EXISTS idx_provenance_stamps_entity
     ON provenance_stamps(entity_kind, entity_id);
+
+-- Execution receipts - the obligation-to-report ledger (procedural memory Phase 5,
+-- design §3.3). Retrieving a procedure for execution issues a pending receipt; the
+-- executor is obliged to report the outcome before expires_at. A reported receipt
+-- applies its outcome to the procedure's effectiveness; an expired-unreported one
+-- counts as `unknown` ("silence is not success").
+CREATE TABLE IF NOT EXISTS execution_receipts (
+    receipt_id BLOB PRIMARY KEY NOT NULL,   -- UUIDv7 as 128-bit big-endian
+    procedure_id BLOB NOT NULL,
+    version INTEGER NOT NULL,
+    issued_to TEXT NOT NULL,
+    task_id TEXT,
+    session_id TEXT,
+    issued_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    report_to TEXT,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'reported', 'expired'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_execution_receipts_status ON execution_receipts(status);
+CREATE INDEX IF NOT EXISTS idx_execution_receipts_procedure ON execution_receipts(procedure_id);
 
 -- Notes on HNSW vector index:
 -- The HNSW index is maintained separately in a memory-mapped file alongside this SQLite database.

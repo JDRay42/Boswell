@@ -83,6 +83,39 @@ boswell query --subject "${BOSWELL_SELF_ID:-person:me}" --predicate rel:working-
 With Boswell stopped, both scripts print nothing and exit `0` — they **fail open** so
 memory being down never blocks your session.
 
+## Procedure effectiveness capture (procedural memory, Phase 5)
+
+Boswell's procedural memory learns which procedures actually work by tracking the
+outcome of each execution (design §3.3). The mechanism is an **execution receipt**:
+
+1. When an agent retrieves a procedure to run, Boswell issues a *pending* receipt
+   (`SqliteStore::issue_receipt`) carrying `procedure_id`, `version`, the principal,
+   task/session ids, and an `expires_at` deadline.
+2. When the agent finishes, a capture hook reports the outcome
+   (`success` / `failure{failure_mode}` / `abandoned`) against that receipt, which
+   Boswell applies to the procedure's effectiveness as a gatekept, provenance-stamped
+   write (`SqliteStore::report_receipt`).
+3. **Silence is not success.** A receipt that expires unreported is swept to
+   `expired` by the Janitor (`SqliteStore::expire_receipts`, wired into the sweep
+   loop) and counts as an `unknown` — mildly negative for the procedure's
+   effectiveness — so an agent cannot game the stats by running a procedure and
+   staying quiet on failure.
+
+The natural hook points are:
+
+| Hook | Reports |
+|------|---------|
+| `SubagentStop` | the outcome of a subagent that executed a procedure |
+| `Stop` | the outcome of the main agent's procedure run |
+| `PostToolUse` | fine-grained step outcomes during execution |
+
+The store-side capture engine (receipts, report application, expiry) ships in this
+phase and is covered by unit tests. The **transport** a hook calls to reach
+`report_receipt` — a `boswell procedure report <receipt-id> --outcome …` CLI
+subcommand or a gateway endpoint — lands with the other procedure endpoints (a
+later slice); until then these hooks are documented here as the intended shape, not
+installed scripts.
+
 ## The `PostToolUse` HTTP hook in the example
 
 `settings.example.json` also shows a native `type: "http"` hook posting to

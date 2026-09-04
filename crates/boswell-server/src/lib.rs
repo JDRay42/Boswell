@@ -164,6 +164,7 @@ fn spawn_janitor(config: &InstanceConfig, store: Arc<Mutex<SqliteStore>>) {
     );
 
     let manage_procedures = janitor_config.auto_manage_procedures;
+    let expire_receipts = janitor_config.auto_expire_receipts;
 
     tokio::spawn(async move {
         let mut janitor = boswell_janitor::Janitor::new(janitor_config);
@@ -171,7 +172,7 @@ fn spawn_janitor(config: &InstanceConfig, store: Arc<Mutex<SqliteStore>>) {
         loop {
             ticker.tick().await;
             // Hold the lock only for the synchronous sweep (no await inside).
-            let outcome = {
+            let (claim_outcome, procedure_outcome, receipt_outcome) = {
                 let mut guard = store.lock().unwrap();
                 let claim_outcome = janitor.sweep(&mut *guard);
                 // Provenance-aware procedure promotion/demotion (Phase 3, §5.2).
@@ -180,9 +181,15 @@ fn spawn_janitor(config: &InstanceConfig, store: Arc<Mutex<SqliteStore>>) {
                 } else {
                     Ok(0)
                 };
-                (claim_outcome, procedure_outcome)
+                // Expire overdue execution receipts (Phase 5, §3.3).
+                let receipt_outcome = if expire_receipts {
+                    janitor.sweep_receipts(&mut guard)
+                } else {
+                    Ok(0)
+                };
+                (claim_outcome, procedure_outcome, receipt_outcome)
             };
-            match outcome.0 {
+            match claim_outcome {
                 Ok(m) => tracing::info!(
                     "Janitor sweep: {} deleted, {} promoted, {} demoted",
                     m.total_deleted(),
@@ -191,10 +198,15 @@ fn spawn_janitor(config: &InstanceConfig, store: Arc<Mutex<SqliteStore>>) {
                 ),
                 Err(e) => tracing::error!("Janitor sweep failed: {}", e),
             }
-            match outcome.1 {
+            match procedure_outcome {
                 Ok(n) if n > 0 => tracing::info!("Janitor procedure sweep: {} tier changes", n),
                 Ok(_) => {}
                 Err(e) => tracing::error!("Janitor procedure sweep failed: {}", e),
+            }
+            match receipt_outcome {
+                Ok(n) if n > 0 => tracing::info!("Janitor receipt sweep: {} receipts expired", n),
+                Ok(_) => {}
+                Err(e) => tracing::error!("Janitor receipt sweep failed: {}", e),
             }
         }
     });
