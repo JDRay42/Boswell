@@ -27,6 +27,7 @@ pub mod claim;
 pub mod confidence;
 pub mod confidence_computation;
 pub mod decay;
+pub mod goal;
 pub mod namespace;
 pub mod procedure;
 pub mod provenance;
@@ -38,6 +39,10 @@ pub mod traits;
 pub use claim::{Claim, ClaimId};
 pub use confidence::ConfidenceInterval;
 pub use decay::{decay_factor, decayed_confidence, DecayConfig};
+pub use goal::{
+    ChildKind, ChildRef, EdgeRole, ExpandResult, ExpandedCandidate, FactorReading, Goal, GoalEdge,
+    GoalId, TraversalContext,
+};
 pub use namespace::Namespace;
 pub use procedure::{
     BodyFormat, ClaimMatch, ExecutionReceipt, Expect, FailureMode, Outcome, OutcomeReport,

@@ -72,7 +72,7 @@ struct PreconditionCheckDto {
 }
 
 #[derive(Serialize, Deserialize)]
-struct PreconditionDto {
+pub(crate) struct PreconditionDto {
     kind: String,
     description: String,
     check: PreconditionCheckDto,
@@ -97,7 +97,7 @@ impl From<&Precondition> for PreconditionDto {
 }
 
 impl PreconditionDto {
-    fn into_domain(self) -> Result<Precondition, StoreError> {
+    pub(crate) fn into_domain(self) -> Result<Precondition, StoreError> {
         let expect = Expect::parse(&self.check.expect).ok_or_else(|| {
             StoreError::InvalidData(format!(
                 "Unknown precondition expect: {}",
@@ -122,12 +122,12 @@ impl PreconditionDto {
 
 // --- (de)serialization helpers -------------------------------------------------
 
-fn to_json<T: Serialize>(value: &T) -> Result<String, StoreError> {
+pub(crate) fn to_json<T: Serialize>(value: &T) -> Result<String, StoreError> {
     serde_json::to_string(value)
         .map_err(|e| StoreError::InvalidData(format!("JSON serialize failed: {}", e)))
 }
 
-fn from_json<T: for<'de> Deserialize<'de>>(text: &str) -> Result<T, StoreError> {
+pub(crate) fn from_json<T: for<'de> Deserialize<'de>>(text: &str) -> Result<T, StoreError> {
     serde_json::from_str(text)
         .map_err(|e| StoreError::InvalidData(format!("JSON deserialize failed: {}", e)))
 }
@@ -477,7 +477,7 @@ const PROCEDURE_COLUMNS: &str = "id, namespace, name, version, supersedes, is_cu
 
 /// Escape `%`, `_`, and `\` for a `LIKE ... ESCAPE '\'` substring match so that
 /// user-supplied intent text matches literally.
-fn like_escape(input: &str) -> String {
+pub(crate) fn like_escape(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     for ch in input.chars() {
         if matches!(ch, '%' | '_' | '\\') {

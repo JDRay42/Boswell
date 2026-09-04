@@ -188,6 +188,63 @@ CREATE INDEX IF NOT EXISTS idx_procedures_goal ON procedures(goal);
 CREATE INDEX IF NOT EXISTS idx_procedures_namespace ON procedures(namespace);
 CREATE INDEX IF NOT EXISTS idx_procedures_is_current ON procedures(is_current);
 
+-- Goals table - navigational decomposition nodes (procedural memory Phase 2,
+-- per docs/architecture/15-procedural-memory.md §3.2). Skinny by design:
+-- traversal walks these rows, so they carry no children and no executable body.
+-- Children live in the goal_edges table, keyed by parent, so a hop is a single
+-- indexed adjacency read. Goals form a DAG (a goal may be reused under several
+-- parents); acyclicity is enforced on edge insert by the store.
+CREATE TABLE IF NOT EXISTS goals (
+    -- UUIDv7 as 128-bit integer (stored as BLOB for efficient indexing)
+    id BLOB PRIMARY KEY NOT NULL,
+
+    namespace TEXT NOT NULL,
+    name TEXT NOT NULL,
+    intent TEXT NOT NULL,                        -- semantic match key (entry hop)
+    definition_of_done TEXT NOT NULL DEFAULT '[]', -- JSON array of postconditions
+
+    tier TEXT NOT NULL CHECK (tier IN ('ephemeral', 'task', 'project', 'permanent')),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    stale_at INTEGER,
+
+    -- Optional embedding of `intent` for future semantic entry-point match.
+    embedding_vector TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_goals_namespace ON goals(namespace);
+
+-- Goal edges - self-describing decomposition edges (design §3.2, §4.2). Each
+-- edge points at a child that is EITHER a sub-goal OR a procedure, and carries
+-- inline everything a hop needs to filter and rank without fetching the child
+-- row: edge-local preconditions, context_tags, usage_notes, role, and a cached
+-- effectiveness. child_id is polymorphic (goals or procedures), so it has no
+-- foreign key; parent_goal_id cascades from goals.
+CREATE TABLE IF NOT EXISTS goal_edges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    parent_goal_id BLOB NOT NULL,
+    child_kind TEXT NOT NULL CHECK (child_kind IN ('goal', 'procedure')),
+    child_id BLOB NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('accomplish', 'decide')),
+
+    preconditions TEXT NOT NULL DEFAULT '[]',  -- JSON array of precondition objects
+    context_tags TEXT NOT NULL DEFAULT '[]',   -- JSON array of strings
+    usage_notes TEXT NOT NULL DEFAULT '',
+    cached_effectiveness REAL NOT NULL DEFAULT 0.0
+        CHECK (cached_effectiveness >= 0.0 AND cached_effectiveness <= 1.0),
+
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+
+    FOREIGN KEY (parent_goal_id) REFERENCES goals(id) ON DELETE CASCADE,
+
+    -- One edge per (parent, child, role): re-adding updates it in place.
+    UNIQUE(parent_goal_id, child_kind, child_id, role)
+);
+
+CREATE INDEX IF NOT EXISTS idx_goal_edges_parent ON goal_edges(parent_goal_id);
+
 -- Notes on HNSW vector index:
 -- The HNSW index is maintained separately in a memory-mapped file alongside this SQLite database.
 -- The embedding_vector column in the claims table is primarily for reconstruction/debugging.
