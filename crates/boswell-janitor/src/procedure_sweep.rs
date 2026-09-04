@@ -171,6 +171,7 @@ mod tests {
             task_id: None,
             session_id: None,
             timestamp: 1,
+            dev_provider: false,
         }
     }
 

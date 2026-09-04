@@ -1,0 +1,24 @@
+[package]
+name = "boswell-devauth"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+
+# DEVELOPMENT / TESTING ONLY. This crate implements a fake IdentityProvider for
+# exercising Boswell's trust gradient in a sandbox. It is deliberately NOT a
+# dependency of any production binary (e.g. boswell-server), so a production build
+# excludes it entirely (design §7.2). Its constructor also fails closed unless the
+# operator explicitly opts in and is not in a production environment.
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+boswell-domain = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

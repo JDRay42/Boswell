@@ -268,7 +268,12 @@ CREATE TABLE IF NOT EXISTS provenance_stamps (
     assurance TEXT NOT NULL CHECK (assurance IN ('none', 'asserted', 'verified', 'attested')),
     task_id TEXT,
     session_id TEXT,
-    timestamp INTEGER NOT NULL
+    timestamp INTEGER NOT NULL,
+
+    -- Provenance tainting (procedural memory Phase 4, design §7.2): writes authored
+    -- under the development identity adapter are marked so they stay distinguishable
+    -- and sweepable. A real provider leaves this 0.
+    dev_provider INTEGER NOT NULL DEFAULT 0 CHECK (dev_provider IN (0, 1))
 );
 
 CREATE INDEX IF NOT EXISTS idx_provenance_stamps_entity

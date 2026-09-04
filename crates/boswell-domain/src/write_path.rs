@@ -252,6 +252,10 @@ pub struct ProvenanceStamp {
     pub session_id: Option<String>,
     /// When the write happened (Unix ms).
     pub timestamp: u64,
+    /// Whether this write was authored under the development identity adapter
+    /// (`boswell-devauth`, design §7.2). Tainted writes are always distinguishable
+    /// and can be swept; a real provider leaves this `false`.
+    pub dev_provider: bool,
 }
 
 impl ProvenanceStamp {
@@ -341,6 +345,7 @@ mod tests {
             task_id: None,
             session_id: None,
             timestamp: 1,
+            dev_provider: false,
         }
     }
 

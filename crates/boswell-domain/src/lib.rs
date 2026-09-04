@@ -28,6 +28,7 @@ pub mod confidence;
 pub mod confidence_computation;
 pub mod decay;
 pub mod goal;
+pub mod identity;
 pub mod namespace;
 pub mod procedure;
 pub mod provenance;
@@ -43,6 +44,10 @@ pub use decay::{decay_factor, decayed_confidence, DecayConfig};
 pub use goal::{
     ChildKind, ChildRef, EdgeRole, ExpandResult, ExpandedCandidate, FactorReading, Goal, GoalEdge,
     GoalId, TraversalContext,
+};
+pub use identity::{
+    AuthError, AuthorizationPolicy, Credential, DelegationVerdict, IdentityProvider,
+    LocalAuthorizationPolicy, NullIdentityProvider, Principal, PrincipalKind,
 };
 pub use namespace::Namespace;
 pub use procedure::{

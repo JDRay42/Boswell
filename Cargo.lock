@@ -280,6 +280,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "boswell-devauth"
+version = "0.1.0"
+dependencies = [
+ "boswell-domain",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "boswell-domain"
 version = "0.1.0"
 dependencies = [
