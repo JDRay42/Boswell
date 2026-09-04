@@ -255,30 +255,63 @@ impl SqliteStore {
         };
         let stamps = self.get_provenance_stamps("procedure", &procedure_id.to_string())?;
 
-        let mut distinct: std::collections::HashSet<String> = std::collections::HashSet::new();
+        use std::collections::HashSet;
+        let mut distinct_authors: HashSet<String> = HashSet::new();
+        // Provenance-diversity sets (design §8.1): corroboration is measured by the
+        // spread of delegation roots / sessions / evidence, not raw author count,
+        // so a swarm of clones sharing one root cannot manufacture it.
+        let mut writer_roots: HashSet<String> = HashSet::new();
+        let mut all_roots: HashSet<String> = HashSet::new();
+        let mut sessions: HashSet<String> = HashSet::new();
+        let mut evidence_types: HashSet<EvidenceType> = HashSet::new();
         let mut endorsed_max_tier: Option<Tier> = None;
         let mut author_max_tier: Option<Tier> = None;
         let mut best_evidence = EvidenceType::ToolOutput;
         let mut best_assurance = Assurance::None;
+        let mut cross_authority_endorsement = false;
+
+        // The delegation-chain root, falling back to the author when no chain.
+        let root_of = |stamp: &ProvenanceStamp| -> String {
+            stamp
+                .delegation_chain
+                .root()
+                .unwrap_or(stamp.author.as_str())
+                .to_string()
+        };
+
+        // First pass: gather the writer roots (needed for the cross-authority check).
+        for stored in &stamps {
+            if stored.kind == StampKind::Write {
+                writer_roots.insert(root_of(&stored.stamp));
+            }
+        }
 
         for stored in &stamps {
-            best_evidence = best_evidence.stronger(stored.stamp.evidence);
-            best_assurance = best_assurance.stronger(stored.stamp.assurance);
             match stored.kind {
-                StampKind::Write => {
-                    distinct.insert(stored.stamp.author.clone());
-                    author_max_tier = Some(match author_max_tier {
-                        Some(t) => t.max(stored.stamp.authority.max_tier),
-                        None => stored.stamp.authority.max_tier,
-                    });
-                }
-                StampKind::Endorse => {
-                    distinct.insert(stored.stamp.author.clone());
-                    if stored.stamp.authority.can(Op::Endorse) {
+                StampKind::Write | StampKind::Endorse => {
+                    best_evidence = best_evidence.stronger(stored.stamp.evidence);
+                    best_assurance = best_assurance.stronger(stored.stamp.assurance);
+                    distinct_authors.insert(stored.stamp.author.clone());
+                    let root = root_of(&stored.stamp);
+                    all_roots.insert(root.clone());
+                    evidence_types.insert(stored.stamp.evidence);
+                    if let Some(sid) = &stored.stamp.session_id {
+                        sessions.insert(sid.clone());
+                    }
+                    if stored.kind == StampKind::Write {
+                        author_max_tier = Some(match author_max_tier {
+                            Some(t) => t.max(stored.stamp.authority.max_tier),
+                            None => stored.stamp.authority.max_tier,
+                        });
+                    } else if stored.stamp.authority.can(Op::Endorse) {
                         endorsed_max_tier = Some(match endorsed_max_tier {
                             Some(t) => t.max(stored.stamp.authority.max_tier),
                             None => stored.stamp.authority.max_tier,
                         });
+                        // A cross-authority endorsement: from a root no writer shares.
+                        if !writer_roots.contains(&root) {
+                            cross_authority_endorsement = true;
+                        }
                     }
                 }
                 StampKind::Report => {}
@@ -287,7 +320,11 @@ impl SqliteStore {
 
         Ok(Some(CorroborationFacts {
             current_tier: procedure.tier,
-            distinct_authors: distinct.len(),
+            distinct_authors: distinct_authors.len(),
+            distinct_delegation_roots: all_roots.len(),
+            distinct_sessions: sessions.len(),
+            distinct_evidence_types: evidence_types.len(),
+            cross_authority_endorsement,
             endorsed_max_tier,
             author_max_tier: author_max_tier.unwrap_or(procedure.tier),
             best_evidence,
@@ -503,6 +540,107 @@ mod tests {
             timestamp: NOW,
             dev_provider: false,
         }
+    }
+
+    /// Set the delegation-chain root on a stamp (for provenance-diversity tests).
+    fn with_root(mut s: ProvenanceStamp, root: &str) -> ProvenanceStamp {
+        s.delegation_chain = DelegationChain(vec![root.into(), s.author.clone()]);
+        s
+    }
+
+    #[test]
+    fn corroboration_facts_measure_provenance_diversity() {
+        let mut store = store();
+        let proc = procedure("p");
+        // Two writers under *distinct* delegation roots, and an endorser under a
+        // third root distinct from both writers.
+        store
+            .write_procedure_stamped(
+                &proc,
+                Tier::Task,
+                &with_root(
+                    stamp(
+                        "agent:a",
+                        Tier::Task,
+                        &[Op::Write],
+                        EvidenceType::Observed,
+                        Assurance::Verified,
+                    ),
+                    "human:alice",
+                ),
+            )
+            .unwrap();
+        store
+            .write_procedure_stamped(
+                &proc,
+                Tier::Task,
+                &with_root(
+                    stamp(
+                        "agent:b",
+                        Tier::Project,
+                        &[Op::Write],
+                        EvidenceType::Reported,
+                        Assurance::Verified,
+                    ),
+                    "human:bob",
+                ),
+            )
+            .unwrap();
+        store
+            .endorse_procedure(
+                proc.id,
+                &with_root(
+                    stamp(
+                        "project:lead",
+                        Tier::Project,
+                        &[Op::Endorse],
+                        EvidenceType::Observed,
+                        Assurance::Attested,
+                    ),
+                    "org:other",
+                ),
+            )
+            .unwrap();
+
+        let facts = store
+            .corroboration_facts_for_procedure(proc.id, NOW)
+            .unwrap()
+            .unwrap();
+        assert_eq!(facts.distinct_delegation_roots, 3);
+        assert_eq!(facts.distinct_evidence_types, 2); // observed + reported
+        assert!(facts.cross_authority_endorsement);
+    }
+
+    #[test]
+    fn clone_swarm_sharing_one_root_is_not_diverse() {
+        let mut store = store();
+        let proc = procedure("p");
+        // Distinct author identities, but all under the same delegation root.
+        for author in ["agent:c1", "agent:c2", "agent:c3"] {
+            store
+                .write_procedure_stamped(
+                    &proc,
+                    Tier::Task,
+                    &with_root(
+                        stamp(
+                            author,
+                            Tier::Task,
+                            &[Op::Write],
+                            EvidenceType::ToolOutput,
+                            Assurance::Asserted,
+                        ),
+                        "human:puppeteer",
+                    ),
+                )
+                .unwrap();
+        }
+        let facts = store
+            .corroboration_facts_for_procedure(proc.id, NOW)
+            .unwrap()
+            .unwrap();
+        assert_eq!(facts.distinct_authors, 3);
+        assert_eq!(facts.distinct_delegation_roots, 1); // the anti-Sybil signal
+        assert!(!facts.cross_authority_endorsement);
     }
 
     #[test]

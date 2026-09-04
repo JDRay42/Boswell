@@ -18,7 +18,7 @@
 use crate::Tier;
 
 /// The trust-type of the evidence behind a write (design §5.1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EvidenceType {
     /// Directly observed by the author.
     Observed,
@@ -285,8 +285,24 @@ pub fn entry_tier(requested: Tier, stamp: &ProvenanceStamp) -> Tier {
 pub struct CorroborationFacts {
     /// The entry's current tier.
     pub current_tier: Tier,
-    /// Count of distinct authors who wrote or endorsed the entry.
+    /// Count of distinct author identities who wrote or endorsed the entry. Kept
+    /// for reporting, but **not** the corroboration signal — it is gameable by
+    /// correlated clones (design §8, #1); use `distinct_delegation_roots`.
     pub distinct_authors: usize,
+    /// Count of distinct **delegation-chain roots** across the entry's stamps —
+    /// the Sybil-resistant corroboration signal (design §8.1, "provenance
+    /// diversity"): clones sharing one on-behalf-of root count once.
+    pub distinct_delegation_roots: usize,
+    /// Count of distinct sessions across the entry's stamps (provenance diversity:
+    /// corroboration spread over time, not one burst).
+    pub distinct_sessions: usize,
+    /// Count of distinct evidence types across the entry's stamps (provenance
+    /// diversity: not all the same weak evidence).
+    pub distinct_evidence_types: usize,
+    /// Whether some endorsement came from a delegation root distinct from every
+    /// writer's root — the cross-authority check required for top-tier promotion
+    /// (design §8.1).
+    pub cross_authority_endorsement: bool,
     /// Highest authority tier among endorsers (holders of `Endorse`), if any.
     pub endorsed_max_tier: Option<Tier>,
     /// Highest authority `max_tier` among the entry's writers.
@@ -396,6 +412,10 @@ mod tests {
         let facts = CorroborationFacts {
             current_tier: Tier::Task,
             distinct_authors: 2,
+            distinct_delegation_roots: 2,
+            distinct_sessions: 2,
+            distinct_evidence_types: 1,
+            cross_authority_endorsement: true,
             endorsed_max_tier: Some(Tier::Project),
             author_max_tier: Tier::Task,
             best_evidence: EvidenceType::Observed,
@@ -413,6 +433,10 @@ mod tests {
         let facts = CorroborationFacts {
             current_tier: Tier::Task,
             distinct_authors: 5,
+            distinct_delegation_roots: 2,
+            distinct_sessions: 2,
+            distinct_evidence_types: 1,
+            cross_authority_endorsement: true,
             endorsed_max_tier: Some(Tier::Permanent),
             author_max_tier: Tier::Permanent,
             best_evidence: EvidenceType::ToolOutput, // caps at task

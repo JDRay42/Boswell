@@ -19,8 +19,10 @@ use boswell_domain::{CorroborationFacts, Tier};
 /// Thresholds governing tier promotion.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PromotionConfig {
-    /// Distinct authors required to corroborate a climb (design §5.2).
-    pub min_distinct_authors: usize,
+    /// Distinct **delegation-chain roots** required to corroborate a climb
+    /// (design §5.2, §8.1). Measured by provenance diversity, not raw author
+    /// count, so correlated clones cannot manufacture corroboration.
+    pub min_distinct_roots: usize,
     /// Effectiveness at or above which a procedure may climb (0.0..=1.0).
     pub effectiveness_threshold: f64,
 }
@@ -28,7 +30,7 @@ pub struct PromotionConfig {
 impl Default for PromotionConfig {
     fn default() -> Self {
         Self {
-            min_distinct_authors: 2,
+            min_distinct_roots: 2,
             effectiveness_threshold: 0.8,
         }
     }
@@ -89,10 +91,22 @@ impl PromotionGatekeeper {
         let endorsed = facts
             .endorsed_max_tier
             .is_some_and(|t| t.rank() >= next.rank());
-        let corroborated = facts.distinct_authors >= self.config.min_distinct_authors;
+        // Corroboration is measured by provenance diversity, not raw author count,
+        // so a swarm of clones sharing one delegation root cannot manufacture it
+        // (design §8.1, the Sybil "pragmatic proxy").
+        let corroborated = facts.distinct_delegation_roots >= self.config.min_distinct_roots;
         let effective = facts.effectiveness >= self.config.effectiveness_threshold;
 
-        if endorsed || corroborated || effective {
+        // Top-tier (permanent) promotion additionally requires a cross-authority
+        // endorsement — a different org branch signing off (design §8.1). Below
+        // top tier, any of endorsement / corroboration / effectiveness suffices.
+        if next == Tier::Permanent {
+            if endorsed && facts.cross_authority_endorsement {
+                PromotionDecision::Climb(next)
+            } else {
+                PromotionDecision::Hold
+            }
+        } else if endorsed || corroborated || effective {
             PromotionDecision::Climb(next)
         } else {
             PromotionDecision::Hold
@@ -111,6 +125,10 @@ mod tests {
         CorroborationFacts {
             current_tier: Tier::Task,
             distinct_authors: 1,
+            distinct_delegation_roots: 1,
+            distinct_sessions: 1,
+            distinct_evidence_types: 1,
+            cross_authority_endorsement: false,
             endorsed_max_tier: None,
             author_max_tier: Tier::Permanent,
             best_evidence: EvidenceType::Observed,
@@ -129,11 +147,23 @@ mod tests {
     }
 
     #[test]
-    fn climbs_on_distinct_author_corroboration() {
+    fn climbs_on_distinct_root_corroboration() {
         let gk = PromotionGatekeeper::default();
         let mut f = facts();
-        f.distinct_authors = 2;
+        f.distinct_delegation_roots = 2;
         assert_eq!(gk.evaluate(&f), PromotionDecision::Climb(Tier::Project));
+    }
+
+    #[test]
+    fn clone_swarm_sharing_one_root_does_not_corroborate() {
+        // Nine distinct author *identities* but a single delegation root — the
+        // Sybil case (design §8, #1). Raw author count would climb; provenance
+        // diversity does not.
+        let gk = PromotionGatekeeper::default();
+        let mut f = facts();
+        f.distinct_authors = 9;
+        f.distinct_delegation_roots = 1;
+        assert_eq!(gk.evaluate(&f), PromotionDecision::Hold);
     }
 
     #[test]
@@ -156,7 +186,7 @@ mod tests {
     fn climb_blocked_by_ceiling_even_when_corroborated() {
         let gk = PromotionGatekeeper::default();
         let mut f = facts();
-        f.distinct_authors = 9;
+        f.distinct_delegation_roots = 9;
         // tool_output caps the ceiling at task, so a task entry cannot climb.
         f.best_evidence = EvidenceType::ToolOutput;
         assert_eq!(gk.evaluate(&f), PromotionDecision::Hold);
@@ -167,7 +197,7 @@ mod tests {
         let gk = PromotionGatekeeper::default();
         let mut f = facts();
         f.current_tier = Tier::Task;
-        f.distinct_authors = 9;
+        f.distinct_delegation_roots = 9;
         f.best_assurance = Assurance::Asserted; // ceiling task
         f.best_evidence = EvidenceType::Observed;
         f.author_max_tier = Tier::Permanent;
@@ -200,7 +230,7 @@ mod tests {
         let gk = PromotionGatekeeper::default();
         let mut f = facts();
         f.current_tier = Tier::Project;
-        f.distinct_authors = 9; // would climb
+        f.distinct_delegation_roots = 9; // would climb
         f.failing = true; // but failing wins
         assert_eq!(gk.evaluate(&f), PromotionDecision::Fall(Tier::Task));
     }
@@ -219,7 +249,27 @@ mod tests {
         let gk = PromotionGatekeeper::default();
         let mut f = facts();
         f.current_tier = Tier::Permanent;
-        f.distinct_authors = 9;
+        f.distinct_delegation_roots = 9;
         assert_eq!(gk.evaluate(&f), PromotionDecision::Hold);
+    }
+
+    #[test]
+    fn top_tier_requires_cross_authority_endorsement() {
+        let gk = PromotionGatekeeper::default();
+        let mut f = facts();
+        f.current_tier = Tier::Project; // next is Permanent (top tier)
+        f.author_max_tier = Tier::Permanent;
+        f.endorsed_max_tier = Some(Tier::Permanent);
+        f.distinct_delegation_roots = 9;
+        f.effectiveness = 0.99;
+
+        // Everything else says climb, but without a cross-authority endorsement a
+        // top-tier promotion is held (design §8.1).
+        f.cross_authority_endorsement = false;
+        assert_eq!(gk.evaluate(&f), PromotionDecision::Hold);
+
+        // A different org branch signs off -> climb to permanent.
+        f.cross_authority_endorsement = true;
+        assert_eq!(gk.evaluate(&f), PromotionDecision::Climb(Tier::Permanent));
     }
 }
