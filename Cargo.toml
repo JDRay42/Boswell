@@ -15,6 +15,7 @@ members = [
     "crates/boswell-cli",
     "crates/boswell-server",
     "crates/boswell-gateway",
+    "crates/boswell-devauth",
 ]
 
 [workspace.package]
@@ -46,6 +47,7 @@ boswell-gatekeeper = { path = "crates/boswell-gatekeeper" }
 boswell-janitor = { path = "crates/boswell-janitor" }
 boswell-synthesizer = { path = "crates/boswell-synthesizer" }
 boswell-mcp = { path = "crates/boswell-mcp" }
+boswell-devauth = { path = "crates/boswell-devauth" }
 
 # Common dependencies (version centralization)
 thiserror = "2.0"

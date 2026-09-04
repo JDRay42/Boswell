@@ -187,7 +187,31 @@ impl SqliteStore {
             "CREATE INDEX IF NOT EXISTS idx_claims_source_type ON claims(source_type);",
         )?;
 
+        // Migration: add `dev_provider` to provenance_stamps if it is missing
+        // (procedural memory Phase 4). The table itself is created by schema.sql;
+        // this only matters for a database created by the Phase 3 schema.
+        if self.table_exists("provenance_stamps")?
+            && !self.column_exists("provenance_stamps", "dev_provider")?
+        {
+            self.conn.execute_batch(
+                "ALTER TABLE provenance_stamps ADD COLUMN dev_provider INTEGER NOT NULL DEFAULT 0;",
+            )?;
+        }
+
         Ok(())
+    }
+
+    /// Check whether `table` exists in the SQLite catalog.
+    fn table_exists(&self, table: &str) -> Result<bool, StoreError> {
+        let found: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                params![table],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(found.is_some())
     }
 
     /// Check whether `column` exists on `table` via `PRAGMA table_info`.

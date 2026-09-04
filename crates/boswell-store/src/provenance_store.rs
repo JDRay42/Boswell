@@ -334,8 +334,8 @@ impl SqliteStore {
             "INSERT INTO provenance_stamps (
                 entity_kind, entity_id, stamp_kind, author, delegation_chain,
                 authority_namespaces, authority_max_tier, authority_ops,
-                evidence, assurance, task_id, session_id, timestamp
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                evidence, assurance, task_id, session_id, timestamp, dev_provider
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 entity_kind,
                 entity_id,
@@ -350,6 +350,7 @@ impl SqliteStore {
                 &stamp.task_id,
                 &stamp.session_id,
                 stamp.timestamp as i64,
+                stamp.dev_provider as i64,
             ],
         )?;
         Ok(())
@@ -364,7 +365,7 @@ impl SqliteStore {
         let mut stmt = self.conn.prepare(
             "SELECT stamp_kind, author, delegation_chain, authority_namespaces, \
              authority_max_tier, authority_ops, evidence, assurance, task_id, session_id, \
-             timestamp FROM provenance_stamps WHERE entity_kind = ?1 AND entity_id = ?2 \
+             timestamp, dev_provider FROM provenance_stamps WHERE entity_kind = ?1 AND entity_id = ?2 \
              ORDER BY id",
         )?;
         let rows = stmt
@@ -418,6 +419,7 @@ impl SqliteStore {
                     task_id: row.get("task_id")?,
                     session_id: row.get("session_id")?,
                     timestamp: row.get::<_, i64>("timestamp")? as u64,
+                    dev_provider: row.get::<_, i64>("dev_provider")? != 0,
                 },
             })
         };
@@ -498,6 +500,7 @@ mod tests {
             task_id: Some("t1".into()),
             session_id: None,
             timestamp: NOW,
+            dev_provider: false,
         }
     }
 
@@ -527,6 +530,26 @@ mod tests {
         assert_eq!(stamps.len(), 1);
         assert_eq!(stamps[0].kind, StampKind::Write);
         assert_eq!(stamps[0].stamp.author, "agent:worker");
+    }
+
+    #[test]
+    fn dev_provider_taint_roundtrips() {
+        let mut store = store();
+        let proc = procedure("p");
+        let mut s = stamp(
+            "agent:interloper",
+            Tier::Ephemeral,
+            &[Op::Write],
+            EvidenceType::ToolOutput,
+            Assurance::Asserted,
+        );
+        s.dev_provider = true;
+        store
+            .write_procedure_stamped(&proc, Tier::Ephemeral, &s)
+            .unwrap();
+        let stamps = store.procedure_provenance(proc.id).unwrap();
+        assert_eq!(stamps.len(), 1);
+        assert!(stamps[0].stamp.dev_provider);
     }
 
     #[test]
