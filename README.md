@@ -158,6 +158,54 @@ requires enabling `[extraction]` in the instance config. See the full
 [HTTP API guide](docs/integrations/http-api.md) for endpoints, auth scopes, the
 claim DTO, and deployment.
 
+### Navigating procedural memory from the CLI
+
+Beyond claims, Boswell stores **procedures** (how-tos) grouped under **goals**
+(how work decomposes). The CLI walks that structure.
+
+Traversal is stateless — you hold the cursor. Find an entry goal, expand one
+level, pick a child, expand again, until a candidate is a procedure:
+
+```bash
+# Find where to start
+boswell goal list --intent-contains breakfast
+
+# One hop: ranked candidates, the procedures that help you choose, and the
+# claims that were read to filter them
+boswell goal expand <goal-id> --context time:quick,ldl:low
+```
+
+Each candidate's `Kind` column says what to do next: `goal` means expand again,
+`procedure` means it is a runnable leaf. Expanding is free and creates no
+obligation.
+
+Retrieving a procedure is **not** free. Every procedure handed out carries an
+execution receipt, and whoever it was issued to must answer it:
+
+```bash
+# Issues a receipt per procedure — you are now on the hook
+boswell procedure list --goal goal:person:jd/cook-eggs
+
+# Answer it when the run finishes
+boswell procedure report <receipt-id> --outcome success
+boswell procedure report <receipt-id> --outcome failure --failure-mode executor-error
+```
+
+An unanswered receipt counts as `unknown` against the procedure — silence is not
+success, so an agent cannot game its stats by running something and staying quiet
+about the failure. The `--failure-mode` matters: `executor-error` blames the
+runner and leaves the procedure's counters alone, while `bad-result` and
+`step-failed` count against the how-to itself.
+
+Reports are gatekept. A negative report from a low-assurance reporter against a
+shared, project-tier procedure is recorded but **quarantined** rather than
+applied, so one executor cannot tank a how-to the whole team depends on. The CLI
+tells you when that happens.
+
+See [the procedural-memory design](docs/architecture/15-procedural-memory.md) for
+the model, and the [HTTP API guide](docs/integrations/http-api.md) for the same
+surface over HTTP.
+
 ## Project Status
 
 🚧 **In Development** — core lifecycle complete end-to-end.

@@ -76,6 +76,28 @@ async fn run() -> boswell_cli::Result<()> {
                 Command::Search(args) => {
                     commands::execute_search(args, &mut client, &formatter).await?;
                 }
+                Command::Goal(args) => {
+                    commands::execute_goal(
+                        args.action,
+                        &mut client,
+                        &formatter,
+                        profile.namespace.clone(),
+                    )
+                    .await?;
+                }
+                Command::Procedure(args) => {
+                    // The profile's instance id names who is on the hook when
+                    // `--as` is not given: a receipt with nobody accountable for
+                    // reporting is not a contract (design §3.3).
+                    commands::execute_procedure(
+                        args.action,
+                        &mut client,
+                        &formatter,
+                        profile.namespace.clone(),
+                        &profile.instance_id,
+                    )
+                    .await?;
+                }
                 _ => unreachable!(),
             }
         }
