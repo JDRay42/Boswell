@@ -8,10 +8,10 @@ use boswell_grpc::conversions::{
 };
 use boswell_grpc::proto::{
     bos_well_service_client::BosWellServiceClient, health_check_response, AssertRequest,
-    AssertResponse, ConfidenceInterval, DispensedProcedure as GrpcDispensedProcedure,
-    ExtractRequest, ExtractResponse, ForgetRequest, ForgetResponse, GetClaimRequest,
-    GetClaimResponse, GetProcedureRequest, GetProcedureResponse, GetRelationshipsRequest,
-    GetRelationshipsResponse, HealthCheckRequest, HealthCheckResponse, LearnRequest, LearnResponse,
+    AssertResponse, ConfidenceInterval, ExtractRequest, ExtractResponse, ForgetRequest,
+    ForgetResponse, GetClaimRequest, GetClaimResponse, GetProcedureRequest, GetProcedureResponse,
+    GetRelationshipsRequest, GetRelationshipsResponse, HealthCheckRequest, HealthCheckResponse,
+    IssuedProcedure as GrpcIssuedProcedure, LearnRequest, LearnResponse,
     QueryFilter as GrpcQueryFilter, QueryMode as GrpcQueryMode, QueryProceduresRequest,
     QueryProceduresResponse, QueryRequest, QueryResponse, ReportOutcomeRequest,
     ReportOutcomeResponse, SearchRequest, SearchResponse, Tier as GrpcTier,
@@ -22,7 +22,7 @@ use tonic::transport::Channel;
 /// call (design §4.1).
 ///
 /// `issued_to` is required: it names the principal that takes on the reporting
-/// obligation for every procedure the call dispenses.
+/// obligation for every procedure the call issues.
 #[derive(Debug, Clone, Default)]
 pub struct ProcedureQuerySpec {
     /// The principal the execution contracts are issued to.
@@ -71,23 +71,23 @@ impl ProcedureQuerySpec {
 /// [`report_outcome`](BoswellClient::report_outcome) before
 /// `contract.expires_at`, or the run counts as `unknown` against the procedure.
 #[derive(Debug, Clone)]
-pub struct DispensedProcedure {
+pub struct IssuedProcedure {
     /// The procedure to execute.
     pub procedure: Procedure,
-    /// The reporting contract issued for this dispense.
+    /// The reporting contract issued with the procedure.
     pub contract: ExecutionReceipt,
 }
 
-fn dispensed_from_proto(d: &GrpcDispensedProcedure) -> Result<DispensedProcedure, SdkError> {
+fn issued_from_proto(d: &GrpcIssuedProcedure) -> Result<IssuedProcedure, SdkError> {
     let procedure = d
         .procedure
         .as_ref()
-        .ok_or_else(|| SdkError::GrpcError("dispensed procedure missing its body".to_string()))?;
+        .ok_or_else(|| SdkError::GrpcError("issued procedure missing its body".to_string()))?;
     let contract = d.contract.as_ref().ok_or_else(|| {
-        SdkError::GrpcError("dispensed procedure missing its execution contract".to_string())
+        SdkError::GrpcError("issued procedure missing its execution contract".to_string())
     })?;
 
-    Ok(DispensedProcedure {
+    Ok(IssuedProcedure {
         procedure: procedure_from_proto(procedure)
             .map_err(|e| SdkError::GrpcError(format!("Failed to convert procedure: {}", e)))?,
         contract: contract_from_proto(contract)
@@ -617,7 +617,7 @@ impl BoswellClient {
     pub async fn query_procedures(
         &mut self,
         query: ProcedureQuerySpec,
-    ) -> Result<Vec<DispensedProcedure>, SdkError> {
+    ) -> Result<Vec<IssuedProcedure>, SdkError> {
         let mut retried = false;
 
         loop {
@@ -639,11 +639,7 @@ impl BoswellClient {
             match client.query_procedures(request).await {
                 Ok(r) => {
                     let response: QueryProceduresResponse = r.into_inner();
-                    return response
-                        .procedures
-                        .iter()
-                        .map(dispensed_from_proto)
-                        .collect();
+                    return response.procedures.iter().map(issued_from_proto).collect();
                 }
                 Err(e) if matches!(e.code(), tonic::Code::Unauthenticated) && !retried => {
                     self.reconnect().await?;
@@ -668,7 +664,7 @@ impl BoswellClient {
         namespace_scope: Option<String>,
         task_id: Option<String>,
         session_id: Option<String>,
-    ) -> Result<Option<DispensedProcedure>, SdkError> {
+    ) -> Result<Option<IssuedProcedure>, SdkError> {
         let mut retried = false;
 
         loop {
@@ -688,7 +684,7 @@ impl BoswellClient {
                 Ok(r) => {
                     let response: GetProcedureResponse = r.into_inner();
                     return match response.procedure.filter(|_| response.found) {
-                        Some(d) => dispensed_from_proto(&d).map(Some),
+                        Some(d) => issued_from_proto(&d).map(Some),
                         None => Ok(None),
                     };
                 }

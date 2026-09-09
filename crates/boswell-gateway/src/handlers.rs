@@ -854,14 +854,14 @@ pub struct ProcedureQueryParams {
     session_id: Option<String>,
 }
 
-/// JSON representation of a dispensed procedure and its execution contract.
+/// JSON representation of an issued procedure and its execution contract.
 #[derive(Debug, Serialize)]
-pub struct DispensedProcedureDto {
+pub struct IssuedProcedureDto {
     procedure: Value,
     contract: Value,
 }
 
-fn dispensed_to_dto(d: &boswell_sdk::DispensedProcedure) -> DispensedProcedureDto {
+fn issued_procedure_to_dto(d: &boswell_sdk::IssuedProcedure) -> IssuedProcedureDto {
     let p = &d.procedure;
     let c = &d.contract;
 
@@ -898,7 +898,7 @@ fn dispensed_to_dto(d: &boswell_sdk::DispensedProcedure) -> DispensedProcedureDt
         })
         .collect();
 
-    DispensedProcedureDto {
+    IssuedProcedureDto {
         procedure: json!({
             "id": p.id.to_string(),
             "namespace": p.namespace,
@@ -950,7 +950,7 @@ fn dispensed_to_dto(d: &boswell_sdk::DispensedProcedure) -> DispensedProcedureDt
 
 /// `GET /v1/procedures` — retrieve procedures for a goal/intent.
 ///
-/// Requires the `read` scope: dispensing is a read of memory. The receipt each
+/// Requires the `read` scope: issuing a procedure is a read of memory. The receipt each
 /// procedure carries is server-side bookkeeping, not caller-authored content —
 /// but it *is* an obligation: the caller must answer it via
 /// [`report_outcome`] before it expires, or it counts as `unknown` against the
@@ -978,9 +978,9 @@ pub async fn query_procedures(
 
     let mut client = state.client().lock().await;
     client.ensure_connected().await?;
-    let dispensed = client.query_procedures(spec).await?;
+    let issued = client.query_procedures(spec).await?;
 
-    let procedures: Vec<DispensedProcedureDto> = dispensed.iter().map(dispensed_to_dto).collect();
+    let procedures: Vec<IssuedProcedureDto> = issued.iter().map(issued_procedure_to_dto).collect();
     let count = procedures.len();
     Ok(Json(json!({ "procedures": procedures, "count": count })))
 }
@@ -1000,7 +1000,7 @@ pub async fn get_procedure(
     // out-of-scope procedure *before* issuing a receipt for it — otherwise a
     // cross-namespace probe would leave an unanswerable obligation whose expiry
     // counts against someone else's procedure.
-    let dispensed = client
+    let issued = client
         .get_procedure(
             &id,
             &ctx.key_id,
@@ -1010,8 +1010,8 @@ pub async fn get_procedure(
         )
         .await?;
 
-    match dispensed {
-        Some(d) => Ok(Json(json!(dispensed_to_dto(&d)))),
+    match issued {
+        Some(d) => Ok(Json(json!(issued_procedure_to_dto(&d)))),
         None => Err(ApiError::not_found(format!("no procedure with id {}", id))),
     }
 }
