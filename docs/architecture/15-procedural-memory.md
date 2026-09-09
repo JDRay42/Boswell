@@ -644,32 +644,22 @@ adversary who already controls the host.
   Together they make a bad actor's damage bounded and reversible, which is what lets us accept an
   imperfect Sybil defense.
 
-## 9. Suggested phasing
+## 9. Build status
 
-1. `Procedure` entity + store + prose executor; retrieval by `goal`/intent + precondition
-   filter; `expand`/rank for procedure siblings. (Read path, single level.)
-2. `Goal` entity + edges + recursive `expand(node, context)`; decision-aid `role`.
-3. Provenance stamp + authority-scoped entry tiers; wire Gatekeeper/Janitor to promotion.
-4. `IdentityProvider` port + assurance-gated ceilings; **devAuth** adapter.
-5. Effectiveness feedback capture (via hooks: `SubagentStop`/`Stop`/`PostToolUse`).
-6. Tackle §8 as research: attribution, Sybil-weighting, procedure learning.
-7. Transport, so the loop is reachable from outside the process:
-   - **7a (done).** Procedure retrieval + receipt reporting over gRPC, the SDK
-     and the gateway — `QueryProcedures`/`GetProcedure`/`ReportOutcome`, and
-     `GET /v1/procedures`, `GET /v1/procedures/{id}`,
-     `POST /v1/receipts/{id}/report`. Retrieval issues the execution receipt;
-     hooks can now close the loop. See `docs/integrations/http-api.md`.
-   - **7b (done).** Goals and `expand` over the same three layers —
-     `QueryGoals`/`GetGoal`/`Expand`, and `GET /v1/goals`, `GET /v1/goals/{id}`,
-     `GET /v1/goals/{id}/expand` — plus CLI commands and the devAuth
-     `X-Boswell-Auth` marker. Traversal issues **no** receipt: only retrieving a
-     leaf procedure for execution creates a reporting obligation. Goal
-     *authoring* over the wire is deliberately out of scope, for the same reason
-     procedure authoring was in 7a — it is a §5 gatekept, provenance-stamped
-     write, not a read. Also: CLI commands (`boswell goal …`, `boswell procedure …`), and
-     the `IdentityProvider` port wired through the transport so a reporter's assurance
-     comes from an identity backend instead of being hardcoded to `none` — which is what
-     makes §7.1's four sample identities behave differently from one another.
+Deliberately not recorded here. Status for every slice of this design — shipped, in
+flight, open, and deferred with its reason — lives in
+[`docs/development/roadmap.md`](../development/roadmap.md), which is the single source of
+truth for where Boswell stands.
+
+This section previously carried its own seven-phase list. It and the roadmap did not
+reference each other in either direction, which is precisely how the two drifted apart:
+work recorded in one was invisible from the other, and the roadmap ended up describing a
+claims-only system while this design's entire build went unmentioned there. A design
+document that also tracks status is a second place to look, and a second place to look is
+a second place to be wrong.
+
+What stays here is the design: the model (§3, §4), the trust and provenance rules (§5–§7),
+and the open problems with what was measured against them (§8).
 
 ## 10. Relationship to existing components
 

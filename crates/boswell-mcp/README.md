@@ -357,4 +357,4 @@ MIT OR Apache-2.0
 
 - [MCP Specification](https://modelcontextprotocol.io/)
 - [Boswell Architecture](../../docs/architecture/)
-- [Phase 3 Checklist](../../docs/development/phase-3-checklist.md)
+- [Roadmap](../../docs/development/roadmap.md)
