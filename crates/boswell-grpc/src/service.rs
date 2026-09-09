@@ -56,7 +56,7 @@ pub struct BosWellServiceImpl<S: ClaimStore> {
     receipt_ttl_ms: u64,
 }
 
-/// How long a dispensed procedure's execution contract stays open before it
+/// How long an issued procedure's execution contract stays open before it
 /// expires unreported (and counts as `unknown` — "silence is not success",
 /// design §3.3). One hour by default; override with
 /// [`BosWellServiceImpl::with_receipt_ttl_ms`].
@@ -81,13 +81,12 @@ impl<S: ClaimStore> BosWellServiceImpl<S> {
         self
     }
 
-    /// Issue and persist an execution contract for a procedure about to be
-    /// handed out (design §3.3).
+    /// Issue a procedure: persist an execution contract for it (design §3.3).
     ///
-    /// Every dispensed procedure gets one: retrieval is what creates the
-    /// obligation to report, so the receipt is written before the procedure
+    /// Every issued procedure gets one — retrieval is what creates the
+    /// obligation to report — so the receipt is written before the procedure
     /// leaves the process.
-    fn dispense<P>(
+    fn issue<P>(
         &self,
         store: &mut P,
         procedure: &boswell_domain::Procedure,
@@ -551,9 +550,9 @@ where
             .query_procedures(&query, now)
             .map_err(|e| Status::internal(format!("Failed to query procedures: {:?}", e)))?;
 
-        let mut dispensed = Vec::with_capacity(procedures.len());
+        let mut issued = Vec::with_capacity(procedures.len());
         for procedure in &procedures {
-            let contract = self.dispense(
+            let contract = self.issue(
                 &mut *store,
                 procedure,
                 issued_to,
@@ -561,17 +560,17 @@ where
                 req.session_id.clone(),
                 now,
             )?;
-            dispensed.push(DispensedProcedure {
+            issued.push(IssuedProcedure {
                 procedure: Some(procedure_to_proto(procedure)),
                 contract: Some(contract),
             });
         }
 
-        let count = dispensed.len() as i32;
+        let count = issued.len() as i32;
         Ok(Response::new(QueryProceduresResponse {
-            procedures: dispensed,
+            procedures: issued,
             count,
-            message: format!("{} procedure(s) dispensed", count),
+            message: format!("{} procedure(s) issued", count),
         }))
     }
 
@@ -595,7 +594,7 @@ where
             .get_procedure(id)
             .map_err(|e| Status::internal(format!("Failed to get procedure: {:?}", e)))?;
 
-        // Scope is checked before dispensing, not after: issuing a receipt for a
+        // Scope is checked before the receipt is issued, not after: issuing one for a
         // procedure the caller may not see would leave an obligation nobody can
         // answer, and the resulting expiry would count as `unknown` against
         // another namespace's procedure.
@@ -610,7 +609,7 @@ where
             }
         };
 
-        let contract = self.dispense(
+        let contract = self.issue(
             &mut *store,
             &procedure,
             issued_to,
@@ -621,11 +620,11 @@ where
 
         Ok(Response::new(GetProcedureResponse {
             found: true,
-            procedure: Some(DispensedProcedure {
+            procedure: Some(IssuedProcedure {
                 procedure: Some(procedure_to_proto(&procedure)),
                 contract: Some(contract),
             }),
-            message: "Procedure dispensed".to_string(),
+            message: "Procedure issued".to_string(),
         }))
     }
 
@@ -697,7 +696,7 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
-/// Reject a dispense request that names no principal: an execution contract with
+/// Reject a request that names no principal: an execution contract with
 /// nobody on the hook for reporting is not a contract (design §3.3).
 fn require_issued_to(issued_to: &str) -> Result<&str, Status> {
     if issued_to.trim().is_empty() {
@@ -1244,7 +1243,7 @@ mod tests {
             let mut store = SqliteStore::new(":memory:", false, 0).unwrap();
 
             // The fixture procedure is gated on "jd has eggs"; the store filters
-            // dispensing on preconditions, so the backing claim has to exist for
+            // issuing on preconditions, so the backing claim has to exist for
             // the procedure to be retrievable at all.
             store
                 .assert_claim(Claim::new(
@@ -1343,11 +1342,11 @@ mod tests {
             }
         }
 
-        /// Retrieval hands back the procedure *and* a contract naming the
-        /// principal on the hook — the obligation is created at dispense time
-        /// (design §3.3), not when the executor feels like opting in.
+        /// Retrieval returns the procedure *and* a contract naming the
+        /// principal on the hook — the obligation is created when the store
+        /// issues the procedure (design §3.3), not when the executor opts in.
         #[tokio::test]
-        async fn dispensing_issues_an_execution_contract() {
+        async fn issuing_a_procedure_creates_a_contract() {
             let service = service_with(vec![mk("omelette", DomainTierEnum::Task)]);
 
             let resp = service
@@ -1357,22 +1356,19 @@ mod tests {
                 .into_inner();
 
             assert_eq!(resp.count, 1);
-            let dispensed = &resp.procedures[0];
-            let contract = dispensed.contract.as_ref().unwrap();
+            let issued = &resp.procedures[0];
+            let contract = issued.contract.as_ref().unwrap();
             assert_eq!(contract.issued_to, "agent:cook-1");
             assert_eq!(contract.task_id.as_deref(), Some("task-1"));
             assert_eq!(contract.session_id.as_deref(), Some("session-1"));
             assert!(contract.expires_at > contract.issued_at);
-            assert_eq!(
-                contract.procedure_id,
-                dispensed.procedure.as_ref().unwrap().id
-            );
+            assert_eq!(contract.procedure_id, issued.procedure.as_ref().unwrap().id);
         }
 
-        /// A dispense with nobody named is not a contract, so it is rejected
+        /// A procedure issued to nobody is not a contract, so it is rejected
         /// rather than silently issuing an unanswerable receipt.
         #[tokio::test]
-        async fn dispensing_requires_a_principal() {
+        async fn issuing_requires_a_principal() {
             let service = service_with(vec![mk("omelette", DomainTierEnum::Task)]);
 
             let err = service
@@ -1391,12 +1387,12 @@ mod tests {
             let procedure_id = procedure.id;
             let service = service_with(vec![procedure]);
 
-            let dispensed = service
+            let issued = service
                 .query_procedures(Request::new(query_req("agent:cook-1")))
                 .await
                 .unwrap()
                 .into_inner();
-            let receipt_id = dispensed.procedures[0]
+            let receipt_id = issued.procedures[0]
                 .contract
                 .as_ref()
                 .unwrap()
@@ -1428,12 +1424,12 @@ mod tests {
         async fn a_receipt_can_only_be_answered_once() {
             let service = service_with(vec![mk("omelette", DomainTierEnum::Task)]);
 
-            let dispensed = service
+            let issued = service
                 .query_procedures(Request::new(query_req("agent:cook-1")))
                 .await
                 .unwrap()
                 .into_inner();
-            let receipt_id = dispensed.procedures[0]
+            let receipt_id = issued.procedures[0]
                 .contract
                 .as_ref()
                 .unwrap()
@@ -1465,12 +1461,12 @@ mod tests {
             let procedure_id = procedure.id;
             let service = service_with(vec![procedure]);
 
-            let dispensed = service
+            let issued = service
                 .query_procedures(Request::new(query_req("agent:cook-1")))
                 .await
                 .unwrap()
                 .into_inner();
-            let receipt_id = dispensed.procedures[0]
+            let receipt_id = issued.procedures[0]
                 .contract
                 .as_ref()
                 .unwrap()
@@ -1505,12 +1501,12 @@ mod tests {
             let procedure_id = procedure.id;
             let service = service_with(vec![procedure]);
 
-            let dispensed = service
+            let issued = service
                 .query_procedures(Request::new(query_req("agent:cook-1")))
                 .await
                 .unwrap()
                 .into_inner();
-            let receipt_id = dispensed.procedures[0]
+            let receipt_id = issued.procedures[0]
                 .contract
                 .as_ref()
                 .unwrap()
@@ -1542,12 +1538,12 @@ mod tests {
         async fn failure_mode_on_a_success_is_rejected() {
             let service = service_with(vec![mk("omelette", DomainTierEnum::Task)]);
 
-            let dispensed = service
+            let issued = service
                 .query_procedures(Request::new(query_req("agent:cook-1")))
                 .await
                 .unwrap()
                 .into_inner();
-            let receipt_id = dispensed.procedures[0]
+            let receipt_id = issued.procedures[0]
                 .contract
                 .as_ref()
                 .unwrap()
@@ -1636,9 +1632,9 @@ mod tests {
             );
         }
 
-        /// An in-scope lookup still dispenses normally.
+        /// An in-scope lookup still issues normally.
         #[tokio::test]
-        async fn an_in_scope_lookup_dispenses() {
+        async fn an_in_scope_lookup_issues() {
             let procedure = mk("omelette", DomainTierEnum::Task);
             let procedure_id = procedure.id;
             let service = service_with(vec![procedure]);

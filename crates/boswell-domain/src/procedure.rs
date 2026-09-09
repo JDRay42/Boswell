@@ -480,7 +480,7 @@ pub enum FailureMode {
 /// a procedure is handed out for execution (design §3.3).
 ///
 /// Receipts are persisted by the store's receipt ledger and issued by the
-/// transport whenever a procedure is dispensed; the executor answers one via
+/// transport whenever a procedure is issued; the executor answers one via
 /// `ReportOutcome` (gateway: `POST /v1/receipts/{receipt_id}/report`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecutionReceipt {

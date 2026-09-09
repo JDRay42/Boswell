@@ -313,7 +313,7 @@ message Procedure {
     optional uint64 stale_at = 29;
 }
 
-// The obligation-to-report contract issued with every dispensed procedure.
+// The obligation-to-report contract issued with every procedure.
 message ExecutionContract {
     string receipt_id = 1;
     string procedure_id = 2;
@@ -327,7 +327,7 @@ message ExecutionContract {
 }
 
 // A procedure paired with the receipt issued for it.
-message DispensedProcedure {
+message IssuedProcedure {
     Procedure procedure = 1;
     ExecutionContract contract = 2;
 }
@@ -345,7 +345,7 @@ message QueryProceduresRequest {
 }
 
 message QueryProceduresResponse {
-    repeated DispensedProcedure procedures = 1;
+    repeated IssuedProcedure procedures = 1;
     int32 count = 2;
     string message = 3;
 }
@@ -365,7 +365,7 @@ message GetProcedureRequest {
 
 message GetProcedureResponse {
     bool found = 1;
-    DispensedProcedure procedure = 2;
+    IssuedProcedure procedure = 2;
     string message = 3;
 }
 
