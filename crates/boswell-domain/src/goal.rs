@@ -371,6 +371,135 @@ pub struct CollectOutcome {
     pub children_orphaned: usize,
 }
 
+/// Why a guarded descent stopped (§8, open problem #6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DescentStop {
+    /// The descent revisited a goal it had already expanded.
+    ///
+    /// [`crate::traits::GoalStore`] implementations reject any edge that would
+    /// close a cycle on write, so a well-formed graph cannot produce this. It
+    /// can still happen against a graph damaged outside that API — a restored
+    /// backup, a direct `DELETE`, an older Boswell — and a descent that trusted
+    /// the write guard alone would spin forever on one.
+    Revisited(GoalId),
+    /// The descent reached [`DescentLimits::max_depth`] hops.
+    DepthCap,
+    /// The descent expanded [`DescentLimits::max_nodes`] goals.
+    NodeCap,
+}
+
+impl fmt::Display for DescentStop {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DescentStop::Revisited(id) => {
+                write!(f, "descent revisited goal {} (the graph has a cycle)", id)
+            }
+            DescentStop::DepthCap => write!(f, "descent hit its depth cap"),
+            DescentStop::NodeCap => write!(f, "descent hit its node cap"),
+        }
+    }
+}
+
+/// Bounds on a single recursive descent (§8 #6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DescentLimits {
+    /// Maximum hops from the entry goal.
+    pub max_depth: usize,
+    /// Maximum goals expanded in one descent.
+    pub max_nodes: usize,
+}
+
+impl Default for DescentLimits {
+    /// Deliberately generous. These are a backstop against a malformed graph,
+    /// not a modelling opinion about how deep a decomposition may reasonably
+    /// be — a limit tight enough to be an opinion would silently truncate
+    /// legitimate descents.
+    fn default() -> Self {
+        Self {
+            max_depth: 32,
+            max_nodes: 256,
+        }
+    }
+}
+
+/// The traversal-side half of the cycle guards (§8 #6).
+///
+/// Traversal is stateless and agent-driven (§4): the store answers one hop at a
+/// time and holds no descent state, so there is no server-side recursion to
+/// bound. The guard therefore lives with **whoever recurses** — an agent, the
+/// SDK, a hook — and this is the piece they share.
+///
+/// It guards; it never chooses. Which child to follow stays entirely with the
+/// caller, consistent with "the store surfaces, the agent decides" (§4.1).
+///
+/// ```
+/// use boswell_domain::{DescentGuard, DescentLimits, GoalId};
+///
+/// let mut guard = DescentGuard::new(DescentLimits::default());
+/// let root = GoalId::new();
+/// assert!(guard.enter(root).is_ok());
+/// // Re-entering the same goal is refused rather than looping.
+/// assert!(guard.enter(root).is_err());
+/// ```
+#[derive(Debug, Clone)]
+pub struct DescentGuard {
+    limits: DescentLimits,
+    visited: std::collections::HashSet<u128>,
+    depth: usize,
+}
+
+impl DescentGuard {
+    /// A guard with the given limits.
+    pub fn new(limits: DescentLimits) -> Self {
+        Self {
+            limits,
+            visited: std::collections::HashSet::new(),
+            depth: 0,
+        }
+    }
+
+    /// Record a hop onto `goal` before expanding it.
+    ///
+    /// Returns `Err` if a guard trips, in which case the hop must not be taken
+    /// and the descent is over. The caps are checked *before* the visit is
+    /// recorded, so a refused hop leaves the guard unchanged and the caller can
+    /// report accurately how far it actually got.
+    pub fn enter(&mut self, goal: GoalId) -> Result<(), DescentStop> {
+        if self.visited.contains(&goal.value()) {
+            return Err(DescentStop::Revisited(goal));
+        }
+        if self.depth >= self.limits.max_depth {
+            return Err(DescentStop::DepthCap);
+        }
+        if self.visited.len() >= self.limits.max_nodes {
+            return Err(DescentStop::NodeCap);
+        }
+        self.visited.insert(goal.value());
+        self.depth += 1;
+        Ok(())
+    }
+
+    /// Whether `goal` has already been expanded in this descent.
+    pub fn has_visited(&self, goal: GoalId) -> bool {
+        self.visited.contains(&goal.value())
+    }
+
+    /// How many hops deep the descent currently is.
+    pub fn depth(&self) -> usize {
+        self.depth
+    }
+
+    /// How many goals have been expanded in this descent.
+    pub fn visited(&self) -> usize {
+        self.visited.len()
+    }
+
+    /// The limits this guard enforces.
+    pub fn limits(&self) -> DescentLimits {
+        self.limits
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -385,6 +514,121 @@ mod tests {
         assert_eq!(ChildRef::from_parts(ChildKind::Procedure, 9), p);
         assert_eq!(g.id_value(), 7);
         assert_eq!(p.id_value(), 9);
+    }
+
+    // ---- Traversal-side cycle guards (§8, open problem #6) ----
+
+    /// The guard's whole reason to exist: a cycle in a damaged graph must end
+    /// the descent instead of spinning forever.
+    #[test]
+    fn a_revisited_goal_stops_the_descent() {
+        let mut guard = DescentGuard::new(DescentLimits::default());
+        let a = GoalId::from_value(1);
+        let b = GoalId::from_value(2);
+
+        guard.enter(a).unwrap();
+        guard.enter(b).unwrap();
+        assert_eq!(guard.enter(a), Err(DescentStop::Revisited(a)));
+    }
+
+    #[test]
+    fn the_depth_cap_stops_a_runaway_descent() {
+        let mut guard = DescentGuard::new(DescentLimits {
+            max_depth: 3,
+            max_nodes: 100,
+        });
+        for i in 0..3 {
+            guard.enter(GoalId::from_value(i)).unwrap();
+        }
+        assert_eq!(
+            guard.enter(GoalId::from_value(99)),
+            Err(DescentStop::DepthCap)
+        );
+        assert_eq!(guard.depth(), 3);
+    }
+
+    #[test]
+    fn the_node_cap_stops_a_wide_descent() {
+        let mut guard = DescentGuard::new(DescentLimits {
+            max_depth: 100,
+            max_nodes: 2,
+        });
+        guard.enter(GoalId::from_value(1)).unwrap();
+        guard.enter(GoalId::from_value(2)).unwrap();
+        assert_eq!(
+            guard.enter(GoalId::from_value(3)),
+            Err(DescentStop::NodeCap)
+        );
+    }
+
+    /// A refused hop must leave the guard untouched, so a caller can report how
+    /// far it actually got rather than one hop further than it managed.
+    #[test]
+    fn a_refused_hop_does_not_advance_the_guard() {
+        let mut guard = DescentGuard::new(DescentLimits {
+            max_depth: 1,
+            max_nodes: 100,
+        });
+        guard.enter(GoalId::from_value(1)).unwrap();
+
+        let before = (guard.depth(), guard.visited());
+        assert!(guard.enter(GoalId::from_value(2)).is_err());
+        assert_eq!((guard.depth(), guard.visited()), before);
+        assert!(!guard.has_visited(GoalId::from_value(2)));
+    }
+
+    /// The guard bounds a descent; it never picks a child. Choosing stays with
+    /// the caller, consistent with "the store surfaces, the agent decides".
+    #[test]
+    fn the_guard_admits_any_unvisited_child_the_caller_picks() {
+        let mut guard = DescentGuard::new(DescentLimits::default());
+        guard.enter(GoalId::from_value(1)).unwrap();
+
+        // Two different sibling choices are equally acceptable to the guard.
+        let mut left = guard.clone();
+        let mut right = guard.clone();
+        assert!(left.enter(GoalId::from_value(2)).is_ok());
+        assert!(right.enter(GoalId::from_value(3)).is_ok());
+    }
+
+    /// Guards are per-descent: a fresh one starts clean, so revisiting a goal on
+    /// a *later* descent is not an error.
+    #[test]
+    fn a_fresh_guard_may_revisit_what_an_earlier_descent_saw() {
+        let shared = GoalId::from_value(7);
+        let mut first = DescentGuard::new(DescentLimits::default());
+        first.enter(shared).unwrap();
+
+        let mut second = DescentGuard::new(DescentLimits::default());
+        assert!(second.enter(shared).is_ok());
+    }
+
+    /// A diamond is legal — the graph is a DAG, not a tree — but a descent still
+    /// expands each goal once, so reaching the same child down two arms is a
+    /// revisit rather than duplicated work.
+    #[test]
+    fn a_diamond_expands_its_shared_child_once() {
+        let mut guard = DescentGuard::new(DescentLimits::default());
+        let (root, left, right, shared) = (
+            GoalId::from_value(1),
+            GoalId::from_value(2),
+            GoalId::from_value(3),
+            GoalId::from_value(4),
+        );
+
+        guard.enter(root).unwrap();
+        guard.enter(left).unwrap();
+        guard.enter(shared).unwrap();
+        // Coming back down the other arm, `shared` is already done.
+        guard.enter(right).unwrap();
+        assert_eq!(guard.enter(shared), Err(DescentStop::Revisited(shared)));
+    }
+
+    #[test]
+    fn default_limits_are_a_backstop_not_a_modelling_opinion() {
+        let d = DescentLimits::default();
+        assert!(d.max_depth >= 32);
+        assert!(d.max_nodes >= 256);
     }
 
     #[test]
