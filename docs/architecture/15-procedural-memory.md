@@ -401,10 +401,63 @@ devAuth is a bring-up and demonstration tool for the trust model — never a sho
    (inducing control flow and decomposition), meaningfully harder than claim extraction.
 4. **Promotion timing.** Promotion belongs in a background sweep (Janitor-style), so a
    just-earned team fact lags until the sweep. Tunable, not free.
-5. **Graph integrity under decay.** Nodes and edges decaying independently can dangle the
-   navigable graph; need a rule (an edge pins its child, or GC cascades/re-parents).
+5. **Graph integrity under decay.** ~~Nodes and edges decaying independently can dangle the
+   navigable graph; need a rule (an edge pins its child, or GC cascades/re-parents).~~
+   **Resolved — see §8.2.** Both rules were prototyped; neither was adopted, and a third was.
 6. **Cycle guards.** The DAG must be kept acyclic (a `decide` procedure that re-enters a parent
-   could loop); traversal needs guards.
+   could loop); traversal needs guards. **Write side done:** `add_goal_edge` rejects any
+   sub-goal edge that would close a cycle. What remains is the traversal-side visited-set and
+   depth cap, which belongs to whoever recurses — the *agent* holds the cursor (§4), so the
+   store has no recursion to bound.
+
+### 8.2 Graph integrity under decay — what the prototypes showed
+
+§8 #5 asked for a rule and named two candidates. Both were built and tested; the finding was
+that **each fails in a way the other's failure hides**, and a third rule avoids both.
+
+First, the failure being defended against. Goal edges carry `child_id` polymorphically (a child
+is either a goal or a procedure), so the column can have no foreign key. Collect a child row by
+any path that is not the collection API and its edges survive, pointing at nothing. That edge is
+worse than absent: it carries its own cached effectiveness and usage notes (§4.2), so `expand`
+surfaces it as a healthy, well-ranked candidate that cannot be fetched. **A dangling edge is
+always a bug.** Every policy below prevents one, and `prune_dangling_goal_edges` repairs graphs
+damaged another way (a stray `DELETE`, a restored backup, an older Boswell).
+
+What the policies actually disagree about is **orphans** — children left with no live parent —
+and that disagreement is a real trade-off:
+
+| Rule | Dangles? | Orphans? | What it costs |
+|---|---|---|---|
+| `PinChildren` — an edge pins its child | never | never | **Decay stops at the first reference.** One forgotten edge keeps its whole subtree alive indefinitely. |
+| `CascadeAndReparent` — re-attach to the nearest live ancestor | never | never | **Fabricates edges.** |
+| `CascadeAndOrphan` — collect, drop the edges, leave children standing | never | yes, by design | Children fall out of the navigable graph. |
+
+**Why pinning was rejected.** It is in direct tension with the premise that memory fades unless
+it earns its keep. A pinned subtree is immortal by reference, not by usefulness, and the thing
+holding it alive is exactly the kind of stale structure that should have decayed.
+
+**Why re-parenting was rejected.** An edge's `preconditions`, `context_tags` and `usage_notes`
+are **placement-specific** — that is the whole point of the edge-vs-node distinction in §3.2
+("eggs on hand" is intrinsic to `cook-eggs`; "prefer eggs here when LDL is low" is contextual to
+*this* placement). Re-parenting `cook-eggs` from `prepare-breakfast` up to `eat` must either
+carry that context, asserting about the new placement something nobody said, or drop it, losing
+the signal that made the child worth surfacing. It silently rewrites a hand-authored
+decomposition, and the operator has no way to see that it happened.
+
+**What was adopted: `CascadeAndOrphan`** (the default). Collect the node, drop every edge
+touching it, leave surviving children exactly as they are. Nothing dangles and nothing is
+invented. An orphan is still a first-class row — findable by `query_goals` and by direct id, and
+re-attachable by anyone who wants it — and if nothing re-attaches it, it decays on its own clock
+like any other unused memory. Decay proceeds; structure is only ever authored by an author.
+
+All three ship, selectable per call, so an operator who disagrees can choose otherwise and
+`orphaned_goals` makes the consequence measurable either way.
+
+One structural note that fell out of the prototype: **re-parenting can never close a cycle.**
+The edge it writes, `ancestor -> child`, is a shortcut over the `ancestor -> node -> child` path
+that already existed; closing a cycle would need `child ->* ancestor` as well, which the
+write-time guard (#6) already refuses. `collect_goal` still handles the cycle error defensively,
+because a graph damaged outside the API carries no such guarantee.
 
 ### 8.1 How we intend to make these tractable
 
