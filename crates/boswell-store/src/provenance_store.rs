@@ -252,13 +252,17 @@ impl SqliteStore {
         let mut best_assurance = Assurance::None;
         let mut cross_authority_endorsement = false;
 
-        // The delegation-chain root, falling back to the author when no chain.
+        // The stamp's *independence unit* (design §8.3): the delegation-chain root,
+        // falling back to the author when there is no chain, and in either case
+        // normalized to the principal that actually authenticated.
         let root_of = |stamp: &ProvenanceStamp| -> String {
-            stamp
-                .delegation_chain
-                .root()
-                .unwrap_or(stamp.author.as_str())
-                .to_string()
+            principal_of(
+                stamp
+                    .delegation_chain
+                    .root()
+                    .unwrap_or(stamp.author.as_str()),
+            )
+            .to_string()
         };
 
         // First pass: gather the writer roots (needed for the cross-authority check).
@@ -446,6 +450,28 @@ impl SqliteStore {
     }
 }
 
+/// The authenticated principal behind an agent identity: everything before the
+/// first `/` (design §8.3).
+///
+/// `ProvenanceStamp::author` is a *derived* identity — the documented shape is
+/// `agent:orch-7/sub:explore-3`, an authenticated principal plus a subagent path
+/// the principal chose for itself. Corroboration must be counted over what an
+/// identity provider actually established, not over a suffix the caller made up,
+/// or a single credential fanned out into subagents manufactures its own
+/// independence.
+///
+/// This does not *solve* Sybil independence and is not meant to: an adversary
+/// holding several genuinely distinct credentials still counts several times.
+/// That is the irreducible part, and §8.4 accepts it as mitigated rather than
+/// solved. What this closes is the free version — claiming independence by
+/// declining to declare a delegation chain.
+fn principal_of(identity: &str) -> &str {
+    match identity.split_once('/') {
+        Some((principal, _)) => principal,
+        None => identity,
+    }
+}
+
 /// The canonical ledger key for a goal edge: `parent|childkind|childid|role`.
 fn goal_edge_key(edge: &GoalEdge) -> String {
     let (kind, child) = match edge.child {
@@ -591,6 +617,87 @@ mod tests {
         assert_eq!(facts.distinct_delegation_roots, 3);
         assert_eq!(facts.distinct_evidence_types, 2); // observed + reported
         assert!(facts.cross_authority_endorsement);
+    }
+
+    #[test]
+    fn subagents_of_one_credential_are_one_delegation_root() {
+        // Three subagent paths under a single authenticated principal, each
+        // claiming to be its own root — the free Sybil bypass (design §8.3). The
+        // independence unit is the principal, so they count once.
+        let mut store = store();
+        let proc = procedure("p");
+        for i in 0..3 {
+            let author = format!("agent:orch-7/sub:{i}");
+            let mut s = stamp(
+                &author,
+                Tier::Task,
+                &[Op::Write],
+                EvidenceType::Observed,
+                Assurance::Verified,
+            );
+            s.delegation_chain = DelegationChain(vec![author.clone()]);
+            store
+                .write_procedure_stamped(&proc, Tier::Task, &s)
+                .unwrap();
+        }
+        let facts = store
+            .corroboration_facts_for_procedure(proc.id, NOW)
+            .unwrap()
+            .unwrap();
+        assert_eq!(facts.distinct_authors, 3);
+        assert_eq!(facts.distinct_delegation_roots, 1);
+    }
+
+    #[test]
+    fn an_omitted_chain_is_normalized_the_same_way() {
+        // Sending no chain at all falls back to the author, which is normalized
+        // identically — so omitting provenance is no better than faking it.
+        let mut store = store();
+        let proc = procedure("p");
+        for i in 0..3 {
+            let mut s = stamp(
+                &format!("agent:orch-7/sub:{i}"),
+                Tier::Task,
+                &[Op::Write],
+                EvidenceType::Observed,
+                Assurance::Verified,
+            );
+            s.delegation_chain = DelegationChain(vec![]);
+            store
+                .write_procedure_stamped(&proc, Tier::Task, &s)
+                .unwrap();
+        }
+        let facts = store
+            .corroboration_facts_for_procedure(proc.id, NOW)
+            .unwrap()
+            .unwrap();
+        assert_eq!(facts.distinct_delegation_roots, 1);
+    }
+
+    #[test]
+    fn distinct_principals_writing_directly_still_corroborate() {
+        // The other half of the rule: normalization collapses subagents of one
+        // credential, not short chains from genuinely distinct principals.
+        let mut store = store();
+        let proc = procedure("p");
+        for author in ["agent:a", "agent:b"] {
+            let mut s = stamp(
+                author,
+                Tier::Task,
+                &[Op::Write],
+                EvidenceType::Observed,
+                Assurance::Verified,
+            );
+            s.delegation_chain = DelegationChain(vec![author.to_string()]);
+            store
+                .write_procedure_stamped(&proc, Tier::Task, &s)
+                .unwrap();
+        }
+        let facts = store
+            .corroboration_facts_for_procedure(proc.id, NOW)
+            .unwrap()
+            .unwrap();
+        assert_eq!(facts.distinct_delegation_roots, 2);
     }
 
     #[test]

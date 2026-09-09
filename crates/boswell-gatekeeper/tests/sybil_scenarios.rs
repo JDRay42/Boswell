@@ -286,20 +286,16 @@ fn honest_clone_swarm_manufactures_no_corroboration() {
 
 // --- findings ------------------------------------------------------------
 
-/// **Finding 1 — the diversity signal is opt-in for the attacker.**
+/// The swarm from above, playing dishonestly: instead of declaring the puppeteer
+/// as its root, each clone roots the chain at itself — "I answer to no one."
 ///
-/// The same swarm as above, with one change: instead of declaring the puppeteer
-/// as its root, each clone roots the chain at itself. `corroboration_facts_for_procedure`
-/// derives the root from the chain and *falls back to the author* when there is
-/// none, so a self-rooted clone is indistinguishable from an independent
-/// principal. Nine clones become nine "distinct delegation roots" and the entry
-/// climbs.
-///
-/// The honest swarm above is held and this one is promoted; the only difference
-/// is whether the adversary chose to declare its provenance. Asserted as-is —
-/// see §8.3.
+/// This used to work (§8.3, finding 1): the root was read straight off the chain,
+/// so nine self-rooted clones became nine "distinct delegation roots" and the
+/// entry climbed. The independence unit is now normalized to the authenticated
+/// principal, so all nine collapse back onto `project:lead`, and the verdict
+/// matches the honest swarm's. Declining to declare provenance buys nothing.
 #[test]
-fn finding_self_rooted_clone_swarm_manufactures_corroboration() {
+fn self_rooted_clone_swarm_manufactures_no_corroboration() {
     let mut bench = Bench::new();
     let proc = procedure("project:alpha", "release");
     for i in 0..9 {
@@ -316,19 +312,19 @@ fn finding_self_rooted_clone_swarm_manufactures_corroboration() {
     }
 
     let (decision, facts) = bench.verdict(proc.id);
+    assert_eq!(facts.distinct_authors, 9);
     assert_eq!(
-        facts.distinct_delegation_roots, 9,
-        "each clone its own root"
+        facts.distinct_delegation_roots, 1,
+        "nine subagents of one credential are one principal"
     );
-    assert_eq!(decision, PromotionDecision::Climb(Tier::Project));
+    assert_eq!(decision, PromotionDecision::Hold);
 }
 
-/// **Finding 1b — omitting the chain entirely does the same thing.**
-///
-/// An empty chain has no root at all, so the fallback uses the author. Sending
-/// nothing is as good as claiming independence.
+/// The same swarm with no delegation chain at all. An empty chain has no root, so
+/// the author is the fallback — and the author is normalized the same way, so
+/// sending nothing is no better than lying.
 #[test]
-fn finding_unchained_clone_swarm_manufactures_corroboration() {
+fn unchained_clone_swarm_manufactures_no_corroboration() {
     let mut bench = Bench::new();
     let proc = procedure("project:alpha", "release");
     for i in 0..9 {
@@ -344,7 +340,31 @@ fn finding_unchained_clone_swarm_manufactures_corroboration() {
     }
 
     let (decision, facts) = bench.verdict(proc.id);
-    assert_eq!(facts.distinct_delegation_roots, 9);
+    assert_eq!(facts.distinct_delegation_roots, 1);
+    assert_eq!(decision, PromotionDecision::Hold);
+}
+
+/// The other half of the rule: normalization must not punish honest principals
+/// who write directly. Two distinct principals, each its own root and neither
+/// carrying a subagent path, still corroborate — the collapse applies to
+/// subagents of one credential, not to short chains.
+#[test]
+fn self_rooted_but_genuinely_distinct_principals_still_corroborate() {
+    let mut bench = Bench::new();
+    let proc = procedure("project:alpha", "release");
+    for principal in ["human:alice", "human:bob"] {
+        let stamp = bench.stamp_with_chain(
+            DevIdentity::ProjectLeader,
+            DelegationChain(vec![principal.to_string()]),
+            principal,
+            EvidenceType::Observed,
+            principal,
+        );
+        bench.write(&proc, Tier::Task, &stamp);
+    }
+
+    let (decision, facts) = bench.verdict(proc.id);
+    assert_eq!(facts.distinct_delegation_roots, 2);
     assert_eq!(decision, PromotionDecision::Climb(Tier::Project));
 }
 

@@ -390,9 +390,11 @@ devAuth is a bring-up and demonstration tool for the trust model — never a sho
 ## 8. Open problems (explicit, unsolved)
 
 1. **Sybil independence.** "N distinct authors corroborate" is gameable by correlated clones;
-   corroboration needs an independence notion we don't have. **Partly measured — see §8.3.**
-   The delegation-root proxy holds against an honest clone swarm and fails against one that
-   simply declines to declare its provenance.
+   corroboration needs an independence notion we don't have. **Measured, and mitigated as far as
+   this layer can — see §8.3.** Corroboration counts authenticated principals, so a credential
+   fanned out into subagents counts once whatever it claims. An adversary holding genuinely
+   distinct credentials still counts distinctly; that part is the identity system's problem, and
+   §8.4 accepts it.
 2. **Effectiveness attribution.** On failure, was it the *procedure* or the *executor*?
    Demoting a good procedure for a bad executor's mistake is unfair. **Largely addressed** by
    the reporting contract (§3.3): the reporter supplies `failure_mode`, the gatekeeper weights
@@ -515,20 +517,43 @@ its evidence is coerced to `tool_output` and its authority caps entry at ephemer
 it writes can climb. And corroboration is correctly *not* a grant of authority — two independent
 roots backing a worker's procedure still cannot lift it past the worker's own `max_tier`.
 
-**Finding 1 — the diversity signal is opt-in for the attacker.** `root_of` derives a stamp's
-delegation root from its chain and **falls back to the author when there is none**. A clone that
-roots its chain at itself, or omits the chain entirely, is therefore indistinguishable from an
-independent principal. The same nine-clone swarm that is held when it declares its puppeteer
-climbs to project tier when it declines to — one compromised project-lead credential, fanned out
-into self-rooted subagents, manufactures the corroboration the rule exists to require. The only
-difference between the held case and the promoted one is whether the adversary chose to be
-honest about its provenance, which is not a property a defense may depend on.
+**Finding 1 — the diversity signal was opt-in for the attacker. Resolved.** `root_of` derived a
+stamp's delegation root from its chain and **fell back to the author when there was none**. A
+clone that rooted its chain at itself, or omitted the chain entirely, was therefore
+indistinguishable from an independent principal. The same nine-clone swarm that is held when it
+declares its puppeteer climbed to project tier when it declined to — one compromised
+project-lead credential, fanned out into self-rooted subagents, manufacturing the corroboration
+the rule exists to require. The only difference between the held case and the promoted one was
+whether the adversary chose to be honest about its provenance, which is not a property a defense
+may depend on.
 
-*Unresolved.* The candidates are (a) an unrooted or self-rooted stamp contributes no diversity
-root at all — fail closed, at the cost of denying corroboration to genuinely independent
-principals who write directly; (b) all self-rooted stamps collapse into a single bucket; (c)
-count roots only from stamps whose delegation the `IdentityProvider` actually verified, making
-assurance the gate. Each should be built and measured the way §8.2's three policies were.
+*The rule adopted: the independence unit is the **authenticated principal**, not the asserted
+root.* Three candidates were considered and two rejected. (a) *An unrooted or self-rooted stamp
+contributes no diversity root* fails closed, but `IdentityProvider::stamp_for` gives a direct
+write the chain `[author]` — self-rooted by construction — so this would deny corroboration to
+the entire no-delegation path, which is the most trustworthy case, not the least. (b) *All
+self-rooted stamps collapse into one bucket* is the same objection one degree softer. (c)
+*Count only roots whose delegation the provider verified* does not discriminate here: the clones
+authenticate as a real identity with real assurance, and the thing they falsify is the chain,
+which no current provider checks.
+
+What separates the honest swarm from the dishonest one is not the chain — that is caller-supplied
+in every path and can say anything — but the **author**, which the transport sets from the
+principal that actually authenticated. `ProvenanceStamp::author` documents its own shape:
+`agent:orch-7/sub:explore-3`, an authenticated principal plus a subagent path the principal chose
+for itself. So a stamp's independence unit is now its delegation root — still falling back to the
+author when there is no chain — **normalized to everything before the first `/`**. Nine
+self-rooted `project:lead/sub:i` clones collapse onto `project:lead`; two genuinely distinct
+principals writing directly still count as two. Both the honest and the dishonest swarm now
+reach the same verdict, which was the point.
+
+This does not *solve* Sybil independence and is not meant to: an adversary holding several
+genuinely distinct credentials still counts several times, which is the irreducible part §8.4
+accepts as mitigated rather than solved. What it closes is the free version — claiming
+independence by declining to declare a chain. It also leans on the transport setting `author`
+from the authenticated principal rather than from caller input; that holds today (no authoring
+transport exists, and devAuth stamps the principal id directly), and it is the invariant any
+future authoring endpoint must preserve.
 
 **Finding 2 — the project leader cannot endorse the worker it leads.** devAuth's module doc
 states the gradient plainly: "the worker writes task-tier, the project-leader can endorse into
