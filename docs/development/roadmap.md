@@ -1,4 +1,287 @@
-# Plan: Boswell Cognitive Memory System - Development Roadmap
+# Boswell Roadmap
+
+**This file is the single source of truth for where Boswell stands.** If you want to know
+what is built, what is being built, and what is deliberately not being built, this is the
+only place to look. Design lives in [`docs/architecture/`](../architecture/) and decisions
+in [`docs/ADRs/`](../ADRs/); neither carries status.
+
+## How to read it
+
+Work is grouped into **workstreams** — long-lived areas of the system — each holding
+**slices**, the unit that actually ships. A slice's **title is its identity**; nothing is
+numbered, because numbering implies an order the work does not have. Procedures, devAuth
+and the gateway all arrived mid-flight and none of them fitted the phase plan that existed
+at the time, which is how that plan came to describe a system nobody was building. New
+workstreams get appended. New slices get inserted wherever they belong.
+
+PR numbers on a shipped slice are **citations, not indices** — they point at the diff and
+the reasoning, which are the two things that never drift.
+
+Every slice carries one of four statuses, defined in [`CONTEXT.md`](../../CONTEXT.md):
+
+- **shipped** — on `main`, with the PRs that did it
+- **in flight** — someone is working on it now
+- **open** — not done, no decision made
+- **deferred** — not done *on purpose*, with the reason and what would unblock it
+
+The distinction between *open* and *deferred* is the one worth protecting. Procedure
+learning is not waiting for someone to get to it; it is waiting for a corpus of real
+episodes to exist, and starting it early would produce a worse extractor. That reasoning is
+the thing that evaporates between sessions.
+
+## Keeping it true
+
+**This file is updated in the same PR as the work it describes.** A feature PR that leaves
+the roadmap untouched is incomplete. This rule exists because the previous arrangement —
+status recorded separately, after the fact, by whoever remembered — produced a roadmap with
+zero of thirty-six boxes checked while two phases were essentially complete. Status that
+lives outside the change does not survive contact with a real week.
+
+---
+
+## Claims core
+
+The declarative substrate: what is so. Domain model, storage, extraction, validation.
+
+- **Domain model — claims, confidence intervals, tiers, namespaces.** `boswell-domain`,
+  no external dependencies but `uuid`, property-tested with proptest.
+  *shipped* (#1 standardised identifiers on UUIDv7, superseding ADR-011)
+- **SQLite claim store with an HNSW vector index.** The one storage adapter that ships.
+  *shipped*
+- **Embeddings persist across restart.** The index is in-memory and replayed at startup;
+  missing embeddings are backfilled. ADR-014 chose this over an on-disk index file.
+  *shipped* (#19)
+- **Semantic search returns results by default; assert stops collapsing confidence
+  intervals.** *shipped* (#20)
+- **`schema_info` seed insert is idempotent**, so a file-backed database can reopen.
+  *shipped* (#11)
+- **Extractor — unstructured text to structured claims.** Chunking, prompting, parsing,
+  provenance linkage back to the source. *shipped*
+- **Gatekeeper validation.** Tier/confidence rules, duplicate detection, semantic
+  near-duplicate rejection against the store. *shipped*
+- **`boswell validate` and the personal-memory import path.** *shipped* (#3, and #30 for
+  the file-argument pairing)
+- **Tier validation on the gRPC assert path.** `validate_tier_confidence` exists and is
+  unit-tested, but `boswell-grpc` does not depend on `boswell-gatekeeper` at all — the
+  service does `Tier::try_from` and nothing else. The Gatekeeper is only reached through
+  the Extractor path, so a direct `Assert` bypasses it.
+  *open*
+- **LLM-backed semantic validation in the Gatekeeper.** The crate has no LLM dependency
+  and the validator makes no LLM call. Distinct from the semantic *duplicate* detection,
+  which ships.
+  *open*
+
+## Procedural memory
+
+The other half of what Boswell remembers: how to do things. Design of record is
+[`15-procedural-memory.md`](../architecture/15-procedural-memory.md), which holds the
+reasoning; this section holds the state.
+
+- **Design doc — procedural and goal memory for agent teams.** *shipped* (#8)
+- **`Procedure` entity, store, effectiveness and the reporting model.** *shipped* (#10)
+- **`Goal` entity, `expand` traversal, decision aids.** *shipped* (#12)
+- **Provenance write path, promotion Gatekeeper, live Janitor sweep.** *shipped* (#13)
+- **Effectiveness capture via execution receipts — "silence is not success."** An
+  unanswered receipt expires as `unknown` and counts against the procedure. *shipped* (#17)
+- **One name for each thing.** The store *issues* a procedure; the obligation is an
+  *execution receipt*; the executor answers with an *outcome report*.
+  *shipped* (#22, #23; glossary in #32)
+- **Graph integrity under decay — `CascadeAndOrphan`.** Both candidate rules from §8 #5
+  were prototyped and neither was adopted; the reasoning is §8.2. *shipped* (#28)
+- **Cycle guards, both halves** — rejected on write, and a `DescentGuard` at traversal.
+  *shipped* (#29)
+- **Semantic intent match for procedure and goal retrieval.** Retrieval currently falls
+  back to case-insensitive substring matching. Marked in place at
+  `boswell-store/src/procedure_store.rs:295`, `goal_store.rs:114`, and `schema.sql:185`.
+  *open*
+- **Push the triple match into SQL** rather than filtering in Rust.
+  `boswell-store/src/procedure_store.rs:351`. *open*
+- **Promotion timing (§8 #4).** Promotion belongs in a Janitor-style background sweep, so
+  a just-earned fact lags until the sweep runs. §8.1 already picked the shape: configurable
+  interval, with a synchronous fast-track for authority endorsements. Engineering, not
+  research. *open*
+- **Goal and procedure authoring over the wire.** Absent on purpose. Authoring is a §5
+  gatekept, provenance-stamped *write*, not a read, and shipping it as a read-shaped
+  endpoint would put the write path behind the wrong gate. Unblocked by the security
+  session settling how an authoring caller is authenticated — and note that the Sybil
+  defense depends on the transport setting `author` from the authenticated principal, never
+  from caller input.
+  *deferred*
+- **Procedure and goal learning (§8 #3).** Inducing control flow and decomposition from
+  experience — meaningfully harder than claim extraction, and the `Extractor` is the model.
+  Waiting on a corpus of real episodes, which is exactly what the transport work (#21, #24)
+  now lets accumulate. Correctly sequenced last; starting it before the corpus exists
+  produces a worse inducer, not an earlier one.
+  *deferred*
+
+## Identity, trust and security
+
+Who said it, how well we know that, and what it lets them do.
+
+- **`IdentityProvider` port, assurance-gated tier ceilings, and the devAuth adapter.**
+  *shipped* (#14)
+- **Sybil-resistant corroboration via provenance diversity.** *shipped* (#18)
+- **The identity port wired through the transport**, so a reporter's assurance comes from
+  the provider rather than being hardcoded to `none`, plus the `X-Boswell-Auth` response
+  marker. *shipped* (#27)
+- **The Sybil defense measured against a running system.** `sybil_scenarios.rs` stands
+  devAuth's four identities against the real store, the real corroboration path and the
+  real gatekeeper. Findings are §8.3. *shipped* (#31)
+- **Corroboration counts the authenticated principal, not the asserted root** (§8.3 #1).
+  Nine self-rooted clones collapse onto one. *shipped* (#33)
+- **devAuth's own trust gradient made reachable** (§8.3 #2 and #3). Both rules were
+  correct and unit-tested, and neither had ever run end to end, because nothing could
+  reach the state they governed. *shipped* (#34)
+- **`min_distinct_sessions` and `min_distinct_evidence_types`, defaulting to 0** (§8.3 #4).
+  Off deliberately: write and endorse stamps are minted in-process with `session_id: None`,
+  so a non-zero default would make corroboration unreachable rather than stricter. Raise it
+  once an authoring transport stamps sessions. *shipped* (#35)
+- **The code stops claiming security it does not provide.** `enable_tls` refuses to start
+  instead of printing "TLS enabled" and serving plaintext; devAuth's manifest no longer
+  claims to be excluded from production builds. *shipped* (#36)
+- **gRPC authentication.** The service checks that `auth_token` is non-empty and nothing
+  else — fourteen call sites, no signature verification anywhere. The router mints a
+  properly signed JWT and the SDK carries it on every call; the instance never reads it.
+  Any process that can reach the port can write to any tier by sending the string `"x"`.
+  The fix depends on the posture question below: verify the JWT, or delete the plumbing and
+  bind to localhost by construction.
+  *open*
+- **devAuth becomes a test-only fixture.** Out of `boswell-server`, still driving the Sybil
+  scenarios — which are the entire evidence base for §8.3 and cannot move with it. The
+  consequence to settle first: with no adapter shipped, every deployment runs with no
+  `IdentityProvider`, so reports stamp `Assurance::None`, ceilings sit at the floor and
+  nothing ever promotes. The trust gradient is inert out of the box.
+  *open*
+- **Router configuration encryption.** `boswell-router/src/config.rs` reads plaintext TOML;
+  [`09-router.md`](../architecture/09-router.md) still calls for a portable encrypted
+  config, and [`16-backup-recovery.md`](../architecture/16-backup-recovery.md) notes the
+  `age`-encrypted config in `10-security.md` is aspirational. *open*
+- **JWT refresh.** The router issues tokens with an expiry and no refresh path; the SDK
+  papers over it by reconnecting once on `Unauthenticated`. *open*
+
+### Security design session
+
+A focused session, not a slice — the questions below are answered together or not at all,
+because each one's answer constrains the others. Written down because the context that
+makes them answerable is the part that disappears between sessions.
+
+- **What is the threat model?** Everything below is currently answered against an unstated
+  one, which is how "the gRPC instance is meant to stay bound to `127.0.0.1`" came to be
+  documented as a deployment preference when it is a load-bearing control.
+- **Does gRPC verify the router's JWT, or is it trusted-network-only?** If the latter, the
+  token plumbing should be deleted rather than left looking functional, and the localhost
+  bind should be enforced rather than recommended.
+- **Where does TLS terminate?** The standing position, recorded in
+  [`README.md`](../../README.md) and in `boswell-gateway/src/config.rs`, is that TLS and
+  public reach are provided by a reverse proxy or tunnel in front of Boswell — neither the
+  gateway nor the instance terminates it. Implementing TLS in-process would move the trust
+  boundary, not fill a gap, so it is a decision to revisit deliberately rather than a
+  missing feature to add.
+- **Does Boswell ship a default identity adapter, or require an external IdP?** With the
+  answer to the inert-gradient consequence above.
+- **How do agents in the intended environments authenticate?** Local Ollama-hosted agents,
+  local Claude agents, and cloud-hosted Claude agents all need streamlined access to the
+  same memory store, from different trust positions.
+- **How are gateway API keys issued and rotated?** Today they are SHA-256 hashes in a
+  config file, with no issuance path.
+
+## Transport and interfaces
+
+Every way in: gRPC, the router, the SDK, the HTTP gateway, MCP, the CLI.
+
+- **gRPC service — all fifteen RPCs.** *shipped*
+- **Router — JWT session issuance and instance registry**, single-instance mode. *shipped*
+- **Rust SDK** covering all fifteen RPCs, with connection pooling. *shipped*
+- **`boswell-gateway` — the public HTTP/JSON API.** Fifteen routes, SHA-256-hashed bearer
+  keys, per-key rate limiting, namespace isolation. The only component with real request
+  authentication. *shipped* (#6)
+- **Claude Code hooks integration** — `SessionStart` recall, `UserPromptSubmit` capture,
+  backed by `POST /v1/hooks/ingest`. *shipped* (#5)
+- **Procedural memory over the wire (7a)** — `QueryProcedures`, `GetProcedure`,
+  `ReportOutcome`; `GET /v1/procedures`, `GET /v1/procedures/{id}`,
+  `POST /v1/receipts/{id}/report`. Retrieval issues the receipt; scope is checked *before*
+  it is issued. *shipped* (#21)
+- **Goals and traversal over the wire (7b)** — `QueryGoals`, `GetGoal`, `Expand`;
+  `GET /v1/goals[/{id}[/expand]]`. Traversal issues **no** receipt. *shipped* (#24)
+- **CLI procedural-memory commands**, and the clap flag collision that was panicking
+  `query`, `learn` and `forget` on every invocation. *shipped* (#26)
+- **MCP tool surface for goals and procedures.** The MCP server exposes five claim-only
+  tools against the gateway's fifteen routes — no goal or procedure tools at all. The
+  clearest feature lag in the tree. *open*
+- **gRPC graceful shutdown.** `server.rs` calls `.serve(addr)`, not
+  `serve_with_shutdown`. The Janitor and Synthesizer workers both handle `ctrl_c`
+  correctly; the server does not. *open*
+- **SDK retry with exponential backoff.** Today it reconnects once on `Unauthenticated`
+  and gives up. *open*
+- **Un-ignore the full-stack E2E tests.** `boswell-sdk/tests/e2e_tests.rs` requires
+  manually started router and gRPC servers, so CI never exercises SDK → Router → gRPC →
+  Store end to end. *open*
+- **REPL procedural-memory commands.** The REPL implements nine commands and omits `goal`,
+  `procedure` and `validate`. Its parser is hand-rolled and positional, so this is its own
+  piece of work rather than a wiring change — and it already omitted a shipped command
+  (`validate`) before procedural memory existed. Not an oversight.
+  *deferred*
+
+## Background processes
+
+The passes that run without being asked.
+
+- **Janitor — decay, tier-TTL garbage collection, confidence-based demotion, dry-run
+  mode.** *shipped*
+- **Contradiction detection**, recording `Contradicts` relationships folded into confidence
+  as a penalty, rate-limited. *shipped*
+- **Synthesizer — clustering, prompting, derived claims via `DerivedFrom`.** Complete with
+  its own test suite. The February plan called this "deferred to Phase 4+"; it has been
+  done for some time. *shipped*
+- **Procedure and receipt sweeps** — expiring unanswered receipts, which is the mechanism
+  that actually enforces "silence is not success". *shipped* (#13, #17)
+
+## Observability and performance
+
+Named as a workstream because it has never had one, and that is why none of it exists.
+
+- **Tracing in the gRPC service layer.** `service.rs` contains zero `tracing::` calls.
+  `tracing-subscriber` is initialised in `boswell-server`; the service emits nothing into
+  it. *open*
+- **Metrics export.** The Janitor tracks its own counters. Nothing is exported, and there
+  is no Prometheus dependency or `/metrics` endpoint anywhere in the workspace. *open*
+- **Benchmarks.** There is no `benches/` directory and no `criterion` dependency. Nothing
+  in the repository measures anything — including the "100+ assertions/sec, queries <100ms
+  p95" target the February plan asserted and no one ever checked. Either measure it or stop
+  claiming it. *open*
+- **Test wall-clock.** `test_run_cycles` slept sixty real seconds against a live
+  `tokio::time::interval` — most of the workspace total. Now runs on a paused clock.
+  *shipped* (#36)
+
+## Storage portability
+
+The "start simple, grow" path from [ADR-020](../ADRs/020-swappable-storage-backends.md).
+
+- **Embedded SQLite adapter.** The one adapter that ships today. *shipped*
+- **Harden the `ClaimStore` contract.** Async methods, and query filters pushed into
+  `ClaimQuery` rather than applied after the fact. **Prerequisite for every slice below**
+  — the port is not yet good enough to have a second implementation behind it, which is
+  why "swappable storage" is a design intent rather than a present capability. *open*
+- **PostgreSQL + pgvector adapter**, for shared, multi-agent and hosted deployments.
+  *open*
+- **Data-store migration tool.** Move claims, relationships, provenance and embeddings
+  between adapters preserving ids, tiers, confidence and timestamps. Likely
+  `boswell migrate`. *open*
+- **Backup and restore tooling.** `boswell backup` / `boswell restore`, per
+  [Backup & Recovery](../architecture/16-backup-recovery.md). The design exists; no code
+  does. *open*
+
+---
+
+# Appendix: the original five-phase plan (February 2026)
+
+What follows is the roadmap as written on 2026-02-13, preserved unchanged as the record of
+what the project intended at the outset. **It is historical and is not maintained.** Its
+checkboxes were never ticked — thirty-six unchecked items while two phases were
+essentially complete — and its five-phase structure has no place for the procedural-memory,
+identity or gateway work that followed. Read it for intent, not for status.
+
+## Plan: Boswell Cognitive Memory System - Development Roadmap
 
 Boswell is a claim-based cognitive memory system for AI agents, built in Rust with Clean Architecture principles. This plan delivers a functional single-instance system incrementally, with 11+ components organized into 5 phases. Each phase has clear deliverables, validation criteria, and parallelizable work streams for 2-3 subagent contributors.
 
@@ -10,13 +293,13 @@ Boswell is a claim-based cognitive memory system for AI agents, built in Rust wi
 
 ---
 
-## PHASE 1: FOUNDATION
+### PHASE 1: FOUNDATION
 
 **Goal:** Establish domain core, storage layer, and LLM integration without external API surface
 
 **Contributors Assigned:** 2 parallel streams
 
-### Contributor A: Domain Core (`boswell-domain`)
+#### Contributor A: Domain Core (`boswell-domain`)
 
 1. Create crate with zero external dependencies (per ADR-004)
 2. Implement core value objects:
@@ -45,7 +328,7 @@ Boswell is a claim-based cognitive memory system for AI agents, built in Rust wi
 
 ---
 
-### Contributor B: Storage Layer (`boswell-store`)
+#### Contributor B: Storage Layer (`boswell-store`)
 
 1. Create SQLite schema (fill documentation gap):
    - `claims` table with ULID primary key
@@ -75,7 +358,7 @@ Boswell is a claim-based cognitive memory system for AI agents, built in Rust wi
 
 ---
 
-### Phase 1 Sync Point: LLM Provider Layer (`boswell-llm`)
+#### Phase 1 Sync Point: LLM Provider Layer (`boswell-llm`)
 
 Both contributors collaborate once their streams complete:
 
@@ -103,13 +386,13 @@ Both contributors collaborate once their streams complete:
 
 ---
 
-## PHASE 2: CORE OPERATIONS
+### PHASE 2: CORE OPERATIONS
 
 **Goal:** Expose gRPC API for basic operations, enable client interactions
 
 **Contributors Assigned:** 3 parallel streams
 
-### Contributor A: gRPC Service Layer (`boswell-grpc`)
+#### Contributor A: gRPC Service Layer (`boswell-grpc`)
 
 1. Define `.proto` files for API surface (fill documentation gap):
    - `AssertRequest/Response` with optional tier targeting
@@ -130,7 +413,7 @@ Both contributors collaborate once their streams complete:
 
 ---
 
-### Contributor B: Router (`boswell-router`)
+#### Contributor B: Router (`boswell-router`)
 
 1. Implement session management (ADR-019):
    - Session token generation (signed JWT or similar)
@@ -151,7 +434,7 @@ Both contributors collaborate once their streams complete:
 
 ---
 
-### Contributor C: Client SDK (`boswell-sdk`)
+#### Contributor C: Client SDK (`boswell-sdk`)
 
 1. Create Rust SDK wrapping gRPC calls:
    - Session establishment via Router
@@ -180,13 +463,13 @@ Both contributors collaborate once their streams complete:
 
 ---
 
-## PHASE 3: INTELLIGENT OPERATIONS
+### PHASE 3: INTELLIGENT OPERATIONS
 
 **Goal:** Add LLM-backed operations (Extractor, Gatekeeper)
 
 **Contributors Assigned:** 2 parallel streams
 
-### Contributor A: Extractor (`boswell-extractor`)
+#### Contributor A: Extractor (`boswell-extractor`)
 
 1. Design LLM prompts for text → claims conversion (fill documentation gap):
    - System prompt defining claim structure
@@ -211,7 +494,7 @@ Both contributors collaborate once their streams complete:
 
 ---
 
-### Contributor B: Gatekeeper (`boswell-gatekeeper`)
+#### Contributor B: Gatekeeper (`boswell-gatekeeper`)
 
 1. Define tier promotion evaluation prompts (fill documentation gap):
    - Per-tier criteria (ephemeral→task, task→project, project→permanent)
@@ -248,13 +531,13 @@ Both contributors collaborate once their streams complete:
 
 ---
 
-## PHASE 4: BACKGROUND PROCESSES
+### PHASE 4: BACKGROUND PROCESSES
 
 **Goal:** Add automated maintenance (Janitors) and optional synthesis
 
 **Contributors Assigned:** 2-3 parallel streams
 
-### Contributor A: Core Janitors (`boswell-janitor`)
+#### Contributor A: Core Janitors (`boswell-janitor`)
 
 1. Create janitor framework:
    - Background thread with configurable interval
@@ -279,7 +562,7 @@ Both contributors collaborate once their streams complete:
 
 ---
 
-### Contributor B (Optional): Advanced Janitors
+#### Contributor B (Optional): Advanced Janitors
 
 1. Implement **Contradiction Janitor** (high complexity):
    - Query pairs of claims with overlapping namespaces/subjects
@@ -296,7 +579,7 @@ Both contributors collaborate once their streams complete:
 
 ---
 
-### Contributor C (Phase 4b): Synthesizer (`boswell-synthesizer`)
+#### Contributor C (Phase 4b): Synthesizer (`boswell-synthesizer`)
 
 *Deferred to Phase 4b - start only after Phase 4a validation*
 
@@ -333,13 +616,13 @@ Both contributors collaborate once their streams complete:
 
 ---
 
-## PHASE 5: CLIENT INTEGRATION & POLISH
+### PHASE 5: CLIENT INTEGRATION & POLISH
 
 **Goal:** Expose via MCP, add CLI tooling, optimize performance
 
 **Contributors Assigned:** 2 parallel streams
 
-### Contributor A: MCP Server (`boswell-mcp`)
+#### Contributor A: MCP Server (`boswell-mcp`)
 
 1. Implement MCP protocol server:
    - Expose all operations as MCP tools
@@ -360,7 +643,7 @@ Both contributors collaborate once their streams complete:
 
 ---
 
-### Contributor B: CLI & Operations Tooling (`boswell-cli`)
+#### Contributor B: CLI & Operations Tooling (`boswell-cli`)
 
 1. Create admin commands:
    - `boswell init` - bootstrap new instance
@@ -384,7 +667,7 @@ Both contributors collaborate once their streams complete:
 
 ---
 
-### Contributor C (Optimization - ongoing):
+#### Contributor C (Optimization - ongoing):
 
 1. Performance benchmarking:
    - Assert throughput (claims/sec)
@@ -418,11 +701,11 @@ Both contributors collaborate once their streams complete:
 
 ---
 
-## CROSS-PHASE REQUIREMENTS
+### CROSS-PHASE REQUIREMENTS
 
 All contributors must adhere to:
 
-### 1. Testing Standards
+#### 1. Testing Standards
 
 - Unit tests for all business logic
 - Integration tests for component boundaries
@@ -430,28 +713,28 @@ All contributors must adhere to:
 - BDD/Gherkin tests for user-facing operations (using `cucumber-rust`)
 - Minimum 80% code coverage
 
-### 2. Documentation Standards
+#### 2. Documentation Standards
 
 - Rustdoc comments for all public items
 - Module-level documentation explaining purpose
 - Examples in docs for common operations
 - Architecture decision updates when deviating from ADRs
 
-### 3. Code Quality
+#### 3. Code Quality
 
 - No file exceeds 300 lines (refactor if needed)
 - All `clippy` lints pass at `warn` level
 - Run `cargo fmt` before commits
 - No `unwrap()` or `panic!()` in production code paths
 
-### 4. Security
+#### 4. Security
 
 - Never commit secrets or test certificates to git
 - Use environment variables for sensitive config
 - Validate all inputs at API boundaries
 - Follow Rust memory safety guidelines
 
-### 5. Coordination
+#### 5. Coordination
 
 - Daily sync on completed work and blockers
 - Update shared task board with progress
@@ -460,30 +743,30 @@ All contributors must adhere to:
 
 ---
 
-## RISK MITIGATION
+### RISK MITIGATION
 
-### 1. LLM Quality Risk
+#### 1. LLM Quality Risk
 
 - Maintain prompt versioning
 - A/B test prompt variations
 - Collect failure cases for refinement
 - Support multiple LLM providers for fallback
 
-### 2. Confidence Formula Risk
+#### 2. Confidence Formula Risk
 
 - Start with conservative parameters
 - Instrument heavily for debugging
 - Create visualization tools for support networks
 - Plan for formula versioning and migration
 
-### 3. Performance Risk
+#### 3. Performance Risk
 
 - Benchmark early and often
 - Profile before optimizing
 - Document hardware requirements
 - Plan for horizontal scaling (Phase 6+)
 
-### 4. Coordination Risk
+#### 4. Coordination Risk
 
 - Clear phase gates prevent premature dependencies
 - Each contributor owns complete vertical slices
@@ -491,7 +774,7 @@ All contributors must adhere to:
 
 ---
 
-## SUCCESS CRITERIA
+### SUCCESS CRITERIA
 
 **Phase 1:** Foundation components compile, tests pass  
 **Phase 2:** End-to-end claim lifecycle (assert → query → retrieve)  
@@ -509,7 +792,7 @@ All contributors must adhere to:
 - Exposes all functionality via MCP and CLI
 - Processes 100+ assertions/sec, queries <100ms p95
 
-## Backlog / Future Work
+### Backlog / Future Work
 
 Identified but not yet scheduled into a phase.
 

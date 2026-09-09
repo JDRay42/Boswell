@@ -63,9 +63,24 @@ executor answers it with an outcome report.**
 What the store does when it hands a procedure over for execution. Issuing creates an obligation.
 _Avoid_: dispense, serve, hand out, return, retrieve
 
+"Dispense" was a coinage and was removed: it describes a one-way transaction, which is
+backwards for an act that creates an obligation running the other way.
+
 **Execution receipt**:
 The obligation created by issuing a procedure — the thing an executor owes an answer to.
 _Avoid_: contract, ticket, lease, token
+
+*Why not "contract", since a receipt is proof of something finished and this is an
+obligation still owed?* Because "receipt" was already load-bearing — `receipt_id`,
+`ReceiptStatus`, `receipt_store.rs`, the database schema and
+`POST /v1/receipts/{id}/report` — and renaming it would have cost more than the better word
+was worth. Cheap beat correct, on purpose and with eyes open. **Do not rename it back**;
+this has been settled once and the argument for "contract" is known and rejected.
+
+Note that "contract" remains correct in Boswell in a *different* sense — the
+effectiveness-reporting contract and the `expand` contract in
+`docs/architecture/15-procedural-memory.md`, meaning the promise an interface makes. Those
+uses are deliberate and should survive any future pass over the word.
 
 **Executor**:
 Whoever runs an issued procedure and owes its outcome report. Not necessarily whoever asked for
@@ -140,3 +155,28 @@ _Avoid_: validator, policy engine, moderator
 The background pass that applies decay, expires unanswered receipts, and carries out the
 Gatekeeper's verdicts.
 _Avoid_: reaper, sweeper, cron job, GC
+
+## Roadmap status
+
+The four words [`docs/development/roadmap.md`](docs/development/roadmap.md) uses to say
+where a slice of work stands. They are listed here because the distinction between the last
+two is the one that keeps getting lost.
+
+**Shipped**:
+On `main`, cited by the PRs that did it.
+_Avoid_: done, complete, closed
+
+**In flight**:
+Someone is working on it now.
+_Avoid_: in progress, WIP, started
+
+**Open**:
+Not done, and no decision has been made about it.
+_Avoid_: todo, backlog, pending
+
+**Deferred**:
+Not done *on purpose*, carrying the reason and what would unblock it. Procedure learning is
+deferred, not open: it waits on a corpus of real episodes, and starting it early would
+produce a worse inducer rather than an earlier one. Collapsing this into "open" throws away
+the reasoning and invites someone to start.
+_Avoid_: postponed, later, someday, blocked

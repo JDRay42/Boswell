@@ -238,6 +238,19 @@ impl DelegationChain {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProvenanceStamp {
     /// Stable agent identity, e.g. `agent:orch-7/sub:explore-3`.
+    ///
+    /// **Invariant: the transport sets this from the authenticated principal,
+    /// never from caller input.** The Sybil defense depends on it. Corroboration
+    /// counts distinct delegation *roots*, falling back to this field when a
+    /// stamp carries no chain — and the chain is caller-supplied, so it can say
+    /// anything. `author` being transport-set is the only thing that makes the
+    /// fallback trustworthy; nine self-rooted clones collapse onto one principal
+    /// because of it.
+    ///
+    /// No authoring endpoint exists yet (see the roadmap). Whichever one lands
+    /// first must preserve this, or corroboration becomes forgeable by any caller
+    /// willing to type a different name. Reasoning in
+    /// `docs/architecture/15-procedural-memory.md` §8.3.
     pub author: String,
     /// The on-behalf-of delegation path.
     pub delegation_chain: DelegationChain,

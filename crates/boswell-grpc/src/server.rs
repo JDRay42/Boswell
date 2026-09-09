@@ -29,8 +29,8 @@ pub struct ServerConfig {
     ///
     /// **TLS is not implemented at this layer, and setting this refuses to
     /// start.** Terminate TLS at a reverse proxy or tunnel in front of the
-    /// instance, as `docs/development/gateway-plan.md` decided and the README
-    /// documents.
+    /// instance — the standing position recorded in the README and in
+    /// `boswell-gateway/src/config.rs`.
     ///
     /// The flag is kept, rather than deleted, so that an operator who believes
     /// they configured TLS gets an error instead of silently getting plaintext.
