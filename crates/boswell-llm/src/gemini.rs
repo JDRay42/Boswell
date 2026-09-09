@@ -143,6 +143,20 @@ impl GeminiProvider {
         self
     }
 
+    /// Set the request timeout.
+    ///
+    /// The default suits a hosted endpoint. A local model behind this same
+    /// format is a different animal: it may spend a minute loading weights
+    /// before it emits a first token, and a reasoning model then generates its
+    /// whole chain of thought before the answer.
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.client = reqwest::Client::builder()
+            .timeout(timeout)
+            .build()
+            .expect("failed to build the HTTP client");
+        self
+    }
+
     /// Set the maximum number of attempts.
     pub fn with_max_retries(mut self, max_retries: u32) -> Self {
         self.max_retries = max_retries;

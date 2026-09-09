@@ -103,6 +103,18 @@ impl OllamaProvider {
         Self::new(DEFAULT_ENDPOINT, model)
     }
 
+    /// Set the request timeout.
+    ///
+    /// Thirty seconds is generous for a small model that is already resident and
+    /// nowhere near enough for a large one that has to load first.
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.client = reqwest::Client::builder()
+            .timeout(timeout)
+            .build()
+            .expect("failed to build the HTTP client");
+        self
+    }
+
     /// Set the maximum number of retry attempts
     pub fn with_max_retries(mut self, max_retries: u32) -> Self {
         self.max_retries = max_retries;
