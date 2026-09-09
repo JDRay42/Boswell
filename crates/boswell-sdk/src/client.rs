@@ -4,7 +4,7 @@ use crate::error::SdkError;
 use crate::session::establish_session;
 use boswell_domain::{Claim, ClaimId, ExecutionReceipt, Procedure, Relationship, Tier};
 use boswell_grpc::conversions::{
-    contract_from_proto, procedure_from_proto, relationship_from_proto,
+    procedure_from_proto, receipt_from_proto, relationship_from_proto,
 };
 use boswell_grpc::proto::{
     bos_well_service_client::BosWellServiceClient, health_check_response, AssertRequest,
@@ -25,7 +25,7 @@ use tonic::transport::Channel;
 /// obligation for every procedure the call issues.
 #[derive(Debug, Clone, Default)]
 pub struct ProcedureQuerySpec {
-    /// The principal the execution contracts are issued to.
+    /// The principal the execution receipts are issued to.
     pub issued_to: String,
     /// Filter by namespace prefix.
     pub namespace: Option<String>,
@@ -44,7 +44,7 @@ pub struct ProcedureQuerySpec {
 }
 
 impl ProcedureQuerySpec {
-    /// A query issuing contracts to `issued_to`.
+    /// A query issuing receipts to `issued_to`.
     pub fn new(issued_to: impl Into<String>) -> Self {
         Self {
             issued_to: issued_to.into(),
@@ -65,17 +65,17 @@ impl ProcedureQuerySpec {
     }
 }
 
-/// A procedure handed out together with the execution contract issued for it.
+/// A procedure issued together with the execution receipt for it.
 ///
-/// Holding one is holding an obligation: answer `contract.receipt_id` with
+/// Holding one is holding an obligation: answer `receipt.receipt_id` with
 /// [`report_outcome`](BoswellClient::report_outcome) before
-/// `contract.expires_at`, or the run counts as `unknown` against the procedure.
+/// `receipt.expires_at`, or the run counts as `unknown` against the procedure.
 #[derive(Debug, Clone)]
 pub struct IssuedProcedure {
     /// The procedure to execute.
     pub procedure: Procedure,
-    /// The reporting contract issued with the procedure.
-    pub contract: ExecutionReceipt,
+    /// The reporting receipt issued with the procedure.
+    pub receipt: ExecutionReceipt,
 }
 
 fn issued_from_proto(d: &GrpcIssuedProcedure) -> Result<IssuedProcedure, SdkError> {
@@ -83,15 +83,15 @@ fn issued_from_proto(d: &GrpcIssuedProcedure) -> Result<IssuedProcedure, SdkErro
         .procedure
         .as_ref()
         .ok_or_else(|| SdkError::GrpcError("issued procedure missing its body".to_string()))?;
-    let contract = d.contract.as_ref().ok_or_else(|| {
-        SdkError::GrpcError("issued procedure missing its execution contract".to_string())
+    let receipt = d.receipt.as_ref().ok_or_else(|| {
+        SdkError::GrpcError("issued procedure missing its execution receipt".to_string())
     })?;
 
     Ok(IssuedProcedure {
         procedure: procedure_from_proto(procedure)
             .map_err(|e| SdkError::GrpcError(format!("Failed to convert procedure: {}", e)))?,
-        contract: contract_from_proto(contract)
-            .map_err(|e| SdkError::GrpcError(format!("Failed to convert contract: {}", e)))?,
+        receipt: receipt_from_proto(receipt)
+            .map_err(|e| SdkError::GrpcError(format!("Failed to convert receipt: {}", e)))?,
     })
 }
 
@@ -605,12 +605,12 @@ impl BoswellClient {
 
     // ---- Procedural memory (design 15 §3.3, §4.1) ----
 
-    /// Retrieve procedures for a goal/intent, each with the execution contract
+    /// Retrieve procedures for a goal/intent, each with the execution receipt
     /// issued for it.
     ///
     /// Retrieval is not free: every returned procedure carries a receipt, and
     /// the caller is obliged to answer it with [`report_outcome`] before the
-    /// contract expires. An unreported contract counts as `unknown` against the
+    /// receipt expires. An unreported receipt counts as `unknown` against the
     /// procedure ("silence is not success", design §3.3).
     ///
     /// [`report_outcome`]: BoswellClient::report_outcome
@@ -650,7 +650,7 @@ impl BoswellClient {
         }
     }
 
-    /// Fetch one procedure by id, issuing an execution contract for it.
+    /// Fetch one procedure by id, issuing an execution receipt for it.
     ///
     /// Returns `None` if no such procedure exists, or if it lies outside
     /// `namespace_scope` — the scope is enforced server-side *before* a receipt

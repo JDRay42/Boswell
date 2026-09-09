@@ -199,9 +199,9 @@ from the event's optional `namespace` field, else the key's namespace.
 See `docs/architecture/15-procedural-memory.md`. Two ideas drive the shape of
 these endpoints:
 
-- **Retrieval creates an obligation.** Every procedure handed out comes with an
-  execution contract (a receipt). The caller must answer it before
-  `expires_at`, or the run is counted as `unknown` against the procedure —
+- **Retrieval creates an obligation.** Every procedure issued comes with an
+  execution receipt. The caller must answer it before `expires_at`, or the run
+  is counted as `unknown` against the procedure —
   "silence is not success" (§3.3). You cannot opt out by not reporting; you can
   only report or be counted as unknown.
 - **A report is a gatekept write.** The gateway stamps the report with the
@@ -232,7 +232,7 @@ Response:
                      "preconditions": [ … ], "tier": "project",
                      "effectiveness": { "use_count": 12, "success_count": 9,
                                         "failure_count": 2, "unknown_count": 1 } },
-      "contract": { "receipt_id": "…", "procedure_id": "…", "version": 3,
+      "receipt": { "receipt_id": "…", "procedure_id": "…", "version": 3,
                     "issued_to": "<api key id>", "task_id": "t-7",
                     "issued_at": 1700000000000, "expires_at": 1700003600000,
                     "required": ["outcome"],
@@ -240,9 +240,9 @@ Response:
   ] }
 ```
 
-`issued_to` is the authenticated key's id — a key cannot issue contracts in
+`issued_to` is the authenticated key's id — a key cannot issue receipts in
 another principal's name. `GET /v1/procedures/{id}` returns the same
-`{ procedure, contract }` object for a single procedure.
+`{ procedure, receipt }` object for a single procedure.
 
 ### Report — `POST /v1/receipts/{receipt_id}/report`
 

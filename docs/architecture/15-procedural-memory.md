@@ -157,7 +157,7 @@ execution carries an obligation to report the outcome** — the report is not an
 hook. When the store hands out a procedure it issues an execution receipt:
 
 ```
-execution_contract: {
+execution_receipt: {
   receipt_id, procedure_id, version,
   issued_to: <principal>, task_id, session_id,
   expires_at, report_to,
@@ -457,7 +457,7 @@ adversary who already controls the host.
    - **7a (done).** Procedure retrieval + receipt reporting over gRPC, the SDK
      and the gateway — `QueryProcedures`/`GetProcedure`/`ReportOutcome`, and
      `GET /v1/procedures`, `GET /v1/procedures/{id}`,
-     `POST /v1/receipts/{id}/report`. Retrieval issues the execution contract;
+     `POST /v1/receipts/{id}/report`. Retrieval issues the execution receipt;
      hooks can now close the loop. See `docs/integrations/http-api.md`.
    - **7b.** Goals, edges and `expand` over the same three layers, plus CLI
      commands and the devAuth `X-Boswell-Auth` marker.

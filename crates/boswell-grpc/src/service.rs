@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 use tonic::{Request, Response, Status};
 
 use crate::conversions::{
-    claim_from_proto, claim_to_proto, confidence_from_proto, contract_to_proto,
-    outcome_report_from_proto, procedure_id_from_proto, procedure_to_proto, relationship_to_proto,
+    claim_from_proto, claim_to_proto, confidence_from_proto, outcome_report_from_proto,
+    procedure_id_from_proto, procedure_to_proto, receipt_to_proto, relationship_to_proto,
     tier_from_proto,
 };
 use crate::proto::bos_well_service_server::BosWellService;
@@ -56,7 +56,7 @@ pub struct BosWellServiceImpl<S: ClaimStore> {
     receipt_ttl_ms: u64,
 }
 
-/// How long an issued procedure's execution contract stays open before it
+/// How long an issued procedure's execution receipt stays open before it
 /// expires unreported (and counts as `unknown` — "silence is not success",
 /// design §3.3). One hour by default; override with
 /// [`BosWellServiceImpl::with_receipt_ttl_ms`].
@@ -75,13 +75,13 @@ impl<S: ClaimStore> BosWellServiceImpl<S> {
         }
     }
 
-    /// Set how long issued execution contracts stay open (Unix ms duration).
+    /// Set how long issued execution receipts stay open (Unix ms duration).
     pub fn with_receipt_ttl_ms(mut self, ttl_ms: u64) -> Self {
         self.receipt_ttl_ms = ttl_ms;
         self
     }
 
-    /// Issue a procedure: persist an execution contract for it (design §3.3).
+    /// Issue a procedure: persist an execution receipt for it (design §3.3).
     ///
     /// Every issued procedure gets one — retrieval is what creates the
     /// obligation to report — so the receipt is written before the procedure
@@ -94,7 +94,7 @@ impl<S: ClaimStore> BosWellServiceImpl<S> {
         task_id: Option<String>,
         session_id: Option<String>,
         now: u64,
-    ) -> Result<crate::proto::ExecutionContract, Status>
+    ) -> Result<crate::proto::ExecutionReceipt, Status>
     where
         P: ProcedureStore,
         P::Error: std::fmt::Debug,
@@ -107,7 +107,7 @@ impl<S: ClaimStore> BosWellServiceImpl<S> {
             .issue_receipt(&receipt)
             .map_err(|e| Status::internal(format!("Failed to issue receipt: {:?}", e)))?;
 
-        Ok(contract_to_proto(&receipt))
+        Ok(receipt_to_proto(&receipt))
     }
 
     /// Attach a server-side extractor so the `Extract` RPC (and LLM-mode hook
@@ -552,7 +552,7 @@ where
 
         let mut issued = Vec::with_capacity(procedures.len());
         for procedure in &procedures {
-            let contract = self.issue(
+            let receipt = self.issue(
                 &mut *store,
                 procedure,
                 issued_to,
@@ -562,7 +562,7 @@ where
             )?;
             issued.push(IssuedProcedure {
                 procedure: Some(procedure_to_proto(procedure)),
-                contract: Some(contract),
+                receipt: Some(receipt),
             });
         }
 
@@ -609,7 +609,7 @@ where
             }
         };
 
-        let contract = self.issue(
+        let receipt = self.issue(
             &mut *store,
             &procedure,
             issued_to,
@@ -622,7 +622,7 @@ where
             found: true,
             procedure: Some(IssuedProcedure {
                 procedure: Some(procedure_to_proto(&procedure)),
-                contract: Some(contract),
+                receipt: Some(receipt),
             }),
             message: "Procedure issued".to_string(),
         }))
@@ -656,7 +656,7 @@ where
 
         // The stamp's author is the principal the receipt was issued to, not
         // whoever is calling: a report is only ever a self-report against an
-        // outstanding contract.
+        // outstanding receipt.
         let Some(stored) = store
             .get_receipt(receipt_id)
             .map_err(|e| Status::internal(format!("Failed to load receipt: {:?}", e)))?
@@ -696,7 +696,7 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
-/// Reject a request that names no principal: an execution contract with
+/// Reject a request that names no principal: an execution receipt with
 /// nobody on the hook for reporting is not a contract (design §3.3).
 fn require_issued_to(issued_to: &str) -> Result<&str, Status> {
     if issued_to.trim().is_empty() {
@@ -1342,11 +1342,11 @@ mod tests {
             }
         }
 
-        /// Retrieval returns the procedure *and* a contract naming the
+        /// Retrieval returns the procedure *and* a receipt naming the
         /// principal on the hook — the obligation is created when the store
         /// issues the procedure (design §3.3), not when the executor opts in.
         #[tokio::test]
-        async fn issuing_a_procedure_creates_a_contract() {
+        async fn issuing_a_procedure_creates_a_receipt() {
             let service = service_with(vec![mk("omelette", DomainTierEnum::Task)]);
 
             let resp = service
@@ -1357,12 +1357,12 @@ mod tests {
 
             assert_eq!(resp.count, 1);
             let issued = &resp.procedures[0];
-            let contract = issued.contract.as_ref().unwrap();
-            assert_eq!(contract.issued_to, "agent:cook-1");
-            assert_eq!(contract.task_id.as_deref(), Some("task-1"));
-            assert_eq!(contract.session_id.as_deref(), Some("session-1"));
-            assert!(contract.expires_at > contract.issued_at);
-            assert_eq!(contract.procedure_id, issued.procedure.as_ref().unwrap().id);
+            let receipt = issued.receipt.as_ref().unwrap();
+            assert_eq!(receipt.issued_to, "agent:cook-1");
+            assert_eq!(receipt.task_id.as_deref(), Some("task-1"));
+            assert_eq!(receipt.session_id.as_deref(), Some("session-1"));
+            assert!(receipt.expires_at > receipt.issued_at);
+            assert_eq!(receipt.procedure_id, issued.procedure.as_ref().unwrap().id);
         }
 
         /// A procedure issued to nobody is not a contract, so it is rejected
@@ -1393,7 +1393,7 @@ mod tests {
                 .unwrap()
                 .into_inner();
             let receipt_id = issued.procedures[0]
-                .contract
+                .receipt
                 .as_ref()
                 .unwrap()
                 .receipt_id
@@ -1430,7 +1430,7 @@ mod tests {
                 .unwrap()
                 .into_inner();
             let receipt_id = issued.procedures[0]
-                .contract
+                .receipt
                 .as_ref()
                 .unwrap()
                 .receipt_id
@@ -1467,7 +1467,7 @@ mod tests {
                 .unwrap()
                 .into_inner();
             let receipt_id = issued.procedures[0]
-                .contract
+                .receipt
                 .as_ref()
                 .unwrap()
                 .receipt_id
@@ -1507,7 +1507,7 @@ mod tests {
                 .unwrap()
                 .into_inner();
             let receipt_id = issued.procedures[0]
-                .contract
+                .receipt
                 .as_ref()
                 .unwrap()
                 .receipt_id
@@ -1544,7 +1544,7 @@ mod tests {
                 .unwrap()
                 .into_inner();
             let receipt_id = issued.procedures[0]
-                .contract
+                .receipt
                 .as_ref()
                 .unwrap()
                 .receipt_id
@@ -1653,7 +1653,7 @@ mod tests {
                 .into_inner();
 
             assert!(resp.found, "{}", resp.message);
-            assert!(resp.procedure.unwrap().contract.is_some());
+            assert!(resp.procedure.unwrap().receipt.is_some());
         }
 
         /// A claim-only store is distinguishable from a genuine no-match, so a
