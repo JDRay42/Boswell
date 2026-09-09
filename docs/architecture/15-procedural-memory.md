@@ -459,8 +459,14 @@ adversary who already controls the host.
      `GET /v1/procedures`, `GET /v1/procedures/{id}`,
      `POST /v1/receipts/{id}/report`. Retrieval issues the execution receipt;
      hooks can now close the loop. See `docs/integrations/http-api.md`.
-   - **7b.** Goals, edges and `expand` over the same three layers, plus CLI
-     commands and the devAuth `X-Boswell-Auth` marker.
+   - **7b (in progress).** Goals and `expand` over the same three layers —
+     `QueryGoals`/`GetGoal`/`Expand`, and `GET /v1/goals`, `GET /v1/goals/{id}`,
+     `GET /v1/goals/{id}/expand` — plus CLI commands and the devAuth
+     `X-Boswell-Auth` marker. Traversal issues **no** receipt: only retrieving a
+     leaf procedure for execution creates a reporting obligation. Goal
+     *authoring* over the wire is deliberately out of scope, for the same reason
+     procedure authoring was in 7a — it is a §5 gatekept, provenance-stamped
+     write, not a read.
 
 ## 10. Relationship to existing components
 

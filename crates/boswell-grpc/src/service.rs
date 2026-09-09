@@ -2,7 +2,8 @@
 //!
 //! Implements the BosWellService trait generated from proto definitions.
 
-use boswell_domain::traits::{ClaimQuery, ClaimStore, ProcedureStore};
+use boswell_domain::traits::{ClaimQuery, ClaimStore, GoalStore, ProcedureStore};
+use boswell_domain::GoalQuery;
 use boswell_domain::{
     Assurance, Authority, Claim, ClaimId, DelegationChain, EvidenceType, ExecutionReceipt, Op,
     ProcedureQuery, ProvenanceStamp, Tier as DomainTier,
@@ -11,9 +12,10 @@ use std::sync::{Arc, Mutex};
 use tonic::{Request, Response, Status};
 
 use crate::conversions::{
-    claim_from_proto, claim_to_proto, confidence_from_proto, outcome_report_from_proto,
+    claim_from_proto, claim_to_proto, confidence_from_proto, expanded_candidate_to_proto,
+    factor_reading_to_proto, goal_id_from_proto, goal_to_proto, outcome_report_from_proto,
     procedure_id_from_proto, procedure_to_proto, receipt_to_proto, relationship_to_proto,
-    tier_from_proto,
+    tier_from_proto, traversal_context_from_proto,
 };
 use crate::proto::bos_well_service_server::BosWellService;
 use crate::proto::*;
@@ -124,7 +126,7 @@ where
     // `Send` (not `Sync`) is sufficient: the store is only ever accessed through
     // `Arc<Mutex<S>>`, which is `Sync` whenever `S: Send`. Requiring `S: Sync`
     // would needlessly exclude stores like `SqliteStore` (rusqlite is `!Sync`).
-    S: ClaimStore + ProcedureStore + Send + 'static,
+    S: ClaimStore + ProcedureStore + GoalStore + Send + 'static,
     S::Error: std::fmt::Debug,
 {
     async fn assert(
@@ -684,6 +686,162 @@ where
             Some(o) => report_to_proto(o),
         }))
     }
+    // ---- Goal traversal (design 15 §3.2, §4.1) ----
+
+    async fn query_goals(
+        &self,
+        request: Request<QueryGoalsRequest>,
+    ) -> Result<Response<QueryGoalsResponse>, Status> {
+        let req = request.into_inner();
+        if req.auth_token.is_empty() {
+            return Err(Status::unauthenticated("Missing authentication token"));
+        }
+
+        let query = GoalQuery {
+            namespace: req.namespace,
+            intent_contains: req.intent_contains,
+            limit: req.limit.map(|l| l as usize),
+        };
+
+        let store = self.store.lock().unwrap();
+        require_goals(&*store)?;
+
+        let goals = store
+            .query_goals(&query)
+            .map_err(|e| Status::internal(format!("Failed to query goals: {:?}", e)))?;
+
+        let wire: Vec<crate::proto::Goal> = goals.iter().map(goal_to_proto).collect();
+        let count = wire.len() as i32;
+        Ok(Response::new(QueryGoalsResponse {
+            goals: wire,
+            count,
+            message: format!("{} goal(s) matched", count),
+        }))
+    }
+
+    async fn get_goal(
+        &self,
+        request: Request<GetGoalRequest>,
+    ) -> Result<Response<GetGoalResponse>, Status> {
+        let req = request.into_inner();
+        if req.auth_token.is_empty() {
+            return Err(Status::unauthenticated("Missing authentication token"));
+        }
+        let id =
+            goal_id_from_proto(&req.id).map_err(|e| Status::invalid_argument(e.to_string()))?;
+
+        let store = self.store.lock().unwrap();
+        require_goals(&*store)?;
+
+        let found = store
+            .get_goal(id)
+            .map_err(|e| Status::internal(format!("Failed to get goal: {:?}", e)))?;
+
+        // Out of scope reads as not-found, so a caller confined to one namespace
+        // cannot confirm the existence of another namespace's decomposition.
+        let goal =
+            found.filter(|g| namespace_in_scope(req.namespace_scope.as_deref(), &g.namespace));
+
+        Ok(Response::new(match goal {
+            Some(g) => GetGoalResponse {
+                found: true,
+                goal: Some(goal_to_proto(&g)),
+                message: "Goal found".to_string(),
+            },
+            None => GetGoalResponse {
+                found: false,
+                goal: None,
+                message: format!("No goal with id {}", req.id),
+            },
+        }))
+    }
+
+    async fn expand(
+        &self,
+        request: Request<ExpandRequest>,
+    ) -> Result<Response<ExpandResponse>, Status> {
+        let req = request.into_inner();
+        if req.auth_token.is_empty() {
+            return Err(Status::unauthenticated("Missing authentication token"));
+        }
+        let goal_id = goal_id_from_proto(&req.goal_id)
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        let context = traversal_context_from_proto(req.context.as_ref());
+
+        let now = now_ms();
+        let store = self.store.lock().unwrap();
+        require_goals(&*store)?;
+
+        // Resolve the goal first and gate on scope *before* expanding: the surface
+        // leaks a namespace's decomposition (child ids, usage notes, factor
+        // readings drawn from its claims), so an out-of-scope caller must not get
+        // one built for them at all. This mirrors the ordering `GetProcedure`
+        // uses for receipts (design §3.3).
+        let goal = store
+            .get_goal(goal_id)
+            .map_err(|e| Status::internal(format!("Failed to get goal: {:?}", e)))?;
+
+        let in_scope = goal
+            .as_ref()
+            .is_some_and(|g| namespace_in_scope(req.namespace_scope.as_deref(), &g.namespace));
+
+        if !in_scope {
+            return Ok(Response::new(ExpandResponse {
+                found: false,
+                candidates: Vec::new(),
+                decision_aids: Vec::new(),
+                factor_readings: Vec::new(),
+                message: format!("No goal with id {}", req.goal_id),
+            }));
+        }
+
+        let result = store
+            .expand(goal_id, &context, now)
+            .map_err(|e| Status::internal(format!("Failed to expand goal: {:?}", e)))?;
+
+        let candidates: Vec<_> = result
+            .candidates
+            .iter()
+            .map(expanded_candidate_to_proto)
+            .collect();
+        let decision_aids: Vec<_> = result
+            .decision_aids
+            .iter()
+            .map(expanded_candidate_to_proto)
+            .collect();
+        let factor_readings: Vec<_> = result
+            .factor_readings
+            .iter()
+            .map(factor_reading_to_proto)
+            .collect();
+
+        let message = format!(
+            "{} candidate(s), {} decision aid(s)",
+            candidates.len(),
+            decision_aids.len()
+        );
+        Ok(Response::new(ExpandResponse {
+            found: true,
+            candidates,
+            decision_aids,
+            factor_readings,
+            message,
+        }))
+    }
+}
+
+// ---- Goal-traversal helpers ----
+
+/// Answer `Unimplemented` rather than an empty surface when the backing store
+/// holds no goals: an empty surface is a meaningful answer (a childless goal),
+/// so a claim-only deployment must not be able to impersonate one.
+fn require_goals<S: GoalStore>(store: &S) -> Result<(), Status> {
+    if !store.supports_goals() {
+        return Err(Status::unimplemented(
+            "this instance's store does not hold goals",
+        ));
+    }
+    Ok(())
 }
 
 // ---- Procedural-memory helpers ----
@@ -829,6 +987,7 @@ mod tests {
     // Claim-only mock: the procedural defaults ("this store holds no
     // procedures") are exactly right, so the impl is empty.
     impl ProcedureStore for MockStore {}
+    impl GoalStore for MockStore {}
 
     impl ClaimStore for MockStore {
         type Error = String;
@@ -883,6 +1042,7 @@ mod tests {
     // Claim-only mock: the procedural defaults ("this store holds no
     // procedures") are exactly right, so the impl is empty.
     impl ProcedureStore for SemanticMockStore {}
+    impl GoalStore for SemanticMockStore {}
 
     fn canned(namespace: &str, subject: &str) -> Claim {
         Claim {
@@ -1665,6 +1825,443 @@ mod tests {
 
             let err = service
                 .query_procedures(Request::new(query_req("agent:cook-1")))
+                .await
+                .unwrap_err();
+
+            assert_eq!(err.code(), tonic::Code::Unimplemented);
+        }
+    }
+
+    // ---- Goal traversal (design 15 §3.2, §4.1) ----
+
+    mod traversal {
+        use super::*;
+        use boswell_domain::{
+            ChildRef, ClaimMatch, EdgeRole, Expect, Goal, GoalEdge, GoalId, Precondition,
+            PreconditionCheck, ProcedureId, Tier as DomainTierEnum,
+        };
+        use boswell_store::SqliteStore;
+
+        const NOW: u64 = 1_700_000_000_000;
+
+        fn goal(namespace: &str, name: &str) -> Goal {
+            Goal {
+                id: GoalId::new(),
+                namespace: namespace.into(),
+                name: name.into(),
+                intent: format!("intent for {}", name),
+                definition_of_done: vec![format!("{} is done", name)],
+                tier: DomainTierEnum::Project,
+                created_at: NOW,
+                updated_at: NOW,
+                stale_at: None,
+            }
+        }
+
+        /// An edge gated on "jd has eggs" — the precondition the fixture claim
+        /// satisfies, so it can be flipped to test filtering.
+        fn edge(parent: GoalId, child: ChildRef, role: EdgeRole, eff: f64) -> GoalEdge {
+            GoalEdge {
+                parent,
+                child,
+                role,
+                preconditions: vec![Precondition {
+                    kind: "resource".into(),
+                    description: "eggs on hand".into(),
+                    check: PreconditionCheck {
+                        match_pattern: ClaimMatch {
+                            subject: "jd".into(),
+                            predicate: "has".into(),
+                            object: "eggs".into(),
+                        },
+                        min_confidence: 0.6,
+                        expect: Expect::Exists,
+                    },
+                }],
+                context_tags: vec!["time:quick".into()],
+                usage_notes: format!("notes for {:?}", child.kind()),
+                cached_effectiveness: eff,
+            }
+        }
+
+        /// A store holding `person:jd/prepare-breakfast` with two procedure
+        /// children and one decision aid, plus the claim their preconditions
+        /// read.
+        fn service_with_decomposition() -> (BosWellServiceImpl<SqliteStore>, GoalId) {
+            let mut store = SqliteStore::new(":memory:", false, 0).unwrap();
+
+            store
+                .assert_claim(Claim::new(
+                    ClaimId::new(),
+                    "person:jd".into(),
+                    "jd".into(),
+                    "has".into(),
+                    "eggs".into(),
+                    (0.7, 0.8),
+                    "project".into(),
+                    NOW,
+                ))
+                .unwrap();
+
+            let parent = goal("person:jd", "prepare-breakfast");
+            let parent_id = parent.id;
+            store.upsert_goal(&parent).unwrap();
+
+            // Two accomplish-candidates with different effectiveness, so ranking
+            // is observable, plus a decide-role aid that must not be mixed in.
+            let weak = ProcedureId::new();
+            let strong = ProcedureId::new();
+            let aid = ProcedureId::new();
+            store
+                .add_goal_edge(
+                    &edge(
+                        parent_id,
+                        ChildRef::Procedure(weak),
+                        EdgeRole::Accomplish,
+                        0.2,
+                    ),
+                    NOW,
+                )
+                .unwrap();
+            store
+                .add_goal_edge(
+                    &edge(
+                        parent_id,
+                        ChildRef::Procedure(strong),
+                        EdgeRole::Accomplish,
+                        0.9,
+                    ),
+                    NOW,
+                )
+                .unwrap();
+            store
+                .add_goal_edge(
+                    &edge(parent_id, ChildRef::Procedure(aid), EdgeRole::Decide, 0.5),
+                    NOW,
+                )
+                .unwrap();
+
+            (
+                BosWellServiceImpl::new(Arc::new(Mutex::new(store))),
+                parent_id,
+            )
+        }
+
+        fn expand_req(goal_id: &str) -> ExpandRequest {
+            ExpandRequest {
+                goal_id: goal_id.to_string(),
+                context: Some(crate::proto::TraversalContext {
+                    context_tags: vec!["time:quick".into()],
+                }),
+                namespace_scope: None,
+                auth_token: "token".to_string(),
+            }
+        }
+
+        #[tokio::test]
+        async fn expand_ranks_candidates_and_separates_decision_aids() {
+            let (service, parent) = service_with_decomposition();
+
+            let resp = service
+                .expand(Request::new(expand_req(&parent.to_string())))
+                .await
+                .unwrap()
+                .into_inner();
+
+            assert!(resp.found);
+            assert_eq!(resp.candidates.len(), 2, "{}", resp.message);
+            // Ranked by effectiveness descending.
+            assert!(resp.candidates[0].effectiveness > resp.candidates[1].effectiveness);
+            // A decide-role child is surfaced alongside, never mixed into the
+            // accomplish-candidates it ranks (design §3.2).
+            assert_eq!(resp.decision_aids.len(), 1);
+            assert_eq!(resp.decision_aids[0].role, "decide");
+            assert!(resp.candidates.iter().all(|c| c.role == "accomplish"));
+        }
+
+        /// `expand` returns the raw claim readings behind its filtering, so the
+        /// agent can see *why* a candidate surfaced (design §4.1).
+        #[tokio::test]
+        async fn expand_surfaces_the_factor_readings_behind_its_filtering() {
+            let (service, parent) = service_with_decomposition();
+
+            let resp = service
+                .expand(Request::new(expand_req(&parent.to_string())))
+                .await
+                .unwrap()
+                .into_inner();
+
+            assert!(!resp.factor_readings.is_empty(), "{}", resp.message);
+            let r = &resp.factor_readings[0];
+            assert_eq!(r.subject, "jd");
+            assert_eq!(r.predicate, "has");
+            assert_eq!(r.object, "eggs");
+            let conf = r.confidence.as_ref().expect("reading carries confidence");
+            assert!(conf.lower > 0.0 && conf.upper > conf.lower);
+        }
+
+        /// The context tags an agent passes are reported back as a match count
+        /// rather than folded into a score: the store surfaces, it never decides
+        /// how much a tag is worth (design §4.1).
+        #[tokio::test]
+        async fn expand_reports_context_match_without_weighting_it() {
+            let (service, parent) = service_with_decomposition();
+
+            let matched = service
+                .expand(Request::new(expand_req(&parent.to_string())))
+                .await
+                .unwrap()
+                .into_inner();
+            assert!(matched.candidates.iter().all(|c| c.context_match == 1));
+
+            // The same hop with no context tags: the candidates are unchanged and
+            // only the match count moves.
+            let mut req = expand_req(&parent.to_string());
+            req.context = None;
+            let unmatched = service
+                .expand(Request::new(req))
+                .await
+                .unwrap()
+                .into_inner();
+
+            assert!(unmatched.candidates.iter().all(|c| c.context_match == 0));
+            assert_eq!(
+                matched.candidates.len(),
+                unmatched.candidates.len(),
+                "context tags rank, they must not filter"
+            );
+        }
+
+        /// A childless goal and an unknown goal both yield an empty surface, so
+        /// `found` is what tells them apart.
+        #[tokio::test]
+        async fn a_childless_goal_is_distinguishable_from_an_unknown_one() {
+            let mut store = SqliteStore::new(":memory:", false, 0).unwrap();
+            let lonely = goal("person:jd", "lonely");
+            let lonely_id = lonely.id;
+            store.upsert_goal(&lonely).unwrap();
+            let service = BosWellServiceImpl::new(Arc::new(Mutex::new(store)));
+
+            let childless = service
+                .expand(Request::new(expand_req(&lonely_id.to_string())))
+                .await
+                .unwrap()
+                .into_inner();
+            assert!(childless.found);
+            assert!(childless.candidates.is_empty());
+
+            let unknown = service
+                .expand(Request::new(expand_req(&GoalId::new().to_string())))
+                .await
+                .unwrap()
+                .into_inner();
+            assert!(!unknown.found);
+            assert!(unknown.candidates.is_empty());
+        }
+
+        /// Scope is checked before the surface is built: an out-of-scope caller
+        /// gets nothing, not a filtered view, because a surface leaks child ids,
+        /// usage notes, and the claim readings behind the preconditions.
+        #[tokio::test]
+        async fn an_out_of_scope_expand_surfaces_nothing() {
+            let (service, parent) = service_with_decomposition();
+
+            let mut req = expand_req(&parent.to_string());
+            req.namespace_scope = Some("person:someone-else".into());
+
+            let resp = service
+                .expand(Request::new(req))
+                .await
+                .unwrap()
+                .into_inner();
+
+            assert!(!resp.found);
+            assert!(resp.candidates.is_empty());
+            assert!(resp.decision_aids.is_empty());
+            assert!(
+                resp.factor_readings.is_empty(),
+                "an out-of-scope caller must not learn which claims were consulted"
+            );
+        }
+
+        #[tokio::test]
+        async fn an_in_scope_expand_surfaces_normally() {
+            let (service, parent) = service_with_decomposition();
+
+            let mut req = expand_req(&parent.to_string());
+            req.namespace_scope = Some("person:jd".into());
+
+            let resp = service
+                .expand(Request::new(req))
+                .await
+                .unwrap()
+                .into_inner();
+
+            assert!(resp.found);
+            assert_eq!(resp.candidates.len(), 2);
+        }
+
+        /// Traversal issues no execution receipt: only fetching a leaf procedure
+        /// for execution creates a reporting obligation (design §3.3). A hop that
+        /// left receipts behind would make browsing a decomposition expensive and
+        /// would flood the store with obligations nobody meant to take on.
+        #[tokio::test]
+        async fn expanding_issues_no_receipt() {
+            let (service, parent) = service_with_decomposition();
+
+            service
+                .expand(Request::new(expand_req(&parent.to_string())))
+                .await
+                .unwrap();
+
+            let store = service.store.lock().unwrap();
+            // Every child of the fixture is a procedure id; none of them may have
+            // acquired a receipt merely by being surfaced.
+            let surfaced = GoalStore::expand(
+                &*store,
+                parent,
+                &boswell_domain::TraversalContext::default(),
+                NOW,
+            )
+            .unwrap();
+            for c in surfaced.candidates.iter().chain(&surfaced.decision_aids) {
+                if let ChildRef::Procedure(pid) = c.child {
+                    assert!(
+                        ProcedureStore::get_receipt(&*store, pid).unwrap().is_none(),
+                        "expand must not issue receipts"
+                    );
+                }
+            }
+        }
+
+        /// The wire shape is lossless against the domain surface: an executor
+        /// needs the edge-local signals (usage notes, context tags, the
+        /// effectiveness it was ranked on) to decide whether a candidate applies,
+        /// not merely its id. A trimmed candidate would force a fetch of every
+        /// child row and defeat §4.2.
+        #[tokio::test]
+        async fn the_expand_wire_shape_is_lossless() {
+            let (service, parent) = service_with_decomposition();
+
+            let resp = service
+                .expand(Request::new(expand_req(&parent.to_string())))
+                .await
+                .unwrap()
+                .into_inner();
+
+            let wire = &resp.candidates[0];
+            assert_eq!(wire.child_kind, "procedure");
+            assert_eq!(wire.role, "accomplish");
+            assert_eq!(wire.context_tags, vec!["time:quick".to_string()]);
+            assert!(!wire.usage_notes.is_empty());
+            assert!(wire.effectiveness > 0.0);
+
+            // And it survives the trip back into domain form unchanged.
+            let back = crate::conversions::expanded_candidate_from_proto(wire).unwrap();
+            assert_eq!(back.role, EdgeRole::Accomplish);
+            assert_eq!(back.context_tags, vec!["time:quick".to_string()]);
+            assert_eq!(back.usage_notes, wire.usage_notes);
+            assert_eq!(back.effectiveness, wire.effectiveness);
+            assert_eq!(back.context_match, wire.context_match as usize);
+            assert_eq!(back.child.kind(), boswell_domain::ChildKind::Procedure);
+        }
+
+        /// A goal round-trips through the wire without losing its definition of
+        /// done or its lifecycle fields.
+        #[tokio::test]
+        async fn a_goal_round_trips_through_the_wire() {
+            let (service, parent) = service_with_decomposition();
+
+            let resp = service
+                .get_goal(Request::new(GetGoalRequest {
+                    id: parent.to_string(),
+                    namespace_scope: None,
+                    auth_token: "token".to_string(),
+                }))
+                .await
+                .unwrap()
+                .into_inner();
+
+            assert!(resp.found);
+            let wire = resp.goal.unwrap();
+            assert_eq!(wire.definition_of_done, vec!["prepare-breakfast is done"]);
+
+            let back = crate::conversions::goal_from_proto(&wire).unwrap();
+            assert_eq!(back.id, parent);
+            assert_eq!(back.namespace, "person:jd");
+            assert_eq!(back.name, "prepare-breakfast");
+            assert_eq!(back.intent, "intent for prepare-breakfast");
+            assert_eq!(back.definition_of_done, vec!["prepare-breakfast is done"]);
+            assert_eq!(back.tier, DomainTierEnum::Project);
+            assert_eq!(back.created_at, NOW);
+        }
+
+        #[tokio::test]
+        async fn query_goals_matches_on_intent_and_namespace() {
+            let (service, _) = service_with_decomposition();
+
+            let hit = service
+                .query_goals(Request::new(QueryGoalsRequest {
+                    namespace: Some("person:jd".into()),
+                    intent_contains: Some("prepare-breakfast".into()),
+                    limit: None,
+                    auth_token: "token".to_string(),
+                }))
+                .await
+                .unwrap()
+                .into_inner();
+            assert_eq!(hit.count, 1);
+
+            let miss = service
+                .query_goals(Request::new(QueryGoalsRequest {
+                    namespace: Some("person:someone-else".into()),
+                    intent_contains: None,
+                    limit: None,
+                    auth_token: "token".to_string(),
+                }))
+                .await
+                .unwrap()
+                .into_inner();
+            assert_eq!(miss.count, 0);
+        }
+
+        #[tokio::test]
+        async fn an_out_of_scope_get_goal_reads_as_not_found() {
+            let (service, parent) = service_with_decomposition();
+
+            let resp = service
+                .get_goal(Request::new(GetGoalRequest {
+                    id: parent.to_string(),
+                    namespace_scope: Some("person:someone-else".into()),
+                    auth_token: "token".to_string(),
+                }))
+                .await
+                .unwrap()
+                .into_inner();
+
+            assert!(!resp.found);
+            assert!(resp.goal.is_none());
+        }
+
+        #[tokio::test]
+        async fn traversal_requires_auth() {
+            let (service, parent) = service_with_decomposition();
+
+            let mut req = expand_req(&parent.to_string());
+            req.auth_token = String::new();
+
+            let err = service.expand(Request::new(req)).await.unwrap_err();
+            assert_eq!(err.code(), tonic::Code::Unauthenticated);
+        }
+
+        /// A store that holds no goals answers `Unimplemented` rather than an
+        /// empty surface, which would be indistinguishable from a childless goal.
+        #[tokio::test]
+        async fn a_claim_only_store_reports_unimplemented() {
+            let service = BosWellServiceImpl::new(Arc::new(Mutex::new(MockStore)));
+
+            let err = service
+                .expand(Request::new(expand_req(&GoalId::new().to_string())))
                 .await
                 .unwrap_err();
 

@@ -4,8 +4,9 @@
 //! Infrastructure implementations live in other crates.
 
 use crate::{
-    Claim, ClaimId, ExecutionReceipt, OutcomeReport, Procedure, ProcedureId, ProcedureQuery,
-    ProvenanceStamp, ReceiptReportOutcome, Relationship, StoredReceipt,
+    Claim, ClaimId, ExecutionReceipt, ExpandResult, Goal, GoalId, GoalQuery, OutcomeReport,
+    Procedure, ProcedureId, ProcedureQuery, ProvenanceStamp, ReceiptReportOutcome, Relationship,
+    StoredReceipt, TraversalContext,
 };
 
 /// Trait for storing and retrieving claims
@@ -133,6 +134,56 @@ pub trait ProcedureStore: ClaimStore {
         _now: u64,
     ) -> Result<Option<ReceiptReportOutcome>, Self::Error> {
         Ok(None)
+    }
+}
+
+/// Trait for retrieving goals and running the single-hop traversal surface
+/// (design §3.2, §4.1).
+///
+/// Split from [`ClaimStore`] for the same reason [`ProcedureStore`] is, and
+/// taken as a supertrait so implementors share one error type and the transport
+/// can hold a single store handle.
+///
+/// Every method has a default implementation that behaves as "this store holds
+/// no goals", so claim-only and mock stores compile unchanged. Stores that do
+/// hold goals override them and report [`supports_goals`](GoalStore::supports_goals)
+/// as `true`.
+///
+/// Traversal is **stateless and agent-driven** (§4): each call is one hop, the
+/// agent holds the cursor, and the store keeps no descent state.
+pub trait GoalStore: ClaimStore {
+    /// Whether this store can serve goals and traversal.
+    ///
+    /// Defaults to `false`; the transport layer uses this to answer
+    /// `Unimplemented` rather than silently returning an empty surface, which
+    /// would be indistinguishable from a childless goal.
+    fn supports_goals(&self) -> bool {
+        false
+    }
+
+    /// Fetch a goal by id, or `None` if it does not exist.
+    fn get_goal(&self, _id: GoalId) -> Result<Option<Goal>, Self::Error> {
+        Ok(None)
+    }
+
+    /// Retrieve goals matching `query` — the entry hop into a decomposition.
+    fn query_goals(&self, _query: &GoalQuery) -> Result<Vec<Goal>, Self::Error> {
+        Ok(Vec::new())
+    }
+
+    /// Expand one goal into its deterministic candidate surface (§4.1): filter
+    /// by edge-local preconditions, rank by effectiveness then context match,
+    /// and return the survivors with their decision aids and factor readings.
+    ///
+    /// **Surface, not decide.** The weighting of one factor against another is
+    /// never in the store. `now` is Unix ms.
+    fn expand(
+        &self,
+        _goal_id: GoalId,
+        _context: &TraversalContext,
+        _now: u64,
+    ) -> Result<ExpandResult, Self::Error> {
+        Ok(ExpandResult::default())
     }
 }
 

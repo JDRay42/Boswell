@@ -4,13 +4,16 @@
 
 use crate::proto;
 use boswell_domain::{
-    BodyFormat as DomainBodyFormat, Claim, ClaimId, ClaimMatch as DomainClaimMatch,
-    ConfidenceInterval as DomainConfidence, ExecutionReceipt as DomainReceipt,
-    Expect as DomainExpect, FailureMode as DomainFailureMode, Outcome as DomainOutcome,
-    OutcomeReport, Parameter as DomainParameter, Precondition as DomainPrecondition,
-    PreconditionCheck as DomainPreconditionCheck, Procedure as DomainProcedure, ProcedureId,
-    ProcedureSource as DomainProcedureSource, Relationship as DomainRelationship,
-    RelationshipType as DomainRelationshipType, Tier as DomainTier,
+    BodyFormat as DomainBodyFormat, ChildKind as DomainChildKind, ChildRef as DomainChildRef,
+    Claim, ClaimId, ClaimMatch as DomainClaimMatch, ConfidenceInterval as DomainConfidence,
+    EdgeRole as DomainEdgeRole, ExecutionReceipt as DomainReceipt,
+    ExpandedCandidate as DomainExpandedCandidate, Expect as DomainExpect,
+    FactorReading as DomainFactorReading, FailureMode as DomainFailureMode, Goal as DomainGoal,
+    GoalId, Outcome as DomainOutcome, OutcomeReport, Parameter as DomainParameter,
+    Precondition as DomainPrecondition, PreconditionCheck as DomainPreconditionCheck,
+    Procedure as DomainProcedure, ProcedureId, ProcedureSource as DomainProcedureSource,
+    Relationship as DomainRelationship, RelationshipType as DomainRelationshipType,
+    Tier as DomainTier, TraversalContext as DomainTraversalContext,
 };
 
 /// Error type for conversion failures
@@ -51,6 +54,14 @@ pub enum ConversionError {
     /// A procedure field carried a value outside its stable string set
     #[error("Invalid procedure {0}: {1}")]
     InvalidProcedureField(&'static str, String),
+
+    /// Invalid goal id
+    #[error("Invalid goal id: {0}")]
+    InvalidGoalId(String),
+
+    /// A goal/edge field carried a value outside its stable string set
+    #[error("Invalid goal {0}: {1}")]
+    InvalidGoalField(&'static str, String),
 }
 
 /// Convert proto Tier to tier string
@@ -441,6 +452,134 @@ pub fn outcome_report_from_proto(
         cost,
         notes,
     })
+}
+
+// ---- Goal traversal (design §3.2, §4.1) ----
+
+/// Parse a [`GoalId`] from its UUIDv7 string form.
+pub fn goal_id_from_proto(s: &str) -> Result<GoalId, ConversionError> {
+    GoalId::from_string(s).map_err(ConversionError::InvalidGoalId)
+}
+
+/// Convert a domain goal onto the wire.
+pub fn goal_to_proto(g: &DomainGoal) -> proto::Goal {
+    proto::Goal {
+        id: g.id.to_string(),
+        namespace: g.namespace.clone(),
+        name: g.name.clone(),
+        intent: g.intent.clone(),
+        definition_of_done: g.definition_of_done.clone(),
+        tier: g.tier.as_str().to_string(),
+        created_at: g.created_at,
+        updated_at: g.updated_at,
+        stale_at: g.stale_at,
+    }
+}
+
+/// Convert a proto goal back to its domain form.
+pub fn goal_from_proto(g: &proto::Goal) -> Result<DomainGoal, ConversionError> {
+    Ok(DomainGoal {
+        id: goal_id_from_proto(&g.id)?,
+        namespace: g.namespace.clone(),
+        name: g.name.clone(),
+        intent: g.intent.clone(),
+        definition_of_done: g.definition_of_done.clone(),
+        tier: DomainTier::parse(&g.tier)
+            .ok_or_else(|| ConversionError::InvalidGoalField("tier", g.tier.clone()))?,
+        created_at: g.created_at,
+        updated_at: g.updated_at,
+        stale_at: g.stale_at,
+    })
+}
+
+/// Convert a ranked expand candidate onto the wire.
+///
+/// The child is carried as a `(kind, id)` pair rather than a oneof so the wire
+/// shape stays flat and a client can route on `child_kind` without unwrapping.
+pub fn expanded_candidate_to_proto(c: &DomainExpandedCandidate) -> proto::ExpandedCandidate {
+    proto::ExpandedCandidate {
+        child_kind: c.child.kind().as_str().to_string(),
+        child_id: match c.child {
+            DomainChildRef::Goal(id) => id.to_string(),
+            DomainChildRef::Procedure(id) => id.to_string(),
+        },
+        role: c.role.as_str().to_string(),
+        context_tags: c.context_tags.clone(),
+        usage_notes: c.usage_notes.clone(),
+        effectiveness: c.effectiveness,
+        context_match: c.context_match as u32,
+    }
+}
+
+/// Convert a proto expand candidate back to its domain form.
+pub fn expanded_candidate_from_proto(
+    c: &proto::ExpandedCandidate,
+) -> Result<DomainExpandedCandidate, ConversionError> {
+    let kind = DomainChildKind::parse(&c.child_kind)
+        .ok_or_else(|| ConversionError::InvalidGoalField("child_kind", c.child_kind.clone()))?;
+    let child = match kind {
+        DomainChildKind::Goal => DomainChildRef::Goal(goal_id_from_proto(&c.child_id)?),
+        DomainChildKind::Procedure => {
+            DomainChildRef::Procedure(procedure_id_from_proto(&c.child_id)?)
+        }
+    };
+    Ok(DomainExpandedCandidate {
+        child,
+        role: DomainEdgeRole::parse(&c.role)
+            .ok_or_else(|| ConversionError::InvalidGoalField("role", c.role.clone()))?,
+        context_tags: c.context_tags.clone(),
+        usage_notes: c.usage_notes.clone(),
+        effectiveness: c.effectiveness,
+        context_match: c.context_match as usize,
+    })
+}
+
+/// Convert a factor reading onto the wire.
+pub fn factor_reading_to_proto(f: &DomainFactorReading) -> proto::FactorReading {
+    proto::FactorReading {
+        subject: f.subject.clone(),
+        predicate: f.predicate.clone(),
+        object: f.object.clone(),
+        confidence: Some(proto::ConfidenceInterval {
+            lower: f.confidence.0,
+            upper: f.confidence.1,
+        }),
+    }
+}
+
+/// Convert a proto factor reading back to its domain form.
+///
+/// A missing confidence interval is an error rather than a default: a reading
+/// is evidence the agent weighs, and silently substituting `[0, 0]` would
+/// misrepresent how strongly a factor held.
+pub fn factor_reading_from_proto(
+    f: &proto::FactorReading,
+) -> Result<DomainFactorReading, ConversionError> {
+    let conf = f
+        .confidence
+        .as_ref()
+        .ok_or(ConversionError::MissingField("factor_reading.confidence"))?;
+    Ok(DomainFactorReading {
+        subject: f.subject.clone(),
+        predicate: f.predicate.clone(),
+        object: f.object.clone(),
+        confidence: (conf.lower, conf.upper),
+    })
+}
+
+/// Convert a proto traversal context to its domain form. An absent context is
+/// an empty one — a hop with no situational tags still ranks by effectiveness.
+pub fn traversal_context_from_proto(c: Option<&proto::TraversalContext>) -> DomainTraversalContext {
+    DomainTraversalContext {
+        context_tags: c.map(|c| c.context_tags.clone()).unwrap_or_default(),
+    }
+}
+
+/// Convert a domain traversal context onto the wire.
+pub fn traversal_context_to_proto(c: &DomainTraversalContext) -> proto::TraversalContext {
+    proto::TraversalContext {
+        context_tags: c.context_tags.clone(),
+    }
 }
 
 #[cfg(test)]

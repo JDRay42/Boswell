@@ -62,6 +62,9 @@ pub fn build_router(config: &GatewayConfig, state: AppState) -> Router {
         .route("/v1/recall", post(handlers::recall))
         .route("/v1/extract", post(handlers::extract))
         .route("/v1/hooks/ingest", post(handlers::hooks_ingest))
+        .route("/v1/goals", get(handlers::query_goals))
+        .route("/v1/goals/:id", get(handlers::get_goal))
+        .route("/v1/goals/:id/expand", get(handlers::expand_goal))
         .route("/v1/procedures", get(handlers::query_procedures))
         .route("/v1/procedures/:id", get(handlers::get_procedure))
         .route(

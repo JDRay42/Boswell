@@ -43,7 +43,7 @@ pub use confidence::ConfidenceInterval;
 pub use decay::{decay_factor, decayed_confidence, DecayConfig};
 pub use goal::{
     ChildKind, ChildRef, EdgeRole, ExpandResult, ExpandedCandidate, FactorReading, Goal, GoalEdge,
-    GoalId, TraversalContext,
+    GoalId, GoalQuery, TraversalContext,
 };
 pub use identity::{
     AuthError, AuthorizationPolicy, Credential, DelegationVerdict, IdentityProvider,

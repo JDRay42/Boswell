@@ -1078,3 +1078,158 @@ pub async fn report_outcome(
         "message": resp.message,
     })))
 }
+
+// ---------------------------------------------------------------------------
+// Goal traversal (design 15 §3.2, §4.1)
+// ---------------------------------------------------------------------------
+
+/// Query parameters for `GET /v1/goals`.
+#[derive(Debug, Deserialize)]
+pub struct GoalQueryParams {
+    namespace: Option<String>,
+    intent_contains: Option<String>,
+    limit: Option<u32>,
+}
+
+/// Query parameters for `GET /v1/goals/:id/expand`.
+#[derive(Debug, Deserialize)]
+pub struct ExpandParams {
+    /// Comma-separated situational tags, e.g. `?context=time:quick,ldl:low`.
+    context: Option<String>,
+}
+
+fn goal_to_json(g: &boswell_domain::Goal) -> Value {
+    json!({
+        "id": g.id.to_string(),
+        "namespace": g.namespace,
+        "name": g.name,
+        "intent": g.intent,
+        "definition_of_done": g.definition_of_done,
+        "tier": g.tier.as_str(),
+        "created_at": g.created_at,
+        "updated_at": g.updated_at,
+        "stale_at": g.stale_at,
+    })
+}
+
+fn candidate_to_json(c: &boswell_domain::ExpandedCandidate) -> Value {
+    json!({
+        "child_kind": c.child.kind().as_str(),
+        "child_id": match c.child {
+            boswell_domain::ChildRef::Goal(id) => id.to_string(),
+            boswell_domain::ChildRef::Procedure(id) => id.to_string(),
+        },
+        "role": c.role.as_str(),
+        "context_tags": c.context_tags,
+        "usage_notes": c.usage_notes,
+        "effectiveness": c.effectiveness,
+        "context_match": c.context_match,
+    })
+}
+
+fn factor_reading_to_json(f: &boswell_domain::FactorReading) -> Value {
+    json!({
+        "subject": f.subject,
+        "predicate": f.predicate,
+        "object": f.object,
+        "confidence": { "lower": f.confidence.0, "upper": f.confidence.1 },
+    })
+}
+
+/// `GET /v1/goals` — find goals by namespace/intent, the entry hop into a
+/// decomposition.
+///
+/// Requires the `read` scope. Unlike `/v1/procedures`, this issues no execution
+/// receipt: traversal creates no reporting obligation, only leaf procedure
+/// retrieval does.
+pub async fn query_goals(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Query(params): Query<GoalQueryParams>,
+) -> Result<Json<Value>, ApiError> {
+    ctx.require(Scope::Read)?;
+    let namespace = ctx.read_namespace(params.namespace)?;
+
+    let spec = boswell_sdk::GoalQuerySpec {
+        namespace,
+        intent_contains: params.intent_contains,
+        limit: params.limit,
+    };
+
+    let mut client = state.client().lock().await;
+    client.ensure_connected().await?;
+    let goals = client.query_goals(spec).await?;
+
+    let out: Vec<Value> = goals.iter().map(goal_to_json).collect();
+    let count = out.len();
+    Ok(Json(json!({ "goals": out, "count": count })))
+}
+
+/// `GET /v1/goals/:id` — fetch one goal.
+pub async fn get_goal(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    ctx.require(Scope::Read)?;
+
+    let mut client = state.client().lock().await;
+    client.ensure_connected().await?;
+    let goal = client.get_goal(&id, Some(ctx.namespace.clone())).await?;
+
+    match goal {
+        Some(g) => Ok(Json(goal_to_json(&g))),
+        None => Err(ApiError::not_found(format!("no goal with id {}", id))),
+    }
+}
+
+/// `GET /v1/goals/:id/expand` — one traversal hop.
+///
+/// Returns the precondition-filtered, deterministically ranked candidates under
+/// this goal, the `decide`-role procedures that help choose among them, and the
+/// raw factor readings behind the filtering — so the caller can see *why* a
+/// candidate surfaced. The store surfaces; the caller decides.
+///
+/// Traversal is stateless: the caller holds the cursor and calls this again on
+/// whichever child it picks.
+pub async fn expand_goal(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(id): Path<String>,
+    Query(params): Query<ExpandParams>,
+) -> Result<Json<Value>, ApiError> {
+    ctx.require(Scope::Read)?;
+
+    let context_tags: Vec<String> = params
+        .context
+        .as_deref()
+        .map(|c| {
+            c.split(',')
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut client = state.client().lock().await;
+    client.ensure_connected().await?;
+    // The key's namespace goes down as a scope so the instance refuses an
+    // out-of-scope goal before building a surface for it: an expand surface
+    // exposes a decomposition's child ids, usage notes, and the claim readings
+    // behind its preconditions.
+    let result = client
+        .expand(&id, context_tags, Some(ctx.namespace.clone()))
+        .await?;
+
+    let Some(result) = result else {
+        return Err(ApiError::not_found(format!("no goal with id {}", id)));
+    };
+
+    Ok(Json(json!({
+        "goal_id": id,
+        "candidates": result.candidates.iter().map(candidate_to_json).collect::<Vec<_>>(),
+        "decision_aids": result.decision_aids.iter().map(candidate_to_json).collect::<Vec<_>>(),
+        "factor_readings": result.factor_readings.iter().map(factor_reading_to_json).collect::<Vec<_>>(),
+    })))
+}

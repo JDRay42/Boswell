@@ -2,7 +2,7 @@
 //!
 //! Handles server initialization, TLS setup, and graceful shutdown.
 
-use boswell_domain::traits::{ClaimStore, ProcedureStore};
+use boswell_domain::traits::{ClaimStore, GoalStore, ProcedureStore};
 use std::sync::{Arc, Mutex};
 use tonic::transport::Server;
 
@@ -77,7 +77,7 @@ pub async fn start_server<S>(
 ) -> Result<(), Box<dyn std::error::Error>>
 where
     // See `BosWellServiceImpl`: `Send` suffices because access is via `Arc<Mutex<S>>`.
-    S: ClaimStore + ProcedureStore + Send + 'static,
+    S: ClaimStore + GoalStore + ProcedureStore + Send + 'static,
     S::Error: std::fmt::Debug,
 {
     start_server_with_extractor(config, store, None).await
@@ -95,7 +95,7 @@ pub async fn start_server_with_extractor<S>(
 ) -> Result<(), Box<dyn std::error::Error>>
 where
     // See `BosWellServiceImpl`: `Send` suffices because access is via `Arc<Mutex<S>>`.
-    S: ClaimStore + ProcedureStore + Send + 'static,
+    S: ClaimStore + GoalStore + ProcedureStore + Send + 'static,
     S::Error: std::fmt::Debug,
 {
     let addr = config.full_address().parse()?;
