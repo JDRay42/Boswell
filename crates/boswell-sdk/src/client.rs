@@ -2,19 +2,24 @@
 
 use crate::error::SdkError;
 use crate::session::establish_session;
-use boswell_domain::{Claim, ClaimId, ExecutionReceipt, Procedure, Relationship, Tier};
+use boswell_domain::{
+    Claim, ClaimId, ExecutionReceipt, ExpandResult, Goal, Procedure, Relationship, Tier,
+};
 use boswell_grpc::conversions::{
+    expanded_candidate_from_proto, factor_reading_from_proto, goal_from_proto,
     procedure_from_proto, receipt_from_proto, relationship_from_proto,
 };
 use boswell_grpc::proto::{
     bos_well_service_client::BosWellServiceClient, health_check_response, AssertRequest,
-    AssertResponse, ConfidenceInterval, ExtractRequest, ExtractResponse, ForgetRequest,
-    ForgetResponse, GetClaimRequest, GetClaimResponse, GetProcedureRequest, GetProcedureResponse,
+    AssertResponse, ConfidenceInterval, ExpandRequest, ExpandResponse, ExtractRequest,
+    ExtractResponse, ForgetRequest, ForgetResponse, GetClaimRequest, GetClaimResponse,
+    GetGoalRequest, GetGoalResponse, GetProcedureRequest, GetProcedureResponse,
     GetRelationshipsRequest, GetRelationshipsResponse, HealthCheckRequest, HealthCheckResponse,
     IssuedProcedure as GrpcIssuedProcedure, LearnRequest, LearnResponse,
-    QueryFilter as GrpcQueryFilter, QueryMode as GrpcQueryMode, QueryProceduresRequest,
-    QueryProceduresResponse, QueryRequest, QueryResponse, ReportOutcomeRequest,
-    ReportOutcomeResponse, SearchRequest, SearchResponse, Tier as GrpcTier,
+    QueryFilter as GrpcQueryFilter, QueryGoalsRequest, QueryGoalsResponse,
+    QueryMode as GrpcQueryMode, QueryProceduresRequest, QueryProceduresResponse, QueryRequest,
+    QueryResponse, ReportOutcomeRequest, ReportOutcomeResponse, SearchRequest, SearchResponse,
+    Tier as GrpcTier,
 };
 use tonic::transport::Channel;
 
@@ -63,6 +68,62 @@ impl ProcedureQuerySpec {
         self.namespace = Some(namespace.into());
         self
     }
+}
+
+/// What to retrieve in a [`query_goals`](BoswellClient::query_goals) call.
+///
+/// Unlike [`ProcedureQuerySpec`] this names no principal: traversal issues no
+/// receipt, so there is no obligation to attach to anyone.
+#[derive(Debug, Clone, Default)]
+pub struct GoalQuerySpec {
+    /// Filter by namespace prefix.
+    pub namespace: Option<String>,
+    /// Filter by a case-insensitive substring of `intent`.
+    pub intent_contains: Option<String>,
+    /// Maximum number of results.
+    pub limit: Option<u32>,
+}
+
+impl GoalQuerySpec {
+    /// A query for goals whose intent contains `text`.
+    pub fn matching(text: impl Into<String>) -> Self {
+        Self {
+            intent_contains: Some(text.into()),
+            ..Self::default()
+        }
+    }
+
+    /// Confine the query to a namespace prefix.
+    pub fn with_namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.namespace = Some(namespace.into());
+        self
+    }
+}
+
+/// Rebuild a domain [`ExpandResult`] from an expand response.
+fn expand_result_from_proto(r: &ExpandResponse) -> Result<ExpandResult, SdkError> {
+    let convert = |cs: &[boswell_grpc::proto::ExpandedCandidate]| {
+        cs.iter()
+            .map(|c| {
+                expanded_candidate_from_proto(c)
+                    .map_err(|e| SdkError::GrpcError(format!("Failed to convert candidate: {}", e)))
+            })
+            .collect::<Result<Vec<_>, _>>()
+    };
+
+    Ok(ExpandResult {
+        candidates: convert(&r.candidates)?,
+        decision_aids: convert(&r.decision_aids)?,
+        factor_readings: r
+            .factor_readings
+            .iter()
+            .map(|f| {
+                factor_reading_from_proto(f).map_err(|e| {
+                    SdkError::GrpcError(format!("Failed to convert factor reading: {}", e))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+    })
 }
 
 /// A procedure issued together with the execution receipt for it.
@@ -727,6 +788,139 @@ impl BoswellClient {
 
             match client.report_outcome(request).await {
                 Ok(r) => return Ok(r.into_inner()),
+                Err(e) if matches!(e.code(), tonic::Code::Unauthenticated) && !retried => {
+                    self.reconnect().await?;
+                    retried = true;
+                }
+                Err(e) => return Err(SdkError::from(e)),
+            }
+        }
+    }
+
+    // ---- Goal traversal (design 15 §3.2, §4.1) ----
+
+    /// Retrieve goals by namespace/intent — the entry hop into a decomposition.
+    ///
+    /// Unlike procedure retrieval, traversal is free: no execution receipt is
+    /// issued and no reporting obligation is created. Only fetching a leaf
+    /// procedure for execution costs the caller an obligation.
+    pub async fn query_goals(&mut self, query: GoalQuerySpec) -> Result<Vec<Goal>, SdkError> {
+        let mut retried = false;
+
+        loop {
+            let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
+            let token = self.session_token.as_ref().ok_or(SdkError::NotConnected)?;
+
+            let request = QueryGoalsRequest {
+                namespace: query.namespace.clone(),
+                intent_contains: query.intent_contains.clone(),
+                limit: query.limit,
+                auth_token: token.clone(),
+            };
+
+            match client.query_goals(request).await {
+                Ok(r) => {
+                    let response: QueryGoalsResponse = r.into_inner();
+                    return response
+                        .goals
+                        .iter()
+                        .map(|g| {
+                            goal_from_proto(g).map_err(|e| {
+                                SdkError::GrpcError(format!("Failed to convert goal: {}", e))
+                            })
+                        })
+                        .collect();
+                }
+                Err(e) if matches!(e.code(), tonic::Code::Unauthenticated) && !retried => {
+                    self.reconnect().await?;
+                    retried = true;
+                }
+                Err(e) => return Err(SdkError::from(e)),
+            }
+        }
+    }
+
+    /// Fetch one goal by id.
+    ///
+    /// Returns `None` if no such goal exists, or if it lies outside
+    /// `namespace_scope`.
+    pub async fn get_goal(
+        &mut self,
+        id: &str,
+        namespace_scope: Option<String>,
+    ) -> Result<Option<Goal>, SdkError> {
+        let mut retried = false;
+
+        loop {
+            let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
+            let token = self.session_token.as_ref().ok_or(SdkError::NotConnected)?;
+
+            let request = GetGoalRequest {
+                id: id.to_string(),
+                namespace_scope: namespace_scope.clone(),
+                auth_token: token.clone(),
+            };
+
+            match client.get_goal(request).await {
+                Ok(r) => {
+                    let response: GetGoalResponse = r.into_inner();
+                    return match response.goal.filter(|_| response.found) {
+                        Some(g) => goal_from_proto(&g).map(Some).map_err(|e| {
+                            SdkError::GrpcError(format!("Failed to convert goal: {}", e))
+                        }),
+                        None => Ok(None),
+                    };
+                }
+                Err(e) if matches!(e.code(), tonic::Code::Unauthenticated) && !retried => {
+                    self.reconnect().await?;
+                    retried = true;
+                }
+                Err(e) => return Err(SdkError::from(e)),
+            }
+        }
+    }
+
+    /// Expand one goal into its ranked candidate surface — a single traversal
+    /// hop (design §4.1).
+    ///
+    /// Traversal is stateless and agent-driven: the caller holds the cursor and
+    /// calls this again on whichever child it chooses. The store surfaces
+    /// precondition-filtered, deterministically ranked candidates along with the
+    /// factor readings behind them; the *weighting* is the caller's, not the
+    /// store's.
+    ///
+    /// Returns `None` when no such goal exists or it lies outside
+    /// `namespace_scope` — distinct from `Some(result)` with no candidates,
+    /// which is a real goal whose children were all filtered out.
+    pub async fn expand(
+        &mut self,
+        goal_id: &str,
+        context_tags: Vec<String>,
+        namespace_scope: Option<String>,
+    ) -> Result<Option<ExpandResult>, SdkError> {
+        let mut retried = false;
+
+        loop {
+            let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
+            let token = self.session_token.as_ref().ok_or(SdkError::NotConnected)?;
+
+            let request = ExpandRequest {
+                goal_id: goal_id.to_string(),
+                context: Some(boswell_grpc::proto::TraversalContext {
+                    context_tags: context_tags.clone(),
+                }),
+                namespace_scope: namespace_scope.clone(),
+                auth_token: token.clone(),
+            };
+
+            match client.expand(request).await {
+                Ok(r) => {
+                    let response: ExpandResponse = r.into_inner();
+                    if !response.found {
+                        return Ok(None);
+                    }
+                    return expand_result_from_proto(&response).map(Some);
+                }
                 Err(e) if matches!(e.code(), tonic::Code::Unauthenticated) && !retried => {
                     self.reconnect().await?;
                     retried = true;

@@ -43,6 +43,17 @@ service BosWellService {
     // Report an execution outcome against a receipt (the reporting contract).
     rpc ReportOutcome(ReportOutcomeRequest) returns (ReportOutcomeResponse);
 
+    // ---- Goal traversal (design 15, phase 7b) ----
+
+    // Retrieve goals by namespace/intent — the entry hop into a decomposition.
+    rpc QueryGoals(QueryGoalsRequest) returns (QueryGoalsResponse);
+
+    // Fetch one goal by id.
+    rpc GetGoal(GetGoalRequest) returns (GetGoalResponse);
+
+    // Expand one goal into its ranked candidate surface (a single traversal hop).
+    rpc Expand(ExpandRequest) returns (ExpandResponse);
+
     // Health check for instance status
     rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
 }
@@ -392,6 +403,99 @@ message ReportOutcomeResponse {
     bool attributed_to_executor = 7;
     bool flagged_precondition_stale = 8;
     string message = 9;
+}
+
+// ========== Goal Traversal (design 15 §3.2, §4.1) ==========
+
+// A skinny navigational decomposition node. Mirrors boswell_domain::Goal
+// losslessly. Children are not inlined — they live on edges and are surfaced by
+// Expand, so a goal row stays cheap to walk.
+message Goal {
+    string id = 1;
+    string namespace = 2;
+    string name = 3;
+    string intent = 4;
+    repeated string definition_of_done = 5;
+    string tier = 6;
+    uint64 created_at = 7;
+    uint64 updated_at = 8;
+    optional uint64 stale_at = 9;
+}
+
+// A ranked entry in an expand surface. Carries the edge-local signals a hop
+// needs to filter and rank *without* fetching the child row (§4.2), so the
+// wire shape is lossless against boswell_domain::ExpandedCandidate.
+message ExpandedCandidate {
+    string child_kind = 1;               // goal | procedure
+    string child_id = 2;
+    string role = 3;                     // accomplish | decide
+    repeated string context_tags = 4;
+    string usage_notes = 5;
+    double effectiveness = 6;
+    uint32 context_match = 7;            // how many context_tags matched
+}
+
+// A claim consulted while resolving a candidate's preconditions, returned so
+// the agent can see *why* a candidate surfaced (§4.1).
+message FactorReading {
+    string subject = 1;
+    string predicate = 2;
+    string object = 3;
+    ConfidenceInterval confidence = 4;
+}
+
+// The traversal context an agent passes to Expand. The store uses these tags to
+// rank; the *weighting* of one factor against another is never in the store.
+message TraversalContext {
+    repeated string context_tags = 1;
+}
+
+message QueryGoalsRequest {
+    optional string namespace = 1;
+    optional string intent_contains = 2; // case-insensitive substring of intent
+    optional uint32 limit = 3;
+    string auth_token = 4;
+}
+
+message QueryGoalsResponse {
+    repeated Goal goals = 1;
+    int32 count = 2;
+    string message = 3;
+}
+
+message GetGoalRequest {
+    string id = 1;
+    // Namespace the caller is confined to; a goal outside it reads as not-found.
+    // Empty or "*" means unrestricted.
+    optional string namespace_scope = 2;
+    string auth_token = 3;
+}
+
+message GetGoalResponse {
+    bool found = 1;
+    Goal goal = 2;
+    string message = 3;
+}
+
+message ExpandRequest {
+    string goal_id = 1;
+    TraversalContext context = 2;
+    // Namespace the caller is confined to; a goal outside it reads as not-found,
+    // checked *before* any surface is built so a cross-namespace probe learns
+    // nothing about another namespace's decomposition.
+    optional string namespace_scope = 3;
+    string auth_token = 4;
+}
+
+message ExpandResponse {
+    // False when no such goal exists or it lies outside namespace_scope. This
+    // distinguishes "no such goal" from "a real goal with no children", which
+    // both yield an empty surface.
+    bool found = 1;
+    repeated ExpandedCandidate candidates = 2;      // role = accomplish, ranked
+    repeated ExpandedCandidate decision_aids = 3;   // role = decide
+    repeated FactorReading factor_readings = 4;
+    string message = 5;
 }
 
 // ========== Health Check ==========

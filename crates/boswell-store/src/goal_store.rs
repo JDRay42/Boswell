@@ -15,10 +15,10 @@
 
 use crate::procedure_store::{from_json, like_escape, to_json, PreconditionDto};
 use crate::{SqliteStore, StoreError};
-use boswell_domain::traits::{ClaimQuery, ClaimStore};
+use boswell_domain::traits::{ClaimQuery, ClaimStore, GoalStore};
 use boswell_domain::{
     ChildKind, ChildRef, Claim, EdgeRole, ExpandResult, ExpandedCandidate, FactorReading, Goal,
-    GoalEdge, GoalId, Precondition, ProcedureId, Tier, TraversalContext,
+    GoalEdge, GoalId, GoalQuery, Precondition, ProcedureId, Tier, TraversalContext,
 };
 use rusqlite::{params, OptionalExtension};
 use std::collections::HashSet;
@@ -469,6 +469,38 @@ fn rank_candidates(candidates: &mut [ExpandedCandidate]) {
             .then_with(|| b.context_match.cmp(&a.context_match))
             .then_with(|| a.child.id_value().cmp(&b.child.id_value()))
     });
+}
+
+/// Goal-traversal transport surface (design §3.2, §4.1).
+///
+/// Bridges the inherent `SqliteStore` goal methods to the domain [`GoalStore`]
+/// trait so the gRPC service can serve traversal over a generic store handle.
+impl GoalStore for SqliteStore {
+    fn supports_goals(&self) -> bool {
+        true
+    }
+
+    fn get_goal(&self, id: GoalId) -> Result<Option<Goal>, Self::Error> {
+        SqliteStore::get_goal(self, id)
+    }
+
+    fn query_goals(&self, query: &GoalQuery) -> Result<Vec<Goal>, Self::Error> {
+        SqliteStore::query_goals(
+            self,
+            query.namespace.as_deref(),
+            query.intent_contains.as_deref(),
+            query.limit,
+        )
+    }
+
+    fn expand(
+        &self,
+        goal_id: GoalId,
+        context: &TraversalContext,
+        now: u64,
+    ) -> Result<ExpandResult, Self::Error> {
+        SqliteStore::expand(self, goal_id, context, now)
+    }
 }
 
 #[cfg(test)]

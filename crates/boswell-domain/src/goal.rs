@@ -271,6 +271,21 @@ pub struct ExpandResult {
     pub factor_readings: Vec<FactorReading>,
 }
 
+/// Query criteria for retrieving goals (mirrors [`crate::ProcedureQuery`]).
+///
+/// The entry hop into a decomposition is a semantic match on `intent`; Phase 2
+/// approximates that with a case-insensitive substring, the same stand-in
+/// procedure retrieval uses.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GoalQuery {
+    /// Filter by namespace prefix.
+    pub namespace: Option<String>,
+    /// Filter by a case-insensitive substring of `intent`.
+    pub intent_contains: Option<String>,
+    /// Maximum number of results to return.
+    pub limit: Option<usize>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

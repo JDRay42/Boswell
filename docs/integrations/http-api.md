@@ -109,6 +109,9 @@ All paths are under `/v1` and speak JSON.
 | `POST /v1/recall` | read | One-call context: merge structured + semantic |
 | `POST /v1/extract` | write | Text → claims via the LLM Extractor |
 | `POST /v1/hooks/ingest` | write | Claude Code hook event → claims |
+| `GET /v1/goals` | read | Find goals by namespace/intent (the entry hop) |
+| `GET /v1/goals/{id}` | read | Fetch one goal |
+| `GET /v1/goals/{id}/expand` | read | One traversal hop: ranked candidates + factor readings |
 | `GET /v1/procedures` | read | Retrieve procedures for a goal/intent (issues receipts) |
 | `GET /v1/procedures/{id}` | read | Fetch one procedure (issues a receipt) |
 | `POST /v1/receipts/{receipt_id}/report` | write | Report an execution outcome |
@@ -271,6 +274,97 @@ Response:
 
 A receipt can be answered once: a second report returns
 `already_final: true` with nothing applied. An unknown receipt id is a `404`.
+
+## Goal traversal
+
+Goals decompose a high-level intent toward an executable procedure. They form a
+**DAG**, not a tree — `cook-eggs` is reachable under both `prepare-breakfast`
+and `quick-dinner`.
+
+Traversal is **stateless and agent-driven**: you hold the cursor. Query for an
+entry goal, expand it, pick a child, expand that, and repeat until a candidate
+is a `procedure` — then fetch it from `/v1/procedures/{id}`, which is where the
+execution receipt and its reporting obligation enter.
+
+**Expanding is free.** Unlike procedure retrieval, a hop issues no receipt and
+creates no obligation. Browse a decomposition as widely as you like; only
+retrieving a leaf procedure for execution puts you on the hook.
+
+### Find an entry goal — `GET /v1/goals`
+
+Query parameters: `namespace`, `intent_contains`, `limit`.
+
+```
+GET /v1/goals?intent_contains=breakfast
+```
+
+```json
+{ "count": 1,
+  "goals": [
+    { "id": "…", "namespace": "person:jd", "name": "prepare-breakfast",
+      "intent": "get something to eat in the morning",
+      "definition_of_done": ["something edible has been eaten"],
+      "tier": "project", "created_at": 1700000000000,
+      "updated_at": 1700000000000, "stale_at": null }
+  ] }
+```
+
+`GET /v1/goals/{id}` returns a single goal in the same shape.
+
+### Expand one level — `GET /v1/goals/{id}/expand`
+
+Pass the situation as `context`, a comma-separated tag list.
+
+```
+GET /v1/goals/{id}/expand?context=time:quick,ldl:low
+```
+
+```json
+{ "goal_id": "…",
+  "candidates": [
+    { "child_kind": "procedure", "child_id": "…", "role": "accomplish",
+      "context_tags": ["time:quick"], "usage_notes": "fastest when the pan is already hot",
+      "effectiveness": 0.91, "context_match": 1 }
+  ],
+  "decision_aids": [
+    { "child_kind": "procedure", "child_id": "…", "role": "decide",
+      "context_tags": [], "usage_notes": "weigh LDL against hunger",
+      "effectiveness": 0.5, "context_match": 0 }
+  ],
+  "factor_readings": [
+    { "subject": "jd", "predicate": "has", "object": "eggs",
+      "confidence": { "lower": 0.7, "upper": 0.8 } }
+  ] }
+```
+
+What each part is for:
+
+- **`candidates`** — `role: accomplish` children whose edge-local preconditions
+  currently hold, ranked by `effectiveness`, then `context_match`, then child id.
+  `child_kind` tells you whether to expand it again (`goal`) or fetch and run it
+  (`procedure`).
+- **`decision_aids`** — `role: decide` children: procedures whose job is to help
+  you *choose* among the candidates. A decision aid is not a new type, just a
+  procedure surfaced alongside what it ranks. Never mixed into `candidates`.
+- **`factor_readings`** — the raw claims consulted while filtering, so you can
+  see *why* a candidate surfaced rather than taking the ranking on faith.
+
+**The store surfaces; it never decides.** Filtering by preconditions and ranking
+by effectiveness is deterministic surfacing. The *weighting* — how much LDL
+outranks hunger today — is yours, or belongs to a `decide` procedure you run.
+`context_match` is reported as a count, deliberately not folded into a score.
+
+Each candidate carries the edge-local signals inline, so you can filter and rank
+a hop **without fetching any child row**. Heavy procedure bodies are fetched only
+at the leaf.
+
+**Scope.** Your key's namespace is enforced before a surface is built, not after:
+an out-of-scope goal is a `404`, so a cross-namespace probe learns nothing about
+another namespace's decomposition — not its child ids, its usage notes, nor which
+claims its preconditions read.
+
+A goal that exists but whose children were all filtered out returns `200` with
+empty `candidates`; a goal that does not exist (or is out of scope) returns `404`.
 
 ## Claim DTO
 

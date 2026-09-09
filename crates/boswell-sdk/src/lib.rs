@@ -30,7 +30,7 @@ mod error;
 mod session;
 
 pub use client::{
-    BoswellClient, ExtractResult, HealthStatus, IssuedProcedure, OutcomeReportSpec,
+    BoswellClient, ExtractResult, GoalQuerySpec, HealthStatus, IssuedProcedure, OutcomeReportSpec,
     ProcedureQuerySpec, QueryFilter,
 };
 pub use error::SdkError;
