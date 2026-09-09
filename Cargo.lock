@@ -350,6 +350,7 @@ dependencies = [
 name = "boswell-grpc"
 version = "0.1.0"
 dependencies = [
+ "boswell-devauth",
  "boswell-domain",
  "boswell-store",
  "prost",
@@ -439,6 +440,7 @@ dependencies = [
 name = "boswell-server"
 version = "0.1.0"
 dependencies = [
+ "boswell-devauth",
  "boswell-domain",
  "boswell-extractor",
  "boswell-gatekeeper",

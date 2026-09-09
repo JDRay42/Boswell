@@ -517,4 +517,9 @@ message HealthCheckResponse {
     int64 uptime_seconds = 3;
     int64 claim_count = 4;
     string message = 5;
+    // True when this instance is running under the development identity adapter
+    // (design §7.2). Downstream layers surface this as an `X-Boswell-Auth:
+    // dev-untrusted` marker so callers can see that what they are reading came
+    // from fake identities and must not be trusted for long-term memory.
+    bool dev_auth = 6;
 }

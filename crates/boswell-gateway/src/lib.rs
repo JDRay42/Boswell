@@ -18,7 +18,10 @@ pub mod state;
 
 use std::time::Duration;
 
-use axum::http::StatusCode;
+use axum::extract::State;
+use axum::http::{HeaderValue, Request, StatusCode};
+use axum::middleware::Next;
+use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{middleware, Router};
 use thiserror::Error;
@@ -41,8 +44,40 @@ pub enum GatewayError {
     Serve(String),
 }
 
+/// The `X-Boswell-Auth` header name (design §7.2).
+pub const DEV_AUTH_HEADER: &str = "x-boswell-auth";
+
+/// The marker value identifying a response served under a development identity
+/// adapter. Mirrors `boswell_devauth::DEV_AUTH_MARKER`, restated here so no
+/// production crate has to depend on the development one.
+pub const DEV_AUTH_MARKER: &str = "dev-untrusted";
+
+/// Stamp `X-Boswell-Auth: dev-untrusted` on every response served while the
+/// instance behind us runs a development identity adapter (design §7.2).
+///
+/// Applied to the whole router, authenticated and public alike: a caller reading
+/// `/v1/health` deserves the warning as much as one reading a claim. The marker
+/// is derived from what the instance reports about itself, never from gateway
+/// config, so it cannot drift out of sync with reality by an operator forgetting
+/// to set it.
+async fn dev_auth_marker(
+    State(state): State<AppState>,
+    request: Request<axum::body::Body>,
+    next: Next,
+) -> Response {
+    let mut response = next.run(request).await;
+    if state.is_dev_auth() {
+        response
+            .headers_mut()
+            .insert(DEV_AUTH_HEADER, HeaderValue::from_static(DEV_AUTH_MARKER));
+    }
+    response
+}
+
 /// Build the axum application (routes + middleware) for the given config/state.
 pub fn build_router(config: &GatewayConfig, state: AppState) -> Router {
+    let state_for_marker = state.clone();
+
     // Authenticated `/v1` surface.
     let protected = Router::new()
         .route(
@@ -84,6 +119,10 @@ pub fn build_router(config: &GatewayConfig, state: AppState) -> Router {
 
     public
         .merge(protected)
+        .layer(middleware::from_fn_with_state(
+            state_for_marker,
+            dev_auth_marker,
+        ))
         .layer(TraceLayer::new_for_http())
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
@@ -99,12 +138,18 @@ pub async fn run(config: GatewayConfig) -> Result<(), GatewayError> {
     // Best-effort connect at startup; the SDK reconnects on demand otherwise.
     {
         let mut client = state.client().lock().await;
-        if let Err(e) = client.ensure_connected().await {
-            tracing::warn!(
+        match client.ensure_connected().await {
+            // Ask once at startup so the very first response already carries the
+            // marker; `/v1/health` refreshes it thereafter.
+            Ok(()) => match client.health().await {
+                Ok(h) => state.set_dev_auth(h.dev_auth),
+                Err(e) => tracing::warn!("gateway: initial health check failed ({})", e),
+            },
+            Err(e) => tracing::warn!(
                 "gateway: initial connect to {} failed ({}); will retry on demand",
                 config.router_endpoint,
                 e
-            );
+            ),
         }
     }
 

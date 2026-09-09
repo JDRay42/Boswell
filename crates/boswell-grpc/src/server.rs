@@ -3,6 +3,7 @@
 //! Handles server initialization, TLS setup, and graceful shutdown.
 
 use boswell_domain::traits::{ClaimStore, GoalStore, ProcedureStore};
+use boswell_domain::IdentityProvider;
 use std::sync::{Arc, Mutex};
 use tonic::transport::Server;
 
@@ -98,11 +99,34 @@ where
     S: ClaimStore + GoalStore + ProcedureStore + Send + 'static,
     S::Error: std::fmt::Debug,
 {
+    start_server_with_identity(config, store, extractor, None).await
+}
+
+/// Start the gRPC server with an optional extractor **and** an optional
+/// [`IdentityProvider`] (design §6).
+///
+/// The identity port is taken as a trait object, never a concrete adapter, so
+/// this crate — and every other crate on the production path — stays ignorant of
+/// which provider is in play. Passing `None` leaves every self-report stamped
+/// `Assurance::None`.
+pub async fn start_server_with_identity<S>(
+    config: ServerConfig,
+    store: Arc<Mutex<S>>,
+    extractor: Option<Arc<dyn ServerExtractor>>,
+    identity: Option<Arc<dyn IdentityProvider + Send + Sync>>,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    S: ClaimStore + GoalStore + ProcedureStore + Send + 'static,
+    S::Error: std::fmt::Debug,
+{
     let addr = config.full_address().parse()?;
 
     let mut service = BosWellServiceImpl::new(store);
     if let Some(extractor) = extractor {
         service = service.with_extractor(extractor);
+    }
+    if let Some(identity) = identity {
+        service = service.with_identity_provider(identity);
     }
     let service_server = BosWellServiceServer::new(service);
 

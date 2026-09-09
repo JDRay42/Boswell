@@ -20,7 +20,9 @@ pub mod conversions;
 pub mod server;
 pub mod service;
 
-pub use server::{start_server, start_server_with_extractor, ServerConfig};
+pub use server::{
+    start_server, start_server_with_extractor, start_server_with_identity, ServerConfig,
+};
 pub use service::{BosWellServiceImpl, ExtractOutcome, ServerExtractor};
 
 /// Re-export of the `async_trait` attribute macro so downstream crates can

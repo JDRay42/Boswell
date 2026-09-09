@@ -60,6 +60,12 @@ pub enum DevAuthError {
     /// devAuth was selected in a production environment.
     #[error("boswell-devauth must never run in a production environment; refusing to start")]
     ProductionLockout,
+    /// devAuth was selected without the environment being declared at all.
+    #[error(
+        "boswell-devauth requires the environment to be declared non-production \
+         (set BOSWELL_ENV, e.g. BOSWELL_ENV=development); refusing to start"
+    )]
+    EnvironmentUndeclared,
 }
 
 /// Configuration gating whether devAuth may run.
@@ -70,21 +76,28 @@ pub struct DevAuthConfig {
     /// Whether a production environment/flag is set. If so, [`DevAuth::new`] is a
     /// fatal error regardless of `allow_dev_auth`.
     pub production: bool,
+    /// Whether the environment was declared at all. An *undeclared* environment
+    /// is treated as production (see [`DevAuth::new`]).
+    pub environment_declared: bool,
 }
 
 impl DevAuthConfig {
     /// Read the config from the environment: `allow_dev_auth` from
-    /// `BOSWELL_ALLOW_DEV_AUTH` (truthy), `production` from `BOSWELL_ENV=production`.
+    /// `BOSWELL_ALLOW_DEV_AUTH` (truthy), and the environment from `BOSWELL_ENV`.
+    ///
+    /// An unset or blank `BOSWELL_ENV` leaves `environment_declared` false, which
+    /// fails closed — see [`DevAuth::new`].
     pub fn from_env() -> Self {
         let truthy =
             |v: String| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes");
+        let env = std::env::var("BOSWELL_ENV").unwrap_or_default();
+        let env = env.trim();
         Self {
             allow_dev_auth: std::env::var("BOSWELL_ALLOW_DEV_AUTH")
                 .map(truthy)
                 .unwrap_or(false),
-            production: std::env::var("BOSWELL_ENV")
-                .map(|v| v.trim().eq_ignore_ascii_case("production"))
-                .unwrap_or(false),
+            production: env.eq_ignore_ascii_case("production"),
+            environment_declared: !env.is_empty(),
         }
     }
 }
@@ -209,12 +222,24 @@ pub struct DevAuth {
 }
 
 impl DevAuth {
-    /// Construct devAuth, failing closed unless explicitly opted in and not in a
-    /// production environment (design §7.2). Emits a loud warning on success.
+    /// Construct devAuth, failing closed unless explicitly opted in and the
+    /// environment is declared non-production (design §7.2). Emits a loud
+    /// warning on success.
+    ///
+    /// **An undeclared environment counts as production.** devAuth exists so
+    /// someone can trial Boswell locally with preset roles until they stand up a
+    /// real identity provider — which means the realistic hazard is not malice
+    /// but drift: trial it, like it, deploy it, and never think about identity
+    /// again. Treating "no environment set" as safe would let exactly that path
+    /// run fake identities in production forever. Saying `BOSWELL_ENV=development`
+    /// out loud costs a trialist one variable and closes it.
     pub fn new(config: &DevAuthConfig) -> Result<Self, DevAuthError> {
         // Production lockout takes priority over opt-in.
         if config.production {
             return Err(DevAuthError::ProductionLockout);
+        }
+        if !config.environment_declared {
+            return Err(DevAuthError::EnvironmentUndeclared);
         }
         if !config.allow_dev_auth {
             return Err(DevAuthError::NotOptedIn);
@@ -260,6 +285,11 @@ impl DevAuth {
 }
 
 impl IdentityProvider for DevAuth {
+    /// Always `true`: that is the whole point of this adapter (design §7.2).
+    fn is_dev_provider(&self) -> bool {
+        true
+    }
+
     fn authenticate(&self, credential: &Credential) -> Result<Principal, AuthError> {
         match DevIdentity::parse(&credential.token) {
             Some(identity) => {
@@ -304,6 +334,7 @@ mod tests {
         DevAuth::new(&DevAuthConfig {
             allow_dev_auth: true,
             production: false,
+            environment_declared: true,
         })
         .unwrap()
     }
@@ -311,7 +342,12 @@ mod tests {
     #[test]
     fn refuses_without_opt_in() {
         assert_eq!(
-            DevAuth::new(&DevAuthConfig::default()).unwrap_err(),
+            DevAuth::new(&DevAuthConfig {
+                allow_dev_auth: false,
+                production: false,
+                environment_declared: true,
+            })
+            .unwrap_err(),
             DevAuthError::NotOptedIn
         );
     }
@@ -322,10 +358,58 @@ mod tests {
             DevAuth::new(&DevAuthConfig {
                 allow_dev_auth: true,
                 production: true,
+                environment_declared: true,
             })
             .unwrap_err(),
             DevAuthError::ProductionLockout
         );
+    }
+
+    /// An *undeclared* environment fails closed. The realistic hazard for a
+    /// bring-up adapter is not malice but drift — trial it, deploy it, never
+    /// think about identity again — and that path never sets `BOSWELL_ENV` at
+    /// all. Reading "unset" as "not production" would keep fake identities alive
+    /// through exactly that transition.
+    #[test]
+    fn an_undeclared_environment_is_treated_as_production() {
+        assert_eq!(
+            DevAuth::new(&DevAuthConfig {
+                allow_dev_auth: true,
+                production: false,
+                environment_declared: false,
+            })
+            .unwrap_err(),
+            DevAuthError::EnvironmentUndeclared
+        );
+    }
+
+    /// The default config refuses, whatever the reason: nothing about an
+    /// unconfigured devAuth may start.
+    #[test]
+    fn the_default_config_never_starts() {
+        assert!(DevAuth::new(&DevAuthConfig::default()).is_err());
+    }
+
+    /// A blank `BOSWELL_ENV` is not a declaration.
+    #[test]
+    fn a_blank_environment_is_not_a_declaration() {
+        let cfg = DevAuthConfig {
+            allow_dev_auth: true,
+            production: false,
+            environment_declared: false,
+        };
+        assert!(matches!(
+            DevAuth::new(&cfg),
+            Err(DevAuthError::EnvironmentUndeclared)
+        ));
+    }
+
+    /// The adapter reports itself as a development provider, which is what
+    /// taints its stamps and marks the transport's responses without any
+    /// production crate naming this crate (design §7.2).
+    #[test]
+    fn it_identifies_itself_as_a_development_provider() {
+        assert!(dev_auth().is_dev_provider());
     }
 
     #[test]
