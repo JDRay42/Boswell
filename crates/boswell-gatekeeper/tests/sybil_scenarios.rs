@@ -14,15 +14,16 @@
 //! policy.
 //!
 //! Findings are written up in `docs/architecture/15-procedural-memory.md` §8.3.
-//! Scenarios that measure a **defect** are named `finding_*` and assert today's
-//! behaviour, so that closing the gap shows up as a diff here.
+//! All four have been closed, so every scenario here now asserts an intent rather
+//! than a defect; while one was open it was named `finding_*` and pinned today's
+//! behaviour, so that closing it showed up as a diff.
 
 use boswell_devauth::{DevAuth, DevAuthConfig, DevIdentity};
 use boswell_domain::{
     BodyFormat, CorroborationFacts, DelegationChain, EvidenceType, Procedure, ProcedureId,
     ProcedureSource, ProvenanceStamp, Tier,
 };
-use boswell_gatekeeper::{PromotionDecision, PromotionGatekeeper};
+use boswell_gatekeeper::{PromotionConfig, PromotionDecision, PromotionGatekeeper};
 use boswell_store::SqliteStore;
 
 const NOW: u64 = 1_700_000_000_000;
@@ -107,12 +108,22 @@ impl Bench {
 
     /// The gatekeeper's verdict on `procedure`, over the facts the store computes.
     fn verdict(&self, id: ProcedureId) -> (PromotionDecision, CorroborationFacts) {
+        self.verdict_under(id, self.gatekeeper)
+    }
+
+    /// As [`Bench::verdict`], under a policy other than the default — for the
+    /// diversity axes §8.1 names but ships switched off.
+    fn verdict_under(
+        &self,
+        id: ProcedureId,
+        gatekeeper: PromotionGatekeeper,
+    ) -> (PromotionDecision, CorroborationFacts) {
         let facts = self
             .store
             .corroboration_facts_for_procedure(id, NOW)
             .expect("facts query")
             .expect("procedure exists");
-        (self.gatekeeper.evaluate(&facts), facts)
+        (gatekeeper.evaluate(&facts), facts)
     }
 }
 
@@ -508,16 +519,68 @@ fn corroboration_alone_never_reaches_permanent() {
     assert_eq!(decision, PromotionDecision::Hold);
 }
 
-/// **Finding 4 — two of the three diversity axes are computed but never weighed.**
-///
-/// §8.1's proxy is "distinct delegation-chain roots, distinct sessions spread
-/// over time, distinct evidence types". The store computes all three;
-/// `PromotionConfig` reads only the first. A single burst — two roots, one
-/// session, one evidence type — promotes exactly as readily as corroboration
-/// accumulated across sessions from varied evidence.
+/// §8.1's proxy names three diversity axes — "distinct delegation-chain roots,
+/// distinct sessions spread over time, distinct evidence types". §8.3 finding 4
+/// measured only the first as being enforced. All three are now available; the
+/// other two default to off, and this is what that default means: a single burst
+/// — two roots, one session, one evidence type — corroborates.
 #[test]
-fn finding_session_and_evidence_diversity_do_not_affect_the_verdict() {
+fn a_single_burst_corroborates_under_the_default_policy() {
     let mut bench = Bench::new();
+    let proc = burst(&mut bench);
+
+    let (decision, facts) = bench.verdict(proc);
+    assert_eq!(facts.distinct_sessions, 1);
+    assert_eq!(facts.distinct_evidence_types, 1);
+    assert_eq!(decision, PromotionDecision::Climb(Tier::Project));
+}
+
+/// With the session axis switched on, the same burst is refused — "spread over
+/// time, not one burst" becomes enforceable rather than aspirational.
+#[test]
+fn a_single_burst_is_refused_when_session_diversity_is_required() {
+    let mut bench = Bench::new();
+    let proc = burst(&mut bench);
+
+    let strict = PromotionGatekeeper::new(PromotionConfig {
+        min_distinct_sessions: 2,
+        ..PromotionConfig::default()
+    });
+    assert_eq!(bench.verdict_under(proc, strict).0, PromotionDecision::Hold);
+}
+
+/// The same corroboration spread across two sessions passes the strict policy, so
+/// the axis discriminates on what it claims to and not on something else.
+#[test]
+fn corroboration_across_sessions_passes_the_strict_policy() {
+    let mut bench = Bench::new();
+    let proc = procedure("project:alpha", "release");
+    for (root, author, session) in [
+        ("human:alice", "project:lead/sub:1", "monday"),
+        ("human:bob", "project:lead/sub:2", "thursday"),
+    ] {
+        let stamp = bench.stamp(
+            DevIdentity::ProjectLeader,
+            root,
+            Some(author),
+            EvidenceType::Observed,
+            session,
+        );
+        bench.write(&proc, Tier::Task, &stamp);
+    }
+
+    let strict = PromotionGatekeeper::new(PromotionConfig {
+        min_distinct_sessions: 2,
+        ..PromotionConfig::default()
+    });
+    let (decision, facts) = bench.verdict_under(proc.id, strict);
+    assert_eq!(facts.distinct_sessions, 2);
+    assert_eq!(decision, PromotionDecision::Climb(Tier::Project));
+}
+
+/// Two independent roots corroborating in one session, from one kind of evidence:
+/// the shape both extra axes are about.
+fn burst(bench: &mut Bench) -> ProcedureId {
     let proc = procedure("project:alpha", "release");
     for (root, author) in [
         ("human:alice", "project:lead/sub:1"),
@@ -532,13 +595,5 @@ fn finding_session_and_evidence_diversity_do_not_affect_the_verdict() {
         );
         bench.write(&proc, Tier::Task, &stamp);
     }
-
-    let (decision, facts) = bench.verdict(proc.id);
-    assert_eq!(facts.distinct_sessions, 1);
-    assert_eq!(facts.distinct_evidence_types, 1);
-    assert_eq!(
-        decision,
-        PromotionDecision::Climb(Tier::Project),
-        "neither axis is consulted"
-    );
+    proc.id
 }

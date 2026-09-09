@@ -23,6 +23,28 @@ pub struct PromotionConfig {
     /// (design §5.2, §8.1). Measured by provenance diversity, not raw author
     /// count, so correlated clones cannot manufacture corroboration.
     pub min_distinct_roots: usize,
+    /// Distinct **sessions** required to corroborate a climb — §8.1's second
+    /// diversity axis, "spread over time, not one burst".
+    ///
+    /// **Defaults to `0`, meaning not enforced**, and that is deliberate rather
+    /// than timid. `distinct_sessions` is counted over an entry's *write* and
+    /// *endorse* stamps only — reports are excluded from corroboration by design
+    /// — and those are minted in-process today, where devAuth leaves `session_id`
+    /// as `None` and the Janitor's own writes have no session to name. (The
+    /// report path does carry a session, propagated from its receipt, but reports
+    /// do not corroborate.) A non-zero default would therefore make corroboration
+    /// unreachable rather than stricter. Raise it once an authoring transport
+    /// stamps sessions onto writes.
+    pub min_distinct_sessions: usize,
+    /// Distinct **evidence types** required to corroborate a climb — §8.1's third
+    /// diversity axis, "not all the same weak evidence".
+    ///
+    /// **Defaults to `0`, meaning not enforced.** Evidence strength is already
+    /// bounded elsewhere and more tightly: `EvidenceType::tier_ceiling` caps what
+    /// weak evidence can reach at all, so corroboration built entirely on
+    /// `tool_output` cannot pass task tier however diverse its roots. This axis
+    /// is belt-and-braces over that, available to an operator who wants it.
+    pub min_distinct_evidence_types: usize,
     /// Effectiveness at or above which a procedure may climb (0.0..=1.0).
     pub effectiveness_threshold: f64,
 }
@@ -31,6 +53,8 @@ impl Default for PromotionConfig {
     fn default() -> Self {
         Self {
             min_distinct_roots: 2,
+            min_distinct_sessions: 0,
+            min_distinct_evidence_types: 0,
             effectiveness_threshold: 0.8,
         }
     }
@@ -93,8 +117,12 @@ impl PromotionGatekeeper {
             .is_some_and(|t| t.rank() >= next.rank());
         // Corroboration is measured by provenance diversity, not raw author count,
         // so a swarm of clones sharing one delegation root cannot manufacture it
-        // (design §8.1, the Sybil "pragmatic proxy").
-        let corroborated = facts.distinct_delegation_roots >= self.config.min_distinct_roots;
+        // (design §8.1, the Sybil "pragmatic proxy"). All three of §8.1's axes are
+        // available; only the first is enforced by default, and the config fields
+        // say why.
+        let corroborated = facts.distinct_delegation_roots >= self.config.min_distinct_roots
+            && facts.distinct_sessions >= self.config.min_distinct_sessions
+            && facts.distinct_evidence_types >= self.config.min_distinct_evidence_types;
         let effective = facts.effectiveness >= self.config.effectiveness_threshold;
 
         // Top-tier (permanent) promotion additionally requires a cross-authority
@@ -163,6 +191,61 @@ mod tests {
         let mut f = facts();
         f.distinct_authors = 9;
         f.distinct_delegation_roots = 1;
+        assert_eq!(gk.evaluate(&f), PromotionDecision::Hold);
+    }
+
+    #[test]
+    fn session_diversity_gates_corroboration_when_configured() {
+        // Two independent roots, but a single burst: with the axis enabled, the
+        // climb is refused (design §8.1, §8.3 finding 4).
+        let gk = PromotionGatekeeper::new(PromotionConfig {
+            min_distinct_sessions: 2,
+            ..PromotionConfig::default()
+        });
+        let mut f = facts();
+        f.distinct_delegation_roots = 2;
+        f.distinct_sessions = 1;
+        assert_eq!(gk.evaluate(&f), PromotionDecision::Hold);
+
+        f.distinct_sessions = 2;
+        assert_eq!(gk.evaluate(&f), PromotionDecision::Climb(Tier::Project));
+    }
+
+    #[test]
+    fn evidence_diversity_gates_corroboration_when_configured() {
+        let gk = PromotionGatekeeper::new(PromotionConfig {
+            min_distinct_evidence_types: 2,
+            ..PromotionConfig::default()
+        });
+        let mut f = facts();
+        f.distinct_delegation_roots = 2;
+        f.distinct_evidence_types = 1;
+        assert_eq!(gk.evaluate(&f), PromotionDecision::Hold);
+
+        f.distinct_evidence_types = 2;
+        assert_eq!(gk.evaluate(&f), PromotionDecision::Climb(Tier::Project));
+    }
+
+    #[test]
+    fn the_extra_axes_are_off_by_default() {
+        // Nothing populates `session_id` today, so a default that required it
+        // would block every corroborated climb rather than tighten any.
+        let gk = PromotionGatekeeper::default();
+        let mut f = facts();
+        f.distinct_delegation_roots = 2;
+        f.distinct_sessions = 0;
+        f.distinct_evidence_types = 1;
+        assert_eq!(gk.evaluate(&f), PromotionDecision::Climb(Tier::Project));
+    }
+
+    #[test]
+    fn the_extra_axes_never_rescue_an_uncorroborated_climb() {
+        // They narrow corroboration; they cannot stand in for distinct roots.
+        let gk = PromotionGatekeeper::default();
+        let mut f = facts();
+        f.distinct_delegation_roots = 1;
+        f.distinct_sessions = 9;
+        f.distinct_evidence_types = 4;
         assert_eq!(gk.evaluate(&f), PromotionDecision::Hold);
     }
 
