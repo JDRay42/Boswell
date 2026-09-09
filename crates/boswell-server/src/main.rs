@@ -6,7 +6,7 @@
 use std::env;
 use std::process;
 
-use boswell_server::{config::STARTER_TOML, run, InstanceConfig, ServerError};
+use boswell_server::{config::STARTER_TOML, reindex, run, InstanceConfig, ServerError};
 
 #[tokio::main]
 async fn main() {
@@ -45,6 +45,23 @@ async fn dispatch() -> Result<(), ServerError> {
             })?;
             let config = InstanceConfig::from_file(path)?;
             run(config).await
+        }
+        Some("reindex") => {
+            // ADR-014: reindexing is a dead-stop offline operation. This command
+            // runs with the instance down and exits when the rebuild completes.
+            let path = match args.get(2).map(String::as_str) {
+                Some("--config") => args.get(3).ok_or_else(|| {
+                    ServerError::Serve("--config requires a path argument".to_string())
+                })?,
+                Some(other) => {
+                    return Err(ServerError::Serve(format!(
+                        "unexpected argument to reindex: {other}"
+                    )))
+                }
+                None => &"config/instance.toml".to_string(),
+            };
+            let config = InstanceConfig::from_file(path)?;
+            reindex(config)
         }
         None => {
             eprintln!("Warning: no --config specified; using built-in defaults");
@@ -86,6 +103,9 @@ fn print_help() {
     println!("USAGE:");
     println!("    boswell-server --config <path>   Start the server with a config file");
     println!("    boswell-server init [path]       Write a starter config (default: config/instance.toml)");
+    println!("    boswell-server reindex --config <path>");
+    println!("                                     Re-embed every claim and rebuild the vector");
+    println!("                                     index. Run with the instance DOWN (ADR-014).");
     println!("    boswell-server                   Start with built-in defaults");
     println!("    boswell-server --help            Print this help");
     println!();

@@ -37,7 +37,7 @@ use thiserror::Error;
 
 pub use embedding::{cosine_similarity, EmbeddingModel, MockEmbeddingModel};
 pub use ollama_embedding::OllamaEmbeddingModel;
-pub use vector_index::VectorIndex;
+pub use vector_index::{VectorIndex, VectorIndexError};
 
 /// Errors that can occur during storage operations
 #[derive(Error, Debug)]
@@ -68,6 +68,34 @@ pub enum StoreError {
     Unauthorized(String),
 }
 
+/// Outcome of rebuilding the in-memory vector index from persisted embeddings.
+///
+/// The HNSW index lives in memory (see [`vector_index`]), so it is reconstructed
+/// from the `claims.embedding_vector` column each time a store is opened. This
+/// report says how that reconstruction went, which distinguishes the two
+/// remedies: `missing` claims need [`SqliteStore::backfill_embeddings`], while
+/// `unusable` ones need a full [`SqliteStore::reindex_all`] (ADR-014).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IndexLoadReport {
+    /// Embeddings successfully loaded into the vector index.
+    pub loaded: usize,
+
+    /// Claims with no persisted embedding yet (written before embeddings were
+    /// persisted, or stored while the embedder was unavailable).
+    pub missing: usize,
+
+    /// Claims whose persisted embedding could not be indexed because it was
+    /// corrupt or did not match the current model's dimension.
+    pub unusable: usize,
+}
+
+impl IndexLoadReport {
+    /// Whether any claim is absent from the vector index and so unsearchable.
+    pub fn has_gaps(&self) -> bool {
+        self.missing > 0 || self.unusable > 0
+    }
+}
+
 /// SQLite-based implementation of ClaimStore
 ///
 /// This store provides persistent storage for claims, relationships, and provenance.
@@ -80,6 +108,8 @@ pub struct SqliteStore {
     conn: Connection,
     vector_index: Option<VectorIndex>,
     embedding_model: Option<Box<dyn EmbeddingModel + Send + Sync>>,
+    /// How the vector index was reconstructed when this store was opened.
+    index_load: IndexLoadReport,
 }
 
 impl SqliteStore {
@@ -125,8 +155,10 @@ impl SqliteStore {
             conn,
             vector_index,
             embedding_model,
+            index_load: IndexLoadReport::default(),
         };
         store.initialize_schema()?;
+        store.index_load = store.load_vector_index()?;
         Ok(store)
     }
 
@@ -153,8 +185,10 @@ impl SqliteStore {
             conn,
             vector_index: Some(VectorIndex::new(dimension)),
             embedding_model: Some(embedding_model),
+            index_load: IndexLoadReport::default(),
         };
         store.initialize_schema()?;
+        store.index_load = store.load_vector_index()?;
         Ok(store)
     }
 
@@ -257,6 +291,27 @@ impl SqliteStore {
         Ok(ClaimId::from_value(u128::from_be_bytes(arr)))
     }
 
+    /// The text a claim is embedded as, shared by the write path and any
+    /// re-embedding pass so a rebuilt vector is identical to the original.
+    fn embedding_text(subject: &str, predicate: &str, object: &str) -> String {
+        format!("{} {} {}", subject, predicate, object)
+    }
+
+    /// Encode an embedding for storage in `claims.embedding_vector`.
+    ///
+    /// Stored as a JSON array, matching the column's documented format in
+    /// `schema.sql` ("stored as JSON array for flexibility").
+    fn encode_embedding(embedding: &[f32]) -> Result<String, StoreError> {
+        serde_json::to_string(embedding)
+            .map_err(|e| StoreError::InvalidData(format!("Failed to encode embedding: {}", e)))
+    }
+
+    /// Decode an embedding written by [`Self::encode_embedding`].
+    fn decode_embedding(raw: &str) -> Result<Vec<f32>, StoreError> {
+        serde_json::from_str(raw)
+            .map_err(|e| StoreError::InvalidData(format!("Failed to decode embedding: {}", e)))
+    }
+
     /// Convert RelationshipType to string for storage
     fn relationship_type_to_str(rt: RelationshipType) -> &'static str {
         match rt {
@@ -305,10 +360,35 @@ impl ClaimStore for SqliteStore {
             return Err(StoreError::Duplicate);
         }
 
+        // Embed before the insert so the vector is written in the same row as
+        // the claim. Persisting it is what lets semantic search survive a
+        // restart: the HNSW index is in-memory, and `load_vector_index` rebuilds
+        // it from this column when the store is reopened.
+        let embedding = match (&self.embedding_model, &self.vector_index) {
+            (Some(embedding_model), Some(_)) => {
+                let text = Self::embedding_text(&claim.subject, &claim.predicate, &claim.object);
+                match embedding_model.embed(&text) {
+                    Ok(embedding) => Some(embedding),
+                    Err(e) => {
+                        // Don't fail the write: the claim is still worth storing,
+                        // and `backfill_embeddings` can embed it once the model
+                        // is reachable again.
+                        eprintln!("Warning: Failed to generate embedding: {}", e);
+                        None
+                    }
+                }
+            }
+            _ => None,
+        };
+        let encoded_embedding = embedding
+            .as_deref()
+            .map(Self::encode_embedding)
+            .transpose()?;
+
         // Insert the claim
         self.conn.execute(
-            "INSERT INTO claims (id, namespace, subject, predicate, object, source_type, base_lower, base_upper, tier, created_at, stale_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO claims (id, namespace, subject, predicate, object, source_type, base_lower, base_upper, tier, created_at, stale_at, embedding_vector)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 &id_bytes,
                 &claim.namespace,
@@ -321,26 +401,14 @@ impl ClaimStore for SqliteStore {
                 &claim.tier,
                 claim.created_at as i64,
                 claim.stale_at.map(|t| t as i64),
+                encoded_embedding,
             ],
         )?;
 
-        // Auto-generate and add embedding if vector search is enabled
-        if let (Some(embedding_model), Some(vector_index)) =
-            (&self.embedding_model, &self.vector_index)
-        {
-            // Create embedding text from claim content
-            let text = format!("{} {} {}", claim.subject, claim.predicate, claim.object);
-
-            match embedding_model.embed(&text) {
-                Ok(embedding) => {
-                    // Add to vector index (ignore errors for now)
-                    let _ = vector_index.add(claim.id, &embedding);
-                }
-                Err(e) => {
-                    // Log error but don't fail the claim insertion
-                    eprintln!("Warning: Failed to generate embedding: {}", e);
-                }
-            }
+        if let (Some(vector_index), Some(embedding)) = (&self.vector_index, &embedding) {
+            // An index insert failure leaves the claim stored and its embedding
+            // persisted, so the next open reconstructs it.
+            let _ = vector_index.add(claim.id, embedding);
         }
 
         Ok(claim.id)
@@ -628,6 +696,144 @@ impl SqliteStore {
         Ok(results)
     }
 
+    /// Report describing how the vector index was rebuilt when this store was
+    /// opened. See [`IndexLoadReport`].
+    pub fn index_load_report(&self) -> &IndexLoadReport {
+        &self.index_load
+    }
+
+    /// Number of vectors currently in the in-memory index.
+    pub fn vector_index_len(&self) -> usize {
+        self.vector_index.as_ref().map_or(0, |index| index.len())
+    }
+
+    /// Rebuild the in-memory vector index from embeddings persisted in SQLite.
+    ///
+    /// The HNSW index is not itself durable, so this is what makes semantic
+    /// search survive a restart. It is called automatically when a store is
+    /// opened and performs no embedding work — it only replays vectors already
+    /// stored in `claims.embedding_vector`.
+    ///
+    /// A row that cannot be replayed (corrupt JSON, or a dimension that does not
+    /// match the current model) is counted as `unusable` rather than failing the
+    /// load, so one bad row can never stop the instance from starting.
+    pub fn load_vector_index(&self) -> Result<IndexLoadReport, StoreError> {
+        let Some(vector_index) = self.vector_index.as_ref() else {
+            return Ok(IndexLoadReport::default());
+        };
+
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, embedding_vector FROM claims")?;
+        let rows = stmt
+            .query_map([], |row| {
+                let id_bytes: Vec<u8> = row.get(0)?;
+                let stored: Option<String> = row.get(1)?;
+                Ok((id_bytes, stored))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut report = IndexLoadReport::default();
+        for (id_bytes, stored) in rows {
+            let Some(stored) = stored else {
+                report.missing += 1;
+                continue;
+            };
+            let claim_id = Self::bytes_to_claim_id(&id_bytes)?;
+            match Self::decode_embedding(&stored) {
+                Ok(embedding) => match vector_index.add(claim_id, &embedding) {
+                    Ok(()) => report.loaded += 1,
+                    // Wrong dimension: the embedding model changed under an
+                    // existing store. Recoverable with `reindex_all`.
+                    Err(VectorIndexError::DimensionMismatch { .. }) => report.unusable += 1,
+                    Err(e) => {
+                        return Err(StoreError::InvalidData(format!(
+                            "Failed to rebuild vector index: {}",
+                            e
+                        )))
+                    }
+                },
+                Err(_) => report.unusable += 1,
+            }
+        }
+
+        Ok(report)
+    }
+
+    /// Embed and persist every claim that has no stored embedding, adding each
+    /// to the vector index.
+    ///
+    /// This is the one-time catch-up for claims written before embeddings were
+    /// persisted, and the retry path for claims stored while the embedder was
+    /// unreachable. It is idempotent and a no-op once every claim is embedded,
+    /// so it is safe to run on every startup.
+    ///
+    /// Returns the number of claims embedded. Each claim is persisted as it is
+    /// embedded, so an interrupted run resumes where it left off.
+    pub fn backfill_embeddings(&self) -> Result<usize, StoreError> {
+        let (Some(embedding_model), Some(vector_index)) =
+            (&self.embedding_model, &self.vector_index)
+        else {
+            return Ok(0);
+        };
+
+        // Collect first: the rows are updated on the same connection below.
+        let mut stmt = self.conn.prepare(
+            "SELECT id, subject, predicate, object FROM claims WHERE embedding_vector IS NULL",
+        )?;
+        let pending = stmt
+            .query_map([], |row| {
+                let id_bytes: Vec<u8> = row.get(0)?;
+                Ok((
+                    id_bytes,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+
+        let mut embedded = 0usize;
+        for (id_bytes, subject, predicate, object) in pending {
+            let text = Self::embedding_text(&subject, &predicate, &object);
+            let embedding = embedding_model.embed(&text).map_err(|e| {
+                StoreError::InvalidData(format!("Failed to embed claim during backfill: {}", e))
+            })?;
+
+            let encoded = Self::encode_embedding(&embedding)?;
+            self.conn.execute(
+                "UPDATE claims SET embedding_vector = ?1 WHERE id = ?2",
+                params![encoded, &id_bytes],
+            )?;
+
+            let claim_id = Self::bytes_to_claim_id(&id_bytes)?;
+            let _ = vector_index.add(claim_id, &embedding);
+            embedded += 1;
+        }
+
+        Ok(embedded)
+    }
+
+    /// Re-embed every claim from scratch and rebuild the vector index.
+    ///
+    /// This is the recovery path ADR-014 describes for a deliberate embedding
+    /// model change or a corrupt index: discard every stored vector, then embed
+    /// all claims again with the store's current model. ADR-014 specifies this
+    /// as an offline, dead-stop operation — run it with the instance down.
+    ///
+    /// Returns the number of claims re-embedded.
+    pub fn reindex_all(&self) -> Result<usize, StoreError> {
+        let Some(vector_index) = self.vector_index.as_ref() else {
+            return Ok(0);
+        };
+
+        vector_index.clear();
+        self.conn
+            .execute("UPDATE claims SET embedding_vector = NULL", [])?;
+        self.backfill_embeddings()
+    }
+
     /// Add an embedding to the vector index for an existing claim                ///
     /// This is a helper method for when embeddings are generated after claim creation.
     ///
@@ -648,6 +854,14 @@ impl SqliteStore {
         if self.get_claim(claim_id)?.is_none() {
             return Err(StoreError::NotFound(claim_id.to_string()));
         }
+
+        // Persist alongside the index entry, so the vector is replayed on the
+        // next open rather than being lost with the in-memory index.
+        let encoded = Self::encode_embedding(embedding)?;
+        self.conn.execute(
+            "UPDATE claims SET embedding_vector = ?1 WHERE id = ?2",
+            params![encoded, &Self::claim_id_to_bytes(claim_id)],
+        )?;
 
         // Add to vector index
         vector_index
@@ -942,5 +1156,170 @@ mod migration_tests {
         // No source_type filter returns both.
         let all = store.query_claims(&ClaimQuery::default()).unwrap();
         assert_eq!(all.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod embedding_persistence_tests {
+    use super::*;
+    use boswell_domain::{Claim, ClaimId};
+
+    fn claim(subject: &str, object: &str) -> Claim {
+        Claim::new(
+            ClaimId::new(),
+            "person".into(),
+            subject.into(),
+            "rel:uses".into(),
+            object.into(),
+            (0.8, 0.9),
+            "project".into(),
+            1_700_000_000,
+        )
+    }
+
+    /// The regression this whole feature exists for: semantic search must still
+    /// work after the process restarts. Claims survived before, but the HNSW
+    /// index was in-memory only and nothing rebuilt it, so search went silent.
+    #[test]
+    fn test_semantic_search_survives_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("persist.db");
+
+        let target = {
+            let mut store = SqliteStore::new(&path, true, 64).unwrap();
+            let c = claim("person:jd", "lang:rust");
+            let id = store.assert_claim(c).unwrap();
+            // Sanity: searchable in the session that wrote it.
+            assert!(store.vector_index_len() > 0);
+            id
+        };
+
+        // Reopen: a fresh store, a fresh (empty) HNSW index.
+        let store = SqliteStore::new(&path, true, 64).unwrap();
+        let report = store.index_load_report();
+        assert_eq!(report.loaded, 1, "embedding should be replayed on open");
+        assert_eq!(report.missing, 0);
+        assert_eq!(report.unusable, 0);
+        assert_eq!(store.vector_index_len(), 1);
+
+        let hits = store
+            .semantic_search("person:jd rel:uses lang:rust", 5, 0.0)
+            .unwrap();
+        assert!(
+            hits.iter().any(|(c, _)| c.id == target),
+            "the claim must be findable by semantic search after reopen"
+        );
+    }
+
+    /// Embeddings are written to the column the schema reserves for them.
+    #[test]
+    fn test_assert_persists_embedding_column() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("column.db");
+        let mut store = SqliteStore::new(&path, true, 64).unwrap();
+        store.assert_claim(claim("person:jd", "lang:rust")).unwrap();
+
+        let stored: Option<String> = store
+            .conn
+            .query_row("SELECT embedding_vector FROM claims", [], |r| r.get(0))
+            .unwrap();
+        let vector = SqliteStore::decode_embedding(&stored.expect("embedding persisted")).unwrap();
+        assert_eq!(vector.len(), 64);
+    }
+
+    /// A store opened without vector search must not fail, and must not claim
+    /// to have loaded anything.
+    #[test]
+    fn test_load_is_noop_without_vector_search() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("novec.db");
+        let mut store = SqliteStore::new(&path, false, 0).unwrap();
+        store.assert_claim(claim("person:jd", "lang:rust")).unwrap();
+        assert_eq!(store.index_load_report(), &IndexLoadReport::default());
+        assert_eq!(store.vector_index_len(), 0);
+    }
+
+    /// Claims written before embeddings were persisted (embedding_vector NULL)
+    /// are reported as `missing` and made searchable by a backfill.
+    #[test]
+    fn test_backfill_embeds_legacy_claims() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy.db");
+
+        // Write a claim, then blank its embedding to look like a pre-upgrade row.
+        {
+            let mut store = SqliteStore::new(&path, true, 64).unwrap();
+            store.assert_claim(claim("person:jd", "lang:rust")).unwrap();
+            store
+                .conn
+                .execute("UPDATE claims SET embedding_vector = NULL", [])
+                .unwrap();
+        }
+
+        let store = SqliteStore::new(&path, true, 64).unwrap();
+        assert_eq!(store.index_load_report().missing, 1);
+        assert_eq!(store.vector_index_len(), 0, "nothing to replay yet");
+
+        assert_eq!(store.backfill_embeddings().unwrap(), 1);
+        assert_eq!(store.vector_index_len(), 1);
+
+        // Idempotent: a second pass has nothing left to do.
+        assert_eq!(store.backfill_embeddings().unwrap(), 0);
+
+        // And it is durable from here on.
+        let reopened = SqliteStore::new(&path, true, 64).unwrap();
+        assert_eq!(reopened.index_load_report().loaded, 1);
+    }
+
+    /// An embedding stored under a different model dimension cannot be indexed.
+    /// It must be counted as unusable rather than aborting the open, and
+    /// `reindex_all` must recover it.
+    #[test]
+    fn test_dimension_change_is_recoverable_by_reindex() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dim.db");
+
+        {
+            let mut store = SqliteStore::new(&path, true, 64).unwrap();
+            store.assert_claim(claim("person:jd", "lang:rust")).unwrap();
+        }
+
+        // Reopen with a different embedding dimension, as if the model changed.
+        let store = SqliteStore::new(&path, true, 128).unwrap();
+        assert_eq!(store.index_load_report().unusable, 1);
+        assert_eq!(store.index_load_report().loaded, 0);
+        assert!(store.index_load_report().has_gaps());
+        assert_eq!(store.vector_index_len(), 0);
+
+        // A backfill cannot help (the row has a vector, just the wrong one);
+        // the offline reindex in ADR-014 is what recovers it.
+        assert_eq!(store.backfill_embeddings().unwrap(), 0);
+        assert_eq!(store.reindex_all().unwrap(), 1);
+        assert_eq!(store.vector_index_len(), 1);
+
+        let reopened = SqliteStore::new(&path, true, 128).unwrap();
+        assert_eq!(reopened.index_load_report().loaded, 1);
+        assert_eq!(reopened.index_load_report().unusable, 0);
+    }
+
+    /// A corrupt embedding must not stop the instance from opening the store.
+    #[test]
+    fn test_corrupt_embedding_does_not_block_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("corrupt.db");
+
+        {
+            let mut store = SqliteStore::new(&path, true, 64).unwrap();
+            store.assert_claim(claim("person:jd", "lang:rust")).unwrap();
+            store
+                .conn
+                .execute("UPDATE claims SET embedding_vector = 'not json'", [])
+                .unwrap();
+        }
+
+        let store = SqliteStore::new(&path, true, 64).unwrap();
+        assert_eq!(store.index_load_report().unusable, 1);
+        assert_eq!(store.reindex_all().unwrap(), 1);
+        assert_eq!(store.vector_index_len(), 1);
     }
 }
