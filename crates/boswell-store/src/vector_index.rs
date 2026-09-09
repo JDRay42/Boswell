@@ -5,9 +5,12 @@
 //!
 //! # Architecture
 //!
-//! - In-memory index for Phase 1 (persistence in later phases)
-//! - Separated from SQLite for optimal performance
-//! - Rebuildable from SQLite on startup
+//! - In-memory index, separated from SQLite for optimal performance
+//! - Rebuilt from SQLite on startup: every claim's vector is persisted to
+//!   `claims.embedding_vector`, and [`SqliteStore::load_vector_index`] replays
+//!   them when the store is opened, so semantic search survives a restart
+//!
+//! [`SqliteStore::load_vector_index`]: crate::SqliteStore::load_vector_index
 //!
 //! # HNSW Parameters
 //!

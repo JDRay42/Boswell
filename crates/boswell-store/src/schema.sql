@@ -305,7 +305,10 @@ CREATE INDEX IF NOT EXISTS idx_execution_receipts_status ON execution_receipts(s
 CREATE INDEX IF NOT EXISTS idx_execution_receipts_procedure ON execution_receipts(procedure_id);
 
 -- Notes on HNSW vector index:
--- The HNSW index is maintained separately in a memory-mapped file alongside this SQLite database.
--- The embedding_vector column in the claims table is primarily for reconstruction/debugging.
+-- The HNSW index is held in memory and is NOT itself durable.
+-- The embedding_vector column in the claims table is the durable copy: it is written
+-- with the claim and replayed into the index when the store is opened, which is what
+-- makes semantic search survive a restart. Re-embedding everything (after a model
+-- change or index corruption) is the offline reindex described in ADR-014.
 -- Vector similarity search queries will use the HNSW index, not SQL queries.
 -- The HNSW index maps ULID → vector and provides approximate nearest neighbor search.

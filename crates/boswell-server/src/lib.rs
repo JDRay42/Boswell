@@ -23,6 +23,7 @@ pub mod extraction;
 
 use std::sync::{Arc, Mutex};
 
+use boswell_domain::traits::ClaimStore;
 use boswell_grpc::{start_server_with_extractor, ServerConfig, ServerExtractor};
 use boswell_store::{EmbeddingModel, OllamaEmbeddingModel, SqliteStore};
 use thiserror::Error;
@@ -56,6 +57,51 @@ pub enum ServerError {
     /// The gRPC server failed to start or exited with an error.
     #[error("gRPC server error: {0}")]
     Serve(String),
+}
+
+/// Restore semantic search for an opened store.
+///
+/// Opening the store already replays every persisted embedding into the
+/// in-memory HNSW index. This reports what that replay found and embeds any
+/// claim still missing a vector, so claims written before embeddings were
+/// persisted (or while the embedder was down) become searchable again.
+fn restore_vector_index(store: &SqliteStore) {
+    if !store.supports_semantic_search() {
+        return;
+    }
+
+    let report = store.index_load_report().clone();
+    tracing::info!(
+        "Vector index rebuilt from store: {} embedding(s) loaded",
+        report.loaded
+    );
+
+    if report.unusable > 0 {
+        tracing::warn!(
+            "{} claim(s) have an unreadable or wrong-dimension embedding and are \
+             not searchable; run an offline reindex to re-embed them (ADR-014)",
+            report.unusable
+        );
+    }
+
+    if report.missing > 0 {
+        tracing::info!(
+            "Backfilling embeddings for {} claim(s) with no stored vector",
+            report.missing
+        );
+    }
+
+    match store.backfill_embeddings() {
+        Ok(0) => {}
+        Ok(n) => tracing::info!("Backfilled {} embedding(s); semantic search is current", n),
+        // A backfill failure is not fatal: the claims are stored and the next
+        // startup retries them. Semantic search is just incomplete until then.
+        Err(e) => tracing::warn!(
+            "Embedding backfill did not finish ({}); some claims remain unsearchable \
+             until the next startup",
+            e
+        ),
+    }
 }
 
 /// Build the claim store described by `config`, initializing the configured
@@ -98,6 +144,31 @@ pub fn build_store(config: &InstanceConfig) -> Result<SqliteStore, ServerError> 
     }
 }
 
+/// Re-embed every claim and rebuild the vector index, then exit.
+///
+/// This is ADR-014's offline reindex: the operation to run after deliberately
+/// changing the embedding model, or to recover a corrupt index. ADR-014 makes it
+/// a dead-stop operation, so run it with the instance down — it opens the store
+/// exclusively, rebuilds, and returns.
+pub fn reindex(config: InstanceConfig) -> Result<(), ServerError> {
+    let store = build_store(&config)?;
+
+    if !store.supports_semantic_search() {
+        return Err(ServerError::Serve(
+            "reindex requires an embedding backend; set [embedding] backend to \
+             'ollama' or 'mock' in the config"
+                .to_string(),
+        ));
+    }
+
+    tracing::info!("Reindexing: re-embedding every claim (instance must be down)");
+    let count = store
+        .reindex_all()
+        .map_err(|e| ServerError::Store(e.to_string()))?;
+    tracing::info!("Reindex complete: {} claim(s) re-embedded", count);
+    Ok(())
+}
+
 /// Build the store and run the gRPC server until it is shut down.
 ///
 /// When `config.janitor.enabled` is set, a decay-aware Janitor sweep loop runs
@@ -105,6 +176,7 @@ pub fn build_store(config: &InstanceConfig) -> Result<SqliteStore, ServerError> 
 /// stale-claim GC based on age-decayed confidence).
 pub async fn run(config: InstanceConfig) -> Result<(), ServerError> {
     let store = build_store(&config)?;
+    restore_vector_index(&store);
     let store = Arc::new(Mutex::new(store));
 
     if config.janitor.enabled {

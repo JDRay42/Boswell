@@ -100,6 +100,18 @@ cargo run -p boswell-server -- init config/instance.toml
 cargo run -p boswell-server -- --config config/instance.toml
 ```
 
+Claim embeddings are persisted with the claim, and the in-memory vector index is
+rebuilt from them each time the instance starts, so semantic search survives a
+restart. Claims that predate persistence (or that were written while the embedder
+was unreachable) are embedded automatically on the next startup. After a
+deliberate embedding-model change, re-embed everything with the offline reindex
+(per [ADR-014](docs/ADRs/014-offline-reindexing.md)), which runs with the instance
+down:
+
+```bash
+cargo run -p boswell-server -- reindex --config config/instance.toml
+```
+
 To run without Ollama (e.g. for offline development), set `backend = "mock"`
 under `[embedding]` in the config. A `boswell-router` can then register the
 instance at its `http://localhost:50051` endpoint (see `config/router.toml`).

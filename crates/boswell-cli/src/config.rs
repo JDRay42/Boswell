@@ -65,24 +65,59 @@ pub enum OutputFormat {
 }
 
 impl Config {
+    /// Directory holding the CLI configuration.
+    ///
+    /// Honors `BOSWELL_CONFIG_DIR` so the location can be redirected. Under
+    /// `cfg(test)` it defaults to a process-unique temporary directory: the unit
+    /// tests exercise the real save path, and must never write over a
+    /// developer's own `~/.boswell/config.toml`.
+    fn config_dir() -> Result<PathBuf> {
+        if let Ok(dir) = std::env::var("BOSWELL_CONFIG_DIR") {
+            return Ok(PathBuf::from(dir));
+        }
+
+        #[cfg(test)]
+        {
+            Ok(std::env::temp_dir().join(format!("boswell-cli-test-{}", std::process::id())))
+        }
+
+        #[cfg(not(test))]
+        {
+            let home = dirs::home_dir()
+                .ok_or_else(|| CliError::Config("Could not find home directory".into()))?;
+            Ok(home.join(".boswell"))
+        }
+    }
+
     /// Get the configuration file path.
     pub fn path() -> Result<PathBuf> {
-        let home = dirs::home_dir()
-            .ok_or_else(|| CliError::Config("Could not find home directory".into()))?;
-        Ok(home.join(".boswell").join("config.toml"))
+        Ok(Self::config_dir()?.join("config.toml"))
     }
 
     /// Load configuration from file or create default.
+    ///
+    /// A file that exists but carries no profiles is treated as absent. Such a
+    /// file parses as perfectly valid TOML (every field has a serde default),
+    /// but leaves nothing to connect with, so it would otherwise surface much
+    /// later as a baffling "Profile 'default' not found" on the first command.
     pub fn load() -> Result<Self> {
         let path = Self::path()?;
 
-        if path.exists() {
-            let contents = fs::read_to_string(&path)?;
-            let config: Config = toml::from_str(&contents)?;
-            Ok(config)
-        } else {
-            Ok(Self::default())
+        if !path.exists() {
+            return Ok(Self::default());
         }
+
+        let contents = fs::read_to_string(&path)?;
+        if contents.trim().is_empty() {
+            return Ok(Self::default());
+        }
+
+        let config: Config = toml::from_str(&contents)?;
+        if config.profiles.is_empty() {
+            return Ok(Self::default());
+        }
+
+        Ok(config)
     }
 
     /// Save configuration to file.
@@ -205,5 +240,40 @@ mod tests {
         let mut config = Config::default();
         let result = config.switch_profile("nonexistent".to_string());
         assert!(result.is_err());
+    }
+
+    /// The unit tests must never resolve configuration to the real home
+    /// directory: `save()` there would overwrite a developer's own profiles.
+    #[test]
+    fn test_test_config_path_is_not_in_home() {
+        let path = Config::path().unwrap();
+        if let Some(home) = dirs::home_dir() {
+            assert!(
+                !path.starts_with(home.join(".boswell")),
+                "tests must not write to ~/.boswell, got {}",
+                path.display()
+            );
+        }
+    }
+
+    /// An empty config file (e.g. left by an interrupted or racing write) must
+    /// fall back to the defaults rather than yielding a profile-less config.
+    #[test]
+    fn test_empty_config_file_falls_back_to_defaults() {
+        let dir = std::env::temp_dir().join(format!("boswell-empty-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        fs::write(&path, "").unwrap();
+
+        // Read it back the way `load` does.
+        let contents = fs::read_to_string(&path).unwrap();
+        assert!(contents.trim().is_empty());
+
+        // A profile-less parse must not be accepted as usable configuration.
+        let parsed: Config = toml::from_str("active_profile = \"default\"").unwrap();
+        assert!(parsed.profiles.is_empty());
+        assert!(Config::default().get_active_profile().is_ok());
+
+        fs::remove_dir_all(&dir).ok();
     }
 }
