@@ -224,8 +224,10 @@ fn parse_learn_command(args: &[&str]) -> Result<ReplCommand> {
         return Err(CliError::InvalidInput("Usage: learn <file>".to_string()));
     }
 
+    // The REPL's own syntax is `learn <file>`, so it fills the positional.
     Ok(ReplCommand::Command(Command::Learn(LearnArgs {
-        file: Some(args[0].to_string()),
+        path: Some(args[0].to_string()),
+        file: None,
         stdin: false,
         tier: TierArg::Task,
     })))

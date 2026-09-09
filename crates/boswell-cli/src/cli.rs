@@ -153,7 +153,15 @@ pub struct QueryArgs {
 /// Arguments for the learn command.
 #[derive(Debug, Parser)]
 pub struct LearnArgs {
-    /// JSON file containing claims to assert
+    /// JSON file containing claims to assert.
+    ///
+    /// Positional, matching `boswell validate <FILE>` — the two are documented
+    /// as a pair (`boswell validate f.json && boswell learn f.json`), so they
+    /// take their file the same way.
+    pub path: Option<String>,
+
+    /// JSON file containing claims to assert (long form of the positional).
+    ///
     /// No short form: `-f` is the global --format flag, and claiming it here
     /// made `boswell learn` panic on every invocation.
     #[arg(long)]
@@ -166,6 +174,21 @@ pub struct LearnArgs {
     /// Default tier for claims without explicit tier
     #[arg(short, long, value_enum, default_value = "task")]
     pub tier: TierArg,
+}
+
+impl LearnArgs {
+    /// The file to read claims from, however it was given.
+    ///
+    /// Passing both forms is refused rather than silently preferring one: if
+    /// they name different files, quietly loading one of them would assert a
+    /// batch of claims the operator did not ask for.
+    pub fn source_file(&self) -> Result<Option<&str>, &'static str> {
+        match (self.path.as_deref(), self.file.as_deref()) {
+            (Some(_), Some(_)) => Err("pass the file once: either as an argument or with --file"),
+            (Some(p), None) | (None, Some(p)) => Ok(Some(p)),
+            (None, None) => Ok(None),
+        }
+    }
 }
 
 /// Arguments for the validate command.
@@ -331,6 +354,42 @@ mod tests {
     fn the_command_tree_has_no_conflicting_flags() {
         use clap::CommandFactory;
         Cli::command().debug_assert();
+    }
+
+    /// `docs/importing-personal-memory.md` documents `boswell learn f.json` and
+    /// pairs it with `boswell validate f.json` in a single command line, so the
+    /// documented form has to parse. It did not: `learn` took only `--file`,
+    /// which was masked for a long time by the command panicking outright.
+    #[test]
+    fn learn_accepts_the_documented_positional_file() {
+        let cli = Cli::try_parse_from(["boswell", "learn", "memories.json"])
+            .expect("the documented invocation must parse");
+        let Some(Command::Learn(args)) = cli.command else {
+            panic!("expected a learn command");
+        };
+        assert_eq!(args.source_file().unwrap(), Some("memories.json"));
+    }
+
+    /// The long form keeps working, so anything scripted against it still runs.
+    #[test]
+    fn learn_still_accepts_the_long_form() {
+        let cli = Cli::try_parse_from(["boswell", "learn", "--file", "memories.json"]).unwrap();
+        let Some(Command::Learn(args)) = cli.command else {
+            panic!("expected a learn command");
+        };
+        assert_eq!(args.source_file().unwrap(), Some("memories.json"));
+    }
+
+    /// Given both, `learn` refuses rather than picking one. If they name
+    /// different files, quietly loading either would assert a batch of claims
+    /// the operator never asked for.
+    #[test]
+    fn learn_refuses_two_files() {
+        let cli = Cli::try_parse_from(["boswell", "learn", "a.json", "--file", "b.json"]).unwrap();
+        let Some(Command::Learn(args)) = cli.command else {
+            panic!("expected a learn command");
+        };
+        assert!(args.source_file().is_err());
     }
 
     /// A failure attribution only means something alongside a failure, and

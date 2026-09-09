@@ -19,12 +19,18 @@ pub async fn execute_learn(
         let mut buffer = String::new();
         io::stdin().read_to_string(&mut buffer)?;
         buffer
-    } else if let Some(file_path) = args.file {
-        fs::read_to_string(file_path)?
     } else {
-        return Err(CliError::InvalidInput(
-            "Must specify either --file or --stdin".to_string(),
-        ));
+        let file_path = args
+            .source_file()
+            .map_err(|e| CliError::InvalidInput(e.to_string()))?;
+        match file_path {
+            Some(path) => fs::read_to_string(path)?,
+            None => {
+                return Err(CliError::InvalidInput(
+                    "Must specify a file (as an argument or with --file) or --stdin".to_string(),
+                ));
+            }
+        }
     };
 
     // Parse claims
