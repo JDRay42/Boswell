@@ -12,7 +12,14 @@ async fn test_sdk_not_connected_error() {
 
     // Try to assert without connecting — this should fail.
     let result = client
-        .assert("test", "subject", "predicate", "object", Some(0.9), None)
+        .assert(
+            "test",
+            "subject",
+            "predicate",
+            "object",
+            Some((0.9, 0.9)),
+            None,
+        )
         .await;
     assert!(result.is_err());
 }

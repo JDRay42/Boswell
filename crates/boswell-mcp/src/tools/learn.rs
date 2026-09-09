@@ -86,7 +86,7 @@ pub async fn handle_learn(
                 &claim.subject,
                 &claim.predicate,
                 &claim.object,
-                claim.confidence,
+                claim.confidence.map(|c| (c, c)),
                 tier,
             )
             .await

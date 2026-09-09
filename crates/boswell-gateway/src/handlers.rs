@@ -206,7 +206,8 @@ pub async fn assert_claim(
             &body.subject,
             &body.predicate,
             &body.object,
-            Some(confidence),
+            // `AssertBody::confidence` is documented as a point estimate.
+            Some((confidence, confidence)),
             tier,
         )
         .await?;

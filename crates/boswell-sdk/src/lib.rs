@@ -17,7 +17,7 @@
 //!         "John",
 //!         "knows",
 //!         "Rust",
-//!         Some(0.95),
+//!         Some((0.9, 0.95)),
 //!         None
 //!     ).await.expect("Failed to assert claim");
 //! }

@@ -68,7 +68,9 @@ pub async fn handle_assert(
             &params.subject,
             &params.predicate,
             &params.object,
-            params.confidence,
+            // The MCP tool schema takes a scalar, so the caller really did
+            // supply a point estimate; widen it to a zero-width interval.
+            params.confidence.map(|c| (c, c)),
             tier,
         )
         .await

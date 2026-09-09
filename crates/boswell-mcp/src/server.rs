@@ -322,7 +322,7 @@ impl McpServer {
                     "query": {"type": "string", "description": "Search query text"},
                     "namespace": {"type": "string", "description": "Filter by namespace"},
                     "limit": {"type": "integer", "description": "Maximum results (default: 10)", "default": 10},
-                    "threshold": {"type": "number", "description": "Similarity threshold (default: 0.7)", "default": 0.7}
+                    "threshold": {"type": "number", "description": "Minimum similarity filter; 0.0 (default) returns the top `limit` ranked results", "default": 0.0}
                 },
                 "required": ["query"]
             }),

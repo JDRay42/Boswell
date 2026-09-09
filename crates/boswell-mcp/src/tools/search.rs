@@ -25,8 +25,12 @@ fn default_limit() -> usize {
     10
 }
 
+/// No similarity floor by default: results are ranked and capped by `limit`,
+/// with scores returned. A non-zero threshold is model-specific tuning, so it is
+/// opt-in rather than silently filtering everything out. Matches the gateway's
+/// `min_similarity` default and the CLI's `--threshold`.
 fn default_threshold() -> f64 {
-    0.7
+    0.0
 }
 
 /// Search result with similarity score
@@ -139,6 +143,8 @@ mod tests {
         let json = r#"{ "query": "test" }"#;
         let params: SearchParams = serde_json::from_str(json).unwrap();
         assert_eq!(params.limit, 10);
-        assert_eq!(params.threshold, 0.7);
+        // No similarity floor by default: a non-zero one filtered out every
+        // result, since cosine scores on short entity triples fall below it.
+        assert_eq!(params.threshold, 0.0);
     }
 }
