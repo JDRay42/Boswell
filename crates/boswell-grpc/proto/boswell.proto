@@ -34,10 +34,10 @@ service BosWellService {
     // ---- Procedural memory (design 15, phase 7a) ----
 
     // Retrieve procedures for a goal/intent. Each returned procedure carries an
-    // execution contract (receipt): retrieval obliges the caller to report.
+    // execution receipt: retrieval obliges the caller to report.
     rpc QueryProcedures(QueryProceduresRequest) returns (QueryProceduresResponse);
 
-    // Fetch one procedure by id, issuing an execution contract for it.
+    // Fetch one procedure by id, issuing an execution receipt for it.
     rpc GetProcedure(GetProcedureRequest) returns (GetProcedureResponse);
 
     // Report an execution outcome against a receipt (the reporting contract).
@@ -313,8 +313,8 @@ message Procedure {
     optional uint64 stale_at = 29;
 }
 
-// The obligation-to-report contract issued with every procedure.
-message ExecutionContract {
+// The obligation-to-report receipt issued with every procedure.
+message ExecutionReceipt {
     string receipt_id = 1;
     string procedure_id = 2;
     uint32 version = 3;
@@ -329,7 +329,7 @@ message ExecutionContract {
 // A procedure paired with the receipt issued for it.
 message IssuedProcedure {
     Procedure procedure = 1;
-    ExecutionContract contract = 2;
+    ExecutionReceipt receipt = 2;
 }
 
 message QueryProceduresRequest {

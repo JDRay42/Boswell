@@ -357,9 +357,9 @@ fn precondition_from_proto(p: &proto::Precondition) -> Result<DomainPrecondition
     })
 }
 
-/// Convert an issued [`DomainReceipt`] to its proto execution contract.
-pub fn contract_to_proto(r: &DomainReceipt) -> proto::ExecutionContract {
-    proto::ExecutionContract {
+/// Convert an issued [`DomainReceipt`] to its proto form.
+pub fn receipt_to_proto(r: &DomainReceipt) -> proto::ExecutionReceipt {
+    proto::ExecutionReceipt {
         receipt_id: r.receipt_id.to_string(),
         procedure_id: r.procedure_id.to_string(),
         version: r.version,
@@ -372,8 +372,8 @@ pub fn contract_to_proto(r: &DomainReceipt) -> proto::ExecutionContract {
     }
 }
 
-/// Convert a proto execution contract back to its domain receipt.
-pub fn contract_from_proto(c: &proto::ExecutionContract) -> Result<DomainReceipt, ConversionError> {
+/// Convert a proto execution receipt back to its domain form.
+pub fn receipt_from_proto(c: &proto::ExecutionReceipt) -> Result<DomainReceipt, ConversionError> {
     Ok(DomainReceipt {
         receipt_id: ProcedureId::from_string(&c.receipt_id)
             .map_err(ConversionError::InvalidProcedureId)?,
@@ -511,7 +511,7 @@ mod tests {
     /// A receipt is the executor's only handle on its obligation, so its
     /// correlation fields have to survive the wire too.
     #[test]
-    fn execution_contract_survives_a_proto_round_trip() {
+    fn execution_receipt_survives_a_proto_round_trip() {
         let original = DomainReceipt {
             receipt_id: ProcedureId::new(),
             procedure_id: ProcedureId::new(),
@@ -524,7 +524,7 @@ mod tests {
             report_to: Some("https://example.invalid/report".into()),
         };
 
-        let round_tripped = contract_from_proto(&contract_to_proto(&original)).unwrap();
+        let round_tripped = receipt_from_proto(&receipt_to_proto(&original)).unwrap();
         assert_eq!(round_tripped, original);
     }
 

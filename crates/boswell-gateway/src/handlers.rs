@@ -854,16 +854,16 @@ pub struct ProcedureQueryParams {
     session_id: Option<String>,
 }
 
-/// JSON representation of an issued procedure and its execution contract.
+/// JSON representation of an issued procedure and its execution receipt.
 #[derive(Debug, Serialize)]
 pub struct IssuedProcedureDto {
     procedure: Value,
-    contract: Value,
+    receipt: Value,
 }
 
 fn issued_procedure_to_dto(d: &boswell_sdk::IssuedProcedure) -> IssuedProcedureDto {
     let p = &d.procedure;
-    let c = &d.contract;
+    let r = &d.receipt;
 
     let preconditions: Vec<Value> = p
         .preconditions
@@ -930,18 +930,18 @@ fn issued_procedure_to_dto(d: &boswell_sdk::IssuedProcedure) -> IssuedProcedureD
             "created_at": p.created_at,
             "updated_at": p.updated_at,
         }),
-        // The contract is echoed in the shape design §3.3 specifies, so a hook
+        // The receipt is echoed in the shape design §3.3 specifies, so a hook
         // can read `required`/`optional` straight off the response.
-        contract: json!({
-            "receipt_id": c.receipt_id.to_string(),
-            "procedure_id": c.procedure_id.to_string(),
-            "version": c.version,
-            "issued_to": c.issued_to,
-            "task_id": c.task_id,
-            "session_id": c.session_id,
-            "issued_at": c.issued_at,
-            "expires_at": c.expires_at,
-            "report_to": c.report_to,
+        receipt: json!({
+            "receipt_id": r.receipt_id.to_string(),
+            "procedure_id": r.procedure_id.to_string(),
+            "version": r.version,
+            "issued_to": r.issued_to,
+            "task_id": r.task_id,
+            "session_id": r.session_id,
+            "issued_at": r.issued_at,
+            "expires_at": r.expires_at,
+            "report_to": r.report_to,
             "required": ["outcome"],
             "optional": ["failure_mode", "executor_confidence", "cost", "notes"],
         }),
@@ -965,7 +965,7 @@ pub async fn query_procedures(
 
     let spec = boswell_sdk::ProcedureQuerySpec {
         // The gateway, not the caller, names the principal on the hook: an
-        // API key cannot issue contracts in someone else's name.
+        // API key cannot issue receipts in someone else's name.
         issued_to: ctx.key_id.clone(),
         namespace,
         goal: params.goal,
@@ -985,7 +985,7 @@ pub async fn query_procedures(
     Ok(Json(json!({ "procedures": procedures, "count": count })))
 }
 
-/// `GET /v1/procedures/:id` — fetch one procedure, issuing a contract for it.
+/// `GET /v1/procedures/:id` — fetch one procedure, issuing a receipt for it.
 pub async fn get_procedure(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -1030,7 +1030,7 @@ pub struct OutcomeReportBody {
     notes: Option<String>,
 }
 
-/// `POST /v1/receipts/:receipt_id/report` — answer an execution contract.
+/// `POST /v1/receipts/:receipt_id/report` — answer an execution receipt.
 ///
 /// This is the endpoint the capture hooks call. Requires the `write` scope:
 /// the report moves a procedure's effectiveness counters.
