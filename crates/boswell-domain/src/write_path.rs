@@ -15,6 +15,7 @@
 //! needs no change to the ceiling formula. See
 //! `docs/architecture/15-procedural-memory.md` §5 and §6.
 
+use crate::procedure::ReportEffect;
 use crate::Tier;
 
 /// The trust-type of the evidence behind a write (design §5.1).
@@ -337,6 +338,25 @@ impl CorroborationFacts {
             .min(self.best_assurance.tier_ceiling())
             .min(authority_ceiling)
     }
+}
+
+/// The result of a provenance-stamped procedure or goal-edge write (design §5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StampedWriteOutcome {
+    /// The tier the entry actually entered at.
+    pub entry_tier: Tier,
+    /// Whether the requested tier was clamped down by a ceiling.
+    pub clamped: bool,
+}
+
+/// The result of a gatekept outcome report (design §3.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StampedReportOutcome {
+    /// The counter changes applied, if the report was applied.
+    pub effect: Option<ReportEffect>,
+    /// Whether a negative report was quarantined (recorded but not applied)
+    /// because the reporter's assurance is too low for the procedure's tier.
+    pub quarantined: bool,
 }
 
 #[cfg(test)]

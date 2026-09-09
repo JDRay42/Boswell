@@ -53,12 +53,12 @@ pub use namespace::Namespace;
 pub use procedure::{
     BodyFormat, ClaimMatch, ExecutionReceipt, Expect, FailureMode, Outcome, OutcomeReport,
     Parameter, Precondition, PreconditionCheck, Procedure, ProcedureId, ProcedureQuery,
-    ProcedureSource, ReceiptStatus, ReportEffect,
+    ProcedureSource, ReceiptReportOutcome, ReceiptStatus, ReportEffect, StoredReceipt,
 };
 pub use provenance::ProvenanceEntry;
 pub use relationship::{Relationship, RelationshipType};
 pub use tier::Tier;
 pub use write_path::{
     entry_tier, Assurance, Authority, CorroborationFacts, DelegationChain, EvidenceType, Op,
-    ProvenanceStamp,
+    ProvenanceStamp, StampedReportOutcome, StampedWriteOutcome,
 };

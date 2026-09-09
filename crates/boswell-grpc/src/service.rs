@@ -2,13 +2,18 @@
 //!
 //! Implements the BosWellService trait generated from proto definitions.
 
-use boswell_domain::traits::{ClaimQuery, ClaimStore};
-use boswell_domain::{Claim, ClaimId};
+use boswell_domain::traits::{ClaimQuery, ClaimStore, ProcedureStore};
+use boswell_domain::{
+    Assurance, Authority, Claim, ClaimId, DelegationChain, EvidenceType, ExecutionReceipt, Op,
+    ProcedureQuery, ProvenanceStamp, Tier as DomainTier,
+};
 use std::sync::{Arc, Mutex};
 use tonic::{Request, Response, Status};
 
 use crate::conversions::{
-    claim_from_proto, claim_to_proto, confidence_from_proto, relationship_to_proto, tier_from_proto,
+    claim_from_proto, claim_to_proto, confidence_from_proto, contract_to_proto,
+    outcome_report_from_proto, procedure_id_from_proto, procedure_to_proto, relationship_to_proto,
+    tier_from_proto,
 };
 use crate::proto::bos_well_service_server::BosWellService;
 use crate::proto::*;
@@ -48,7 +53,14 @@ pub struct BosWellServiceImpl<S: ClaimStore> {
     store: Arc<Mutex<S>>,
     start_time: std::time::Instant,
     extractor: Option<Arc<dyn ServerExtractor>>,
+    receipt_ttl_ms: u64,
 }
+
+/// How long a dispensed procedure's execution contract stays open before it
+/// expires unreported (and counts as `unknown` — "silence is not success",
+/// design §3.3). One hour by default; override with
+/// [`BosWellServiceImpl::with_receipt_ttl_ms`].
+pub const DEFAULT_RECEIPT_TTL_MS: u64 = 60 * 60 * 1000;
 
 impl<S: ClaimStore> BosWellServiceImpl<S> {
     /// Create a new service instance without a server-side extractor. The
@@ -59,7 +71,44 @@ impl<S: ClaimStore> BosWellServiceImpl<S> {
             store,
             start_time: std::time::Instant::now(),
             extractor: None,
+            receipt_ttl_ms: DEFAULT_RECEIPT_TTL_MS,
         }
+    }
+
+    /// Set how long issued execution contracts stay open (Unix ms duration).
+    pub fn with_receipt_ttl_ms(mut self, ttl_ms: u64) -> Self {
+        self.receipt_ttl_ms = ttl_ms;
+        self
+    }
+
+    /// Issue and persist an execution contract for a procedure about to be
+    /// handed out (design §3.3).
+    ///
+    /// Every dispensed procedure gets one: retrieval is what creates the
+    /// obligation to report, so the receipt is written before the procedure
+    /// leaves the process.
+    fn dispense<P>(
+        &self,
+        store: &mut P,
+        procedure: &boswell_domain::Procedure,
+        issued_to: &str,
+        task_id: Option<String>,
+        session_id: Option<String>,
+        now: u64,
+    ) -> Result<crate::proto::ExecutionContract, Status>
+    where
+        P: ProcedureStore,
+        P::Error: std::fmt::Debug,
+    {
+        let mut receipt = ExecutionReceipt::issue(procedure, issued_to, now, self.receipt_ttl_ms);
+        receipt.task_id = task_id;
+        receipt.session_id = session_id;
+
+        store
+            .issue_receipt(&receipt)
+            .map_err(|e| Status::internal(format!("Failed to issue receipt: {:?}", e)))?;
+
+        Ok(contract_to_proto(&receipt))
     }
 
     /// Attach a server-side extractor so the `Extract` RPC (and LLM-mode hook
@@ -76,7 +125,7 @@ where
     // `Send` (not `Sync`) is sufficient: the store is only ever accessed through
     // `Arc<Mutex<S>>`, which is `Sync` whenever `S: Send`. Requiring `S: Sync`
     // would needlessly exclude stores like `SqliteStore` (rusqlite is `!Sync`).
-    S: ClaimStore + Send + 'static,
+    S: ClaimStore + ProcedureStore + Send + 'static,
     S::Error: std::fmt::Debug,
 {
     async fn assert(
@@ -473,6 +522,301 @@ where
             message: "Service is healthy".to_string(),
         }))
     }
+
+    // ---- Procedural memory (design 15 §3.3, §4.1) ----
+
+    async fn query_procedures(
+        &self,
+        request: Request<QueryProceduresRequest>,
+    ) -> Result<Response<QueryProceduresResponse>, Status> {
+        let req = request.into_inner();
+        if req.auth_token.is_empty() {
+            return Err(Status::unauthenticated("Missing authentication token"));
+        }
+        let issued_to = require_issued_to(&req.issued_to)?;
+
+        let query = ProcedureQuery {
+            namespace: req.namespace,
+            goal: req.goal,
+            intent_contains: req.intent_contains,
+            include_superseded: req.include_superseded,
+            limit: req.limit.map(|l| l as usize),
+        };
+
+        let now = now_ms();
+        let mut store = self.store.lock().unwrap();
+        require_procedures(&*store)?;
+
+        let procedures = store
+            .query_procedures(&query, now)
+            .map_err(|e| Status::internal(format!("Failed to query procedures: {:?}", e)))?;
+
+        let mut dispensed = Vec::with_capacity(procedures.len());
+        for procedure in &procedures {
+            let contract = self.dispense(
+                &mut *store,
+                procedure,
+                issued_to,
+                req.task_id.clone(),
+                req.session_id.clone(),
+                now,
+            )?;
+            dispensed.push(DispensedProcedure {
+                procedure: Some(procedure_to_proto(procedure)),
+                contract: Some(contract),
+            });
+        }
+
+        let count = dispensed.len() as i32;
+        Ok(Response::new(QueryProceduresResponse {
+            procedures: dispensed,
+            count,
+            message: format!("{} procedure(s) dispensed", count),
+        }))
+    }
+
+    async fn get_procedure(
+        &self,
+        request: Request<GetProcedureRequest>,
+    ) -> Result<Response<GetProcedureResponse>, Status> {
+        let req = request.into_inner();
+        if req.auth_token.is_empty() {
+            return Err(Status::unauthenticated("Missing authentication token"));
+        }
+        let issued_to = require_issued_to(&req.issued_to)?;
+        let id = procedure_id_from_proto(&req.id)
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+
+        let now = now_ms();
+        let mut store = self.store.lock().unwrap();
+        require_procedures(&*store)?;
+
+        let found = store
+            .get_procedure(id)
+            .map_err(|e| Status::internal(format!("Failed to get procedure: {:?}", e)))?;
+
+        // Scope is checked before dispensing, not after: issuing a receipt for a
+        // procedure the caller may not see would leave an obligation nobody can
+        // answer, and the resulting expiry would count as `unknown` against
+        // another namespace's procedure.
+        let procedure = match found {
+            Some(p) if namespace_in_scope(req.namespace_scope.as_deref(), &p.namespace) => p,
+            _ => {
+                return Ok(Response::new(GetProcedureResponse {
+                    found: false,
+                    procedure: None,
+                    message: format!("No procedure with id {}", req.id),
+                }));
+            }
+        };
+
+        let contract = self.dispense(
+            &mut *store,
+            &procedure,
+            issued_to,
+            req.task_id.clone(),
+            req.session_id.clone(),
+            now,
+        )?;
+
+        Ok(Response::new(GetProcedureResponse {
+            found: true,
+            procedure: Some(DispensedProcedure {
+                procedure: Some(procedure_to_proto(&procedure)),
+                contract: Some(contract),
+            }),
+            message: "Procedure dispensed".to_string(),
+        }))
+    }
+
+    async fn report_outcome(
+        &self,
+        request: Request<ReportOutcomeRequest>,
+    ) -> Result<Response<ReportOutcomeResponse>, Status> {
+        let req = request.into_inner();
+        if req.auth_token.is_empty() {
+            return Err(Status::unauthenticated("Missing authentication token"));
+        }
+        let receipt_id = procedure_id_from_proto(&req.receipt_id)
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+
+        let report = outcome_report_from_proto(
+            receipt_id,
+            &req.outcome,
+            req.failure_mode.as_deref(),
+            req.failed_step.as_deref(),
+            req.executor_confidence,
+            req.cost,
+            req.notes,
+        )
+        .map_err(|e| Status::invalid_argument(e.to_string()))?;
+
+        let now = now_ms();
+        let mut store = self.store.lock().unwrap();
+        require_procedures(&*store)?;
+
+        // The stamp's author is the principal the receipt was issued to, not
+        // whoever is calling: a report is only ever a self-report against an
+        // outstanding contract.
+        let Some(stored) = store
+            .get_receipt(receipt_id)
+            .map_err(|e| Status::internal(format!("Failed to load receipt: {:?}", e)))?
+        else {
+            return Ok(Response::new(not_found_report(&req.receipt_id)));
+        };
+
+        // Scope the reporter's authority to the procedure's own namespace where
+        // the procedure still exists; an orphaned receipt gets an empty scope
+        // and the report will no-op in the store.
+        let namespace = store
+            .get_procedure(stored.receipt.procedure_id)
+            .map_err(|e| Status::internal(format!("Failed to load procedure: {:?}", e)))?
+            .map(|p| p.namespace)
+            .unwrap_or_default();
+
+        let stamp = self_report_stamp(&stored.receipt, namespace, now);
+
+        let outcome = store
+            .report_receipt(receipt_id, &report, &stamp, now)
+            .map_err(|e| Status::internal(format!("Failed to report outcome: {:?}", e)))?;
+
+        Ok(Response::new(match outcome {
+            None => not_found_report(&req.receipt_id),
+            Some(o) => report_to_proto(o),
+        }))
+    }
+}
+
+// ---- Procedural-memory helpers ----
+
+/// Current wall-clock time in Unix milliseconds (the unit procedural memory uses).
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+/// Reject a dispense request that names no principal: an execution contract with
+/// nobody on the hook for reporting is not a contract (design §3.3).
+fn require_issued_to(issued_to: &str) -> Result<&str, Status> {
+    if issued_to.trim().is_empty() {
+        return Err(Status::invalid_argument(
+            "issued_to is required: retrieving a procedure obliges a principal to report",
+        ));
+    }
+    Ok(issued_to)
+}
+
+/// Answer `Unimplemented` rather than an empty result when the backing store
+/// holds no procedures, so a claim-only deployment is distinguishable from a
+/// genuine no-match.
+fn require_procedures<S: ProcedureStore>(store: &S) -> Result<(), Status> {
+    if !store.supports_procedures() {
+        return Err(Status::unimplemented(
+            "this instance's store does not hold procedures",
+        ));
+    }
+    Ok(())
+}
+
+/// Whether `namespace` falls within a caller's `scope`.
+///
+/// An absent, empty, or `"*"` scope is unrestricted; otherwise the namespace
+/// must equal the scope or be a child of it (`"<scope>:..."`), matching
+/// [`Authority::allows_namespace`].
+fn namespace_in_scope(scope: Option<&str>, namespace: &str) -> bool {
+    match scope {
+        None => true,
+        Some(s) if s.is_empty() || s == "*" => true,
+        Some(s) => namespace == s || namespace.starts_with(&format!("{}:", s)),
+    }
+}
+
+/// The provenance stamp for an executor's self-report (design §3.3).
+///
+/// Assurance is [`Assurance::None`] because this transport has no
+/// `IdentityProvider` wired: the identity is self-claimed. That is deliberate —
+/// it is what makes the gatekeeper quarantine a negative self-report against a
+/// team-tier procedure instead of letting one executor tank a shared how-to.
+fn self_report_stamp(receipt: &ExecutionReceipt, namespace: String, now: u64) -> ProvenanceStamp {
+    ProvenanceStamp {
+        author: receipt.issued_to.clone(),
+        delegation_chain: DelegationChain(vec![receipt.issued_to.clone()]),
+        authority: Authority {
+            namespaces: if namespace.is_empty() {
+                Vec::new()
+            } else {
+                vec![namespace]
+            },
+            max_tier: DomainTier::Ephemeral,
+            ops: vec![Op::Read, Op::Write],
+        },
+        // The executor watched its own run, so the evidence is first-hand; the
+        // assurance above is what bounds how far it can move a shared procedure.
+        evidence: EvidenceType::Observed,
+        assurance: Assurance::None,
+        task_id: receipt.task_id.clone(),
+        session_id: receipt.session_id.clone(),
+        timestamp: now,
+        dev_provider: false,
+    }
+}
+
+/// The response for a report against a receipt this instance has never issued.
+fn not_found_report(receipt_id: &str) -> ReportOutcomeResponse {
+    ReportOutcomeResponse {
+        accepted: false,
+        already_final: false,
+        applied: false,
+        quarantined: false,
+        counted_as_success: false,
+        counted_as_failure: false,
+        attributed_to_executor: false,
+        flagged_precondition_stale: false,
+        message: format!("No outstanding receipt with id {}", receipt_id),
+    }
+}
+
+/// Flatten a store-side report outcome onto the wire response.
+fn report_to_proto(outcome: boswell_domain::ReceiptReportOutcome) -> ReportOutcomeResponse {
+    if outcome.already_final {
+        return ReportOutcomeResponse {
+            accepted: false,
+            already_final: true,
+            applied: false,
+            quarantined: false,
+            counted_as_success: false,
+            counted_as_failure: false,
+            attributed_to_executor: false,
+            flagged_precondition_stale: false,
+            message: "Receipt was already reported or expired".to_string(),
+        };
+    }
+
+    let quarantined = outcome.applied.map(|a| a.quarantined).unwrap_or(false);
+    let effect = outcome.applied.and_then(|a| a.effect);
+    let message = match (&effect, quarantined) {
+        (_, true) => "Report recorded but quarantined: reporter assurance too low for this \
+             procedure's tier"
+            .to_string(),
+        (Some(_), _) => "Report applied".to_string(),
+        (None, _) => "Receipt closed, but its procedure no longer exists".to_string(),
+    };
+
+    ReportOutcomeResponse {
+        accepted: true,
+        already_final: false,
+        applied: effect.is_some(),
+        quarantined,
+        counted_as_success: effect.map(|e| e.counted_as_success).unwrap_or(false),
+        counted_as_failure: effect.map(|e| e.counted_as_failure).unwrap_or(false),
+        attributed_to_executor: effect.map(|e| e.attributed_to_executor).unwrap_or(false),
+        flagged_precondition_stale: effect
+            .map(|e| e.flagged_precondition_stale)
+            .unwrap_or(false),
+        message,
+    }
 }
 
 #[cfg(test)]
@@ -482,6 +826,10 @@ mod tests {
 
     // Mock store for testing
     struct MockStore;
+
+    // Claim-only mock: the procedural defaults ("this store holds no
+    // procedures") are exactly right, so the impl is empty.
+    impl ProcedureStore for MockStore {}
 
     impl ClaimStore for MockStore {
         type Error = String;
@@ -532,6 +880,10 @@ mod tests {
     // Mock store that supports semantic search, returning two canned hits in
     // different namespaces so namespace filtering can be exercised.
     struct SemanticMockStore;
+
+    // Claim-only mock: the procedural defaults ("this store holds no
+    // procedures") are exactly right, so the impl is empty.
+    impl ProcedureStore for SemanticMockStore {}
 
     fn canned(namespace: &str, subject: &str) -> Claim {
         Claim {
@@ -874,5 +1226,453 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+    }
+
+    // ---- Procedural memory (design 15 §3.3, §4.1) ----
+
+    mod procedural {
+        use super::*;
+        use boswell_domain::{
+            BodyFormat, ClaimMatch, Expect, Precondition, PreconditionCheck, Procedure,
+            ProcedureId, ProcedureSource, Tier as DomainTierEnum,
+        };
+        use boswell_store::SqliteStore;
+
+        const NOW: u64 = 1_700_000_000_000;
+
+        fn service_with(procedures: Vec<Procedure>) -> BosWellServiceImpl<SqliteStore> {
+            let mut store = SqliteStore::new(":memory:", false, 0).unwrap();
+
+            // The fixture procedure is gated on "jd has eggs"; the store filters
+            // dispensing on preconditions, so the backing claim has to exist for
+            // the procedure to be retrievable at all.
+            store
+                .assert_claim(Claim::new(
+                    ClaimId::new(),
+                    "person:jd".into(),
+                    "jd".into(),
+                    "has".into(),
+                    "eggs".into(),
+                    (0.7, 0.8),
+                    "project".into(),
+                    NOW,
+                ))
+                .unwrap();
+
+            for p in &procedures {
+                store.upsert_procedure(p).unwrap();
+            }
+            BosWellServiceImpl::new(Arc::new(Mutex::new(store)))
+        }
+
+        fn mk(name: &str, tier: DomainTierEnum) -> Procedure {
+            Procedure {
+                id: ProcedureId::new(),
+                namespace: "person:jd".into(),
+                name: name.into(),
+                version: 1,
+                supersedes: None,
+                is_current: true,
+                source: ProcedureSource::Authored,
+                goal: "goal:person:jd/cook-eggs".into(),
+                intent: format!("intent for {}", name),
+                tags: vec!["breakfast".into()],
+                parameters: vec![boswell_domain::Parameter {
+                    name: "eggs".into(),
+                    type_name: "int".into(),
+                    default: Some("2".into()),
+                    desc: Some("how many".into()),
+                }],
+                preconditions: vec![Precondition {
+                    kind: "resource".into(),
+                    description: "eggs on hand".into(),
+                    check: PreconditionCheck {
+                        match_pattern: ClaimMatch {
+                            subject: "jd".into(),
+                            predicate: "has".into(),
+                            object: "eggs".into(),
+                        },
+                        min_confidence: 0.6,
+                        expect: Expect::Exists,
+                    },
+                }],
+                required_tools: vec!["pan".into()],
+                postconditions: vec!["eggs are cooked".into()],
+                est_duration_sec: Some(300),
+                usage_notes: "keep the heat low".into(),
+                context_tags: vec!["kitchen".into()],
+                body_format: BodyFormat::Prose,
+                content_type: "text/plain".into(),
+                body: format!("body of {}", name),
+                tier,
+                use_count: 0,
+                success_count: 0,
+                failure_count: 0,
+                unknown_count: 0,
+                last_used_at: None,
+                created_at: NOW,
+                updated_at: NOW,
+                stale_at: None,
+            }
+        }
+
+        fn query_req(issued_to: &str) -> QueryProceduresRequest {
+            QueryProceduresRequest {
+                namespace: None,
+                goal: Some("goal:person:jd/cook-eggs".into()),
+                intent_contains: None,
+                include_superseded: false,
+                limit: None,
+                issued_to: issued_to.into(),
+                task_id: Some("task-1".into()),
+                session_id: Some("session-1".into()),
+                auth_token: "token".into(),
+            }
+        }
+
+        fn report_req(receipt_id: &str, outcome: &str) -> ReportOutcomeRequest {
+            ReportOutcomeRequest {
+                receipt_id: receipt_id.into(),
+                outcome: outcome.into(),
+                failure_mode: None,
+                failed_step: None,
+                executor_confidence: None,
+                cost: None,
+                notes: None,
+                auth_token: "token".into(),
+            }
+        }
+
+        /// Retrieval hands back the procedure *and* a contract naming the
+        /// principal on the hook — the obligation is created at dispense time
+        /// (design §3.3), not when the executor feels like opting in.
+        #[tokio::test]
+        async fn dispensing_issues_an_execution_contract() {
+            let service = service_with(vec![mk("omelette", DomainTierEnum::Task)]);
+
+            let resp = service
+                .query_procedures(Request::new(query_req("agent:cook-1")))
+                .await
+                .unwrap()
+                .into_inner();
+
+            assert_eq!(resp.count, 1);
+            let dispensed = &resp.procedures[0];
+            let contract = dispensed.contract.as_ref().unwrap();
+            assert_eq!(contract.issued_to, "agent:cook-1");
+            assert_eq!(contract.task_id.as_deref(), Some("task-1"));
+            assert_eq!(contract.session_id.as_deref(), Some("session-1"));
+            assert!(contract.expires_at > contract.issued_at);
+            assert_eq!(
+                contract.procedure_id,
+                dispensed.procedure.as_ref().unwrap().id
+            );
+        }
+
+        /// A dispense with nobody named is not a contract, so it is rejected
+        /// rather than silently issuing an unanswerable receipt.
+        #[tokio::test]
+        async fn dispensing_requires_a_principal() {
+            let service = service_with(vec![mk("omelette", DomainTierEnum::Task)]);
+
+            let err = service
+                .query_procedures(Request::new(query_req("  ")))
+                .await
+                .unwrap_err();
+
+            assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        }
+
+        /// The whole point of Phase 7a: a hook can close the loop. A success
+        /// report moves the procedure's counters.
+        #[tokio::test]
+        async fn reporting_success_records_effectiveness() {
+            let procedure = mk("omelette", DomainTierEnum::Task);
+            let procedure_id = procedure.id;
+            let service = service_with(vec![procedure]);
+
+            let dispensed = service
+                .query_procedures(Request::new(query_req("agent:cook-1")))
+                .await
+                .unwrap()
+                .into_inner();
+            let receipt_id = dispensed.procedures[0]
+                .contract
+                .as_ref()
+                .unwrap()
+                .receipt_id
+                .clone();
+
+            let resp = service
+                .report_outcome(Request::new(report_req(&receipt_id, "success")))
+                .await
+                .unwrap()
+                .into_inner();
+
+            assert!(resp.accepted, "{}", resp.message);
+            assert!(resp.applied);
+            assert!(resp.counted_as_success);
+            assert!(!resp.quarantined);
+
+            let store = service.store.lock().unwrap();
+            let after = ProcedureStore::get_procedure(&*store, procedure_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(after.success_count, 1);
+            assert_eq!(after.use_count, 1);
+        }
+
+        /// "Silence is not success" has a mirror: a receipt may only be answered
+        /// once, so a chatty executor cannot stack repeat credit.
+        #[tokio::test]
+        async fn a_receipt_can_only_be_answered_once() {
+            let service = service_with(vec![mk("omelette", DomainTierEnum::Task)]);
+
+            let dispensed = service
+                .query_procedures(Request::new(query_req("agent:cook-1")))
+                .await
+                .unwrap()
+                .into_inner();
+            let receipt_id = dispensed.procedures[0]
+                .contract
+                .as_ref()
+                .unwrap()
+                .receipt_id
+                .clone();
+
+            service
+                .report_outcome(Request::new(report_req(&receipt_id, "success")))
+                .await
+                .unwrap();
+
+            let second = service
+                .report_outcome(Request::new(report_req(&receipt_id, "success")))
+                .await
+                .unwrap()
+                .into_inner();
+
+            assert!(second.already_final);
+            assert!(!second.applied);
+        }
+
+        /// A negative self-report against a team-tier procedure is recorded but
+        /// quarantined: this transport carries no `IdentityProvider`, so the
+        /// reporter's assurance is `none` and one executor cannot tank a shared
+        /// how-to (design §3.3).
+        #[tokio::test]
+        async fn a_low_assurance_negative_report_is_quarantined() {
+            let procedure = mk("omelette", DomainTierEnum::Project);
+            let procedure_id = procedure.id;
+            let service = service_with(vec![procedure]);
+
+            let dispensed = service
+                .query_procedures(Request::new(query_req("agent:cook-1")))
+                .await
+                .unwrap()
+                .into_inner();
+            let receipt_id = dispensed.procedures[0]
+                .contract
+                .as_ref()
+                .unwrap()
+                .receipt_id
+                .clone();
+
+            let mut req = report_req(&receipt_id, "failure");
+            req.failure_mode = Some("bad_result".into());
+
+            let resp = service
+                .report_outcome(Request::new(req))
+                .await
+                .unwrap()
+                .into_inner();
+
+            assert!(resp.accepted);
+            assert!(resp.quarantined, "{}", resp.message);
+            assert!(!resp.counted_as_failure);
+
+            let store = service.store.lock().unwrap();
+            let after = ProcedureStore::get_procedure(&*store, procedure_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(after.failure_count, 0);
+        }
+
+        /// `executor_error` attributes the failure to the runner, not the
+        /// how-to, so the procedure's failure counter stays put (design §3.3).
+        #[tokio::test]
+        async fn executor_error_does_not_blame_the_procedure() {
+            let procedure = mk("omelette", DomainTierEnum::Task);
+            let procedure_id = procedure.id;
+            let service = service_with(vec![procedure]);
+
+            let dispensed = service
+                .query_procedures(Request::new(query_req("agent:cook-1")))
+                .await
+                .unwrap()
+                .into_inner();
+            let receipt_id = dispensed.procedures[0]
+                .contract
+                .as_ref()
+                .unwrap()
+                .receipt_id
+                .clone();
+
+            let mut req = report_req(&receipt_id, "failure");
+            req.failure_mode = Some("executor_error".into());
+
+            let resp = service
+                .report_outcome(Request::new(req))
+                .await
+                .unwrap()
+                .into_inner();
+
+            assert!(resp.attributed_to_executor, "{}", resp.message);
+            assert!(!resp.counted_as_failure);
+
+            let store = service.store.lock().unwrap();
+            let after = ProcedureStore::get_procedure(&*store, procedure_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(after.failure_count, 0);
+        }
+
+        /// A failure attribution on a success report would silently mis-file the
+        /// outcome, so it is refused at the boundary.
+        #[tokio::test]
+        async fn failure_mode_on_a_success_is_rejected() {
+            let service = service_with(vec![mk("omelette", DomainTierEnum::Task)]);
+
+            let dispensed = service
+                .query_procedures(Request::new(query_req("agent:cook-1")))
+                .await
+                .unwrap()
+                .into_inner();
+            let receipt_id = dispensed.procedures[0]
+                .contract
+                .as_ref()
+                .unwrap()
+                .receipt_id
+                .clone();
+
+            let mut req = report_req(&receipt_id, "success");
+            req.failure_mode = Some("bad_result".into());
+
+            let err = service.report_outcome(Request::new(req)).await.unwrap_err();
+            assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        }
+
+        /// Reporting against a receipt this instance never issued is answered
+        /// plainly rather than being silently counted.
+        #[tokio::test]
+        async fn reporting_an_unknown_receipt_is_not_accepted() {
+            let service = service_with(vec![]);
+            let unknown = ProcedureId::new().to_string();
+
+            let resp = service
+                .report_outcome(Request::new(report_req(&unknown, "success")))
+                .await
+                .unwrap()
+                .into_inner();
+
+            assert!(!resp.accepted);
+            assert!(!resp.already_final);
+        }
+
+        /// The signature travels with the body: an executor needs the
+        /// preconditions and parameters to decide whether the procedure applies.
+        #[tokio::test]
+        async fn the_wire_shape_carries_the_full_signature() {
+            let service = service_with(vec![mk("omelette", DomainTierEnum::Task)]);
+
+            let resp = service
+                .query_procedures(Request::new(query_req("agent:cook-1")))
+                .await
+                .unwrap()
+                .into_inner();
+
+            let wire = resp.procedures[0].procedure.as_ref().unwrap();
+            assert_eq!(wire.parameters.len(), 1);
+            assert_eq!(wire.parameters[0].name, "eggs");
+            assert_eq!(wire.preconditions.len(), 1);
+            let check = wire.preconditions[0].check.as_ref().unwrap();
+            assert_eq!(check.expect, "exists");
+            assert_eq!(check.match_pattern.as_ref().unwrap().object, "eggs");
+            assert_eq!(wire.required_tools, vec!["pan".to_string()]);
+            assert_eq!(wire.est_duration_sec, Some(300));
+        }
+
+        /// An out-of-scope lookup must not issue a receipt. If it did, the
+        /// probe would leave an obligation nobody can answer, and its expiry
+        /// would count `unknown` against another namespace's procedure.
+        #[tokio::test]
+        async fn an_out_of_scope_lookup_issues_no_receipt() {
+            let procedure = mk("omelette", DomainTierEnum::Task);
+            let procedure_id = procedure.id;
+            let service = service_with(vec![procedure]);
+
+            let resp = service
+                .get_procedure(Request::new(GetProcedureRequest {
+                    id: procedure_id.to_string(),
+                    issued_to: "agent:intruder".into(),
+                    namespace_scope: Some("person:someone-else".into()),
+                    task_id: None,
+                    session_id: None,
+                    auth_token: "token".into(),
+                }))
+                .await
+                .unwrap()
+                .into_inner();
+
+            assert!(!resp.found);
+
+            // No pending receipt was written, so nothing can expire against the
+            // procedure later.
+            let store = service.store.lock().unwrap();
+            assert_eq!(
+                store
+                    .count_receipts(boswell_domain::ReceiptStatus::Pending)
+                    .unwrap(),
+                0
+            );
+        }
+
+        /// An in-scope lookup still dispenses normally.
+        #[tokio::test]
+        async fn an_in_scope_lookup_dispenses() {
+            let procedure = mk("omelette", DomainTierEnum::Task);
+            let procedure_id = procedure.id;
+            let service = service_with(vec![procedure]);
+
+            let resp = service
+                .get_procedure(Request::new(GetProcedureRequest {
+                    id: procedure_id.to_string(),
+                    issued_to: "agent:cook-1".into(),
+                    namespace_scope: Some("person:jd".into()),
+                    task_id: None,
+                    session_id: None,
+                    auth_token: "token".into(),
+                }))
+                .await
+                .unwrap()
+                .into_inner();
+
+            assert!(resp.found, "{}", resp.message);
+            assert!(resp.procedure.unwrap().contract.is_some());
+        }
+
+        /// A claim-only store is distinguishable from a genuine no-match, so a
+        /// caller is never told "no procedures" by a deployment that could never
+        /// have had any.
+        #[tokio::test]
+        async fn a_claim_only_store_reports_unimplemented() {
+            let service = BosWellServiceImpl::new(Arc::new(Mutex::new(MockStore)));
+
+            let err = service
+                .query_procedures(Request::new(query_req("agent:cook-1")))
+                .await
+                .unwrap_err();
+
+            assert_eq!(err.code(), tonic::Code::Unimplemented);
+        }
     }
 }

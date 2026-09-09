@@ -10,40 +10,20 @@
 //! procedure's effectiveness.
 //!
 //! Capture is driven operationally by hooks (`SubagentStop`/`Stop`/`PostToolUse`);
-//! see `examples/claude-code-hooks`. The transport that carries a hook's report to
-//! [`report_receipt`] (a CLI/gateway endpoint) is deferred with the other
-//! procedure endpoints.
+//! see `examples/claude-code-hooks`. A hook reaches [`report_receipt`] through
+//! `POST /v1/receipts/{receipt_id}/report` on the gateway, which resolves to the
+//! `ReportOutcome` RPC (design §3.3 transport, phase 7a).
 //!
 //! [`issue_receipt`]: SqliteStore::issue_receipt
 //! [`report_receipt`]: SqliteStore::report_receipt
 //! [`expire_receipts`]: SqliteStore::expire_receipts
 
-use crate::provenance_store::StampedReportOutcome;
 use crate::{SqliteStore, StoreError};
 use boswell_domain::{
-    ExecutionReceipt, OutcomeReport, ProcedureId, ProvenanceStamp, ReceiptStatus,
+    ExecutionReceipt, OutcomeReport, ProcedureId, ProvenanceStamp, ReceiptReportOutcome,
+    ReceiptStatus, StoredReceipt,
 };
 use rusqlite::{params, OptionalExtension};
-
-/// A receipt as read back from the ledger, with its lifecycle status.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StoredReceipt {
-    /// The receipt.
-    pub receipt: ExecutionReceipt,
-    /// Its current status.
-    pub status: ReceiptStatus,
-}
-
-/// The result of reporting against a receipt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ReceiptReportOutcome {
-    /// The gatekept report application, if it ran (`None` if the procedure no
-    /// longer exists).
-    pub applied: Option<StampedReportOutcome>,
-    /// Whether the receipt was already closed (reported or expired) — in which
-    /// case nothing was applied.
-    pub already_final: bool,
-}
 
 fn id_bytes(id: ProcedureId) -> Vec<u8> {
     id.value().to_be_bytes().to_vec()

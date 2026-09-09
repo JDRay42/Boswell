@@ -62,6 +62,12 @@ pub fn build_router(config: &GatewayConfig, state: AppState) -> Router {
         .route("/v1/recall", post(handlers::recall))
         .route("/v1/extract", post(handlers::extract))
         .route("/v1/hooks/ingest", post(handlers::hooks_ingest))
+        .route("/v1/procedures", get(handlers::query_procedures))
+        .route("/v1/procedures/:id", get(handlers::get_procedure))
+        .route(
+            "/v1/receipts/:receipt_id/report",
+            post(handlers::report_outcome),
+        )
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth::auth_middleware,

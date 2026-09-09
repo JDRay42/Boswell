@@ -2,17 +2,143 @@
 
 use crate::error::SdkError;
 use crate::session::establish_session;
-use boswell_domain::{Claim, ClaimId, Relationship, Tier};
-use boswell_grpc::conversions::relationship_from_proto;
+use boswell_domain::{Claim, ClaimId, ExecutionReceipt, Procedure, Relationship, Tier};
+use boswell_grpc::conversions::{
+    contract_from_proto, procedure_from_proto, relationship_from_proto,
+};
 use boswell_grpc::proto::{
     bos_well_service_client::BosWellServiceClient, health_check_response, AssertRequest,
-    AssertResponse, ConfidenceInterval, ExtractRequest, ExtractResponse, ForgetRequest,
-    ForgetResponse, GetClaimRequest, GetClaimResponse, GetRelationshipsRequest,
+    AssertResponse, ConfidenceInterval, DispensedProcedure as GrpcDispensedProcedure,
+    ExtractRequest, ExtractResponse, ForgetRequest, ForgetResponse, GetClaimRequest,
+    GetClaimResponse, GetProcedureRequest, GetProcedureResponse, GetRelationshipsRequest,
     GetRelationshipsResponse, HealthCheckRequest, HealthCheckResponse, LearnRequest, LearnResponse,
-    QueryFilter as GrpcQueryFilter, QueryMode as GrpcQueryMode, QueryRequest, QueryResponse,
-    SearchRequest, SearchResponse, Tier as GrpcTier,
+    QueryFilter as GrpcQueryFilter, QueryMode as GrpcQueryMode, QueryProceduresRequest,
+    QueryProceduresResponse, QueryRequest, QueryResponse, ReportOutcomeRequest,
+    ReportOutcomeResponse, SearchRequest, SearchResponse, Tier as GrpcTier,
 };
 use tonic::transport::Channel;
+
+/// What to retrieve in a [`query_procedures`](BoswellClient::query_procedures)
+/// call (design §4.1).
+///
+/// `issued_to` is required: it names the principal that takes on the reporting
+/// obligation for every procedure the call dispenses.
+#[derive(Debug, Clone, Default)]
+pub struct ProcedureQuerySpec {
+    /// The principal the execution contracts are issued to.
+    pub issued_to: String,
+    /// Filter by namespace prefix.
+    pub namespace: Option<String>,
+    /// Filter by exact `goal` grouping key.
+    pub goal: Option<String>,
+    /// Filter by a case-insensitive substring of `intent`.
+    pub intent_contains: Option<String>,
+    /// Include superseded (non-current) versions.
+    pub include_superseded: bool,
+    /// Maximum results to return.
+    pub limit: Option<u32>,
+    /// Correlation: task id, stamped onto the issued receipts.
+    pub task_id: Option<String>,
+    /// Correlation: session id, stamped onto the issued receipts.
+    pub session_id: Option<String>,
+}
+
+impl ProcedureQuerySpec {
+    /// A query issuing contracts to `issued_to`.
+    pub fn new(issued_to: impl Into<String>) -> Self {
+        Self {
+            issued_to: issued_to.into(),
+            ..Default::default()
+        }
+    }
+
+    /// Filter to a single `goal` grouping key.
+    pub fn with_goal(mut self, goal: impl Into<String>) -> Self {
+        self.goal = Some(goal.into());
+        self
+    }
+
+    /// Filter to a namespace prefix.
+    pub fn with_namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.namespace = Some(namespace.into());
+        self
+    }
+}
+
+/// A procedure handed out together with the execution contract issued for it.
+///
+/// Holding one is holding an obligation: answer `contract.receipt_id` with
+/// [`report_outcome`](BoswellClient::report_outcome) before
+/// `contract.expires_at`, or the run counts as `unknown` against the procedure.
+#[derive(Debug, Clone)]
+pub struct DispensedProcedure {
+    /// The procedure to execute.
+    pub procedure: Procedure,
+    /// The reporting contract issued for this dispense.
+    pub contract: ExecutionReceipt,
+}
+
+fn dispensed_from_proto(d: &GrpcDispensedProcedure) -> Result<DispensedProcedure, SdkError> {
+    let procedure = d
+        .procedure
+        .as_ref()
+        .ok_or_else(|| SdkError::GrpcError("dispensed procedure missing its body".to_string()))?;
+    let contract = d.contract.as_ref().ok_or_else(|| {
+        SdkError::GrpcError("dispensed procedure missing its execution contract".to_string())
+    })?;
+
+    Ok(DispensedProcedure {
+        procedure: procedure_from_proto(procedure)
+            .map_err(|e| SdkError::GrpcError(format!("Failed to convert procedure: {}", e)))?,
+        contract: contract_from_proto(contract)
+            .map_err(|e| SdkError::GrpcError(format!("Failed to convert contract: {}", e)))?,
+    })
+}
+
+/// An outcome report against an outstanding receipt (design §3.3).
+///
+/// `outcome` is `success`, `failure`, or `abandoned`; `failure_mode` is only
+/// valid alongside `failure` and is one of `preconditions_stale`, `step_failed`,
+/// `bad_result`, or `executor_error`. `failed_step` names the step when the mode
+/// is `step_failed`.
+#[derive(Debug, Clone, Default)]
+pub struct OutcomeReportSpec {
+    /// The receipt this report answers.
+    pub receipt_id: String,
+    /// `success` | `failure` | `abandoned`.
+    pub outcome: String,
+    /// Failure attribution, when the outcome is `failure`.
+    pub failure_mode: Option<String>,
+    /// The step that failed, when `failure_mode` is `step_failed`.
+    pub failed_step: Option<String>,
+    /// The executor's self-assessed confidence.
+    pub executor_confidence: Option<f64>,
+    /// The reported cost (units are executor-defined).
+    pub cost: Option<f64>,
+    /// Free-form notes.
+    pub notes: Option<String>,
+}
+
+impl OutcomeReportSpec {
+    /// A minimal success report against `receipt_id`.
+    pub fn success(receipt_id: impl Into<String>) -> Self {
+        Self {
+            receipt_id: receipt_id.into(),
+            outcome: "success".to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// A failure report against `receipt_id` with the given attribution.
+    pub fn failure(receipt_id: impl Into<String>, failure_mode: impl Into<String>) -> Self {
+        Self {
+            receipt_id: receipt_id.into(),
+            outcome: "failure".to_string(),
+            failure_mode: Some(failure_mode.into()),
+            ..Default::default()
+        }
+    }
+}
 
 /// Instance health as reported by the `HealthCheck` RPC.
 #[derive(Debug, Clone)]
@@ -468,6 +594,143 @@ impl BoswellClient {
                         failures: response.failures,
                     });
                 }
+                Err(e) if matches!(e.code(), tonic::Code::Unauthenticated) && !retried => {
+                    self.reconnect().await?;
+                    retried = true;
+                }
+                Err(e) => return Err(SdkError::from(e)),
+            }
+        }
+    }
+
+    // ---- Procedural memory (design 15 §3.3, §4.1) ----
+
+    /// Retrieve procedures for a goal/intent, each with the execution contract
+    /// issued for it.
+    ///
+    /// Retrieval is not free: every returned procedure carries a receipt, and
+    /// the caller is obliged to answer it with [`report_outcome`] before the
+    /// contract expires. An unreported contract counts as `unknown` against the
+    /// procedure ("silence is not success", design §3.3).
+    ///
+    /// [`report_outcome`]: BoswellClient::report_outcome
+    pub async fn query_procedures(
+        &mut self,
+        query: ProcedureQuerySpec,
+    ) -> Result<Vec<DispensedProcedure>, SdkError> {
+        let mut retried = false;
+
+        loop {
+            let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
+            let token = self.session_token.as_ref().ok_or(SdkError::NotConnected)?;
+
+            let request = QueryProceduresRequest {
+                namespace: query.namespace.clone(),
+                goal: query.goal.clone(),
+                intent_contains: query.intent_contains.clone(),
+                include_superseded: query.include_superseded,
+                limit: query.limit,
+                issued_to: query.issued_to.clone(),
+                task_id: query.task_id.clone(),
+                session_id: query.session_id.clone(),
+                auth_token: token.clone(),
+            };
+
+            match client.query_procedures(request).await {
+                Ok(r) => {
+                    let response: QueryProceduresResponse = r.into_inner();
+                    return response
+                        .procedures
+                        .iter()
+                        .map(dispensed_from_proto)
+                        .collect();
+                }
+                Err(e) if matches!(e.code(), tonic::Code::Unauthenticated) && !retried => {
+                    self.reconnect().await?;
+                    retried = true;
+                }
+                Err(e) => return Err(SdkError::from(e)),
+            }
+        }
+    }
+
+    /// Fetch one procedure by id, issuing an execution contract for it.
+    ///
+    /// Returns `None` if no such procedure exists, or if it lies outside
+    /// `namespace_scope` — the scope is enforced server-side *before* a receipt
+    /// is issued, so an out-of-scope lookup leaves no obligation behind. As with
+    /// [`query_procedures`](BoswellClient::query_procedures), a returned
+    /// procedure carries a reporting obligation.
+    pub async fn get_procedure(
+        &mut self,
+        id: &str,
+        issued_to: &str,
+        namespace_scope: Option<String>,
+        task_id: Option<String>,
+        session_id: Option<String>,
+    ) -> Result<Option<DispensedProcedure>, SdkError> {
+        let mut retried = false;
+
+        loop {
+            let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
+            let token = self.session_token.as_ref().ok_or(SdkError::NotConnected)?;
+
+            let request = GetProcedureRequest {
+                id: id.to_string(),
+                issued_to: issued_to.to_string(),
+                namespace_scope: namespace_scope.clone(),
+                task_id: task_id.clone(),
+                session_id: session_id.clone(),
+                auth_token: token.clone(),
+            };
+
+            match client.get_procedure(request).await {
+                Ok(r) => {
+                    let response: GetProcedureResponse = r.into_inner();
+                    return match response.procedure.filter(|_| response.found) {
+                        Some(d) => dispensed_from_proto(&d).map(Some),
+                        None => Ok(None),
+                    };
+                }
+                Err(e) if matches!(e.code(), tonic::Code::Unauthenticated) && !retried => {
+                    self.reconnect().await?;
+                    retried = true;
+                }
+                Err(e) => return Err(SdkError::from(e)),
+            }
+        }
+    }
+
+    /// Report an execution outcome against an outstanding receipt (design §3.3).
+    ///
+    /// This is the call the capture hooks make. The report is a
+    /// provenance-stamped, gatekept write: a negative report from a
+    /// low-assurance executor against a team-tier procedure is recorded but
+    /// quarantined rather than applied, so one executor cannot tank a shared
+    /// how-to.
+    pub async fn report_outcome(
+        &mut self,
+        report: OutcomeReportSpec,
+    ) -> Result<ReportOutcomeResponse, SdkError> {
+        let mut retried = false;
+
+        loop {
+            let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
+            let token = self.session_token.as_ref().ok_or(SdkError::NotConnected)?;
+
+            let request = ReportOutcomeRequest {
+                receipt_id: report.receipt_id.clone(),
+                outcome: report.outcome.clone(),
+                failure_mode: report.failure_mode.clone(),
+                failed_step: report.failed_step.clone(),
+                executor_confidence: report.executor_confidence,
+                cost: report.cost,
+                notes: report.notes.clone(),
+                auth_token: token.clone(),
+            };
+
+            match client.report_outcome(request).await {
+                Ok(r) => return Ok(r.into_inner()),
                 Err(e) if matches!(e.code(), tonic::Code::Unauthenticated) && !retried => {
                     self.reconnect().await?;
                     retried = true;
