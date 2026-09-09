@@ -368,15 +368,18 @@ fn self_rooted_but_genuinely_distinct_principals_still_corroborate() {
     assert_eq!(decision, PromotionDecision::Climb(Tier::Project));
 }
 
-/// **Finding 2 — the project leader cannot endorse the worker it leads.**
+/// The gradient's headline case, from devAuth's own module doc: "the worker writes
+/// task-tier, the project-leader endorses the worker's entry into project tier".
 ///
-/// devAuth's module doc says "the worker writes task-tier, the project-leader can
-/// endorse into project tier". Measured, that never happens: the leader's
-/// authority covers `project*` only, and the worker writes into `agent:worker`,
-/// so `endorse_procedure` refuses on namespace. The endorsement half of the trust
-/// gradient is unreachable with the shipped roster.
+/// This is what §8.3 finding 2 said never happened. The leader's authority covered
+/// `project*` and the worker writes into `agent:worker`, so `endorse_procedure`
+/// refused on namespace before it looked at anything else, and the endorsement
+/// half of §5.2 had only ever run against hand-built stamps. The leader's
+/// authority now spans the worker it leads, and the demo runs: the endorsement
+/// raises the climb ceiling above the worker's own `max_tier`, which is exactly
+/// what §5.2 means by "climbs when a higher-authority parent endorses".
 #[test]
-fn finding_project_leader_cannot_endorse_a_workers_entry() {
+fn project_leader_endorses_a_workers_entry_and_it_climbs() {
     let mut bench = Bench::new();
     let proc = procedure("agent:worker", "omelette");
     let write = bench.stamp(
@@ -386,7 +389,12 @@ fn finding_project_leader_cannot_endorse_a_workers_entry() {
         EvidenceType::Observed,
         "s1",
     );
-    bench.write(&proc, Tier::Task, &write);
+    assert_eq!(bench.write(&proc, Tier::Task, &write), Tier::Task);
+
+    // Before the endorsement the worker's own authority is the ceiling.
+    let (decision, facts) = bench.verdict(proc.id);
+    assert_eq!(facts.climb_ceiling(), Tier::Task);
+    assert_eq!(decision, PromotionDecision::Hold);
 
     let endorsement = bench.stamp(
         DevIdentity::ProjectLeader,
@@ -395,30 +403,35 @@ fn finding_project_leader_cannot_endorse_a_workers_entry() {
         EvidenceType::Observed,
         "s2",
     );
-    let err = bench
+    assert!(bench
         .store
         .endorse_procedure(proc.id, &endorsement)
-        .expect_err("the leader's authority does not reach agent:worker");
-    assert!(
-        format!("{err}").contains("outside the endorser's authority"),
-        "refused on namespace, not on the endorse op: {err}"
+        .expect("the leader's authority reaches the worker it leads"));
+
+    let (decision, facts) = bench.verdict(proc.id);
+    assert_eq!(facts.endorsed_max_tier, Some(Tier::Project));
+    assert_eq!(
+        facts.climb_ceiling(),
+        Tier::Project,
+        "the endorsement raises the ceiling above the author's own max_tier"
     );
+    assert_eq!(decision, PromotionDecision::Climb(Tier::Project));
 }
 
-/// **Finding 3 — top tier is unreachable in devAuth.**
+/// Top tier, end to end. §8.3 finding 3 measured it as unreachable: a permanent
+/// climb needs an endorsement whose `max_tier` is permanent (§5.2) *and* a
+/// cross-authority endorser (§8.1), and the only identity holding `Op::Endorse`
+/// capped at project while the one reaching permanent held `Curate` instead.
 ///
-/// A permanent-tier climb requires an endorsement whose `max_tier` is permanent
-/// (§5.2) *and* a cross-authority endorser (§8.1). The only identity holding
-/// `Op::Endorse` is the project leader, whose `max_tier` is project; the memory
-/// manager reaches permanent but holds `Curate`, not `Endorse`. So no combination
-/// of the four sample identities can promote anything to permanent, and the
-/// top-tier rule the gatekeeper enforces has never been exercised end to end.
+/// The memory manager now holds both, so the rule the gatekeeper has always
+/// enforced finally runs against real stamps: two independent leader roots carry
+/// the entry to project tier, and a curator endorsement from a third root — a
+/// different branch from either writer — takes it the rest of the way.
 #[test]
-fn finding_no_devauth_identity_can_promote_to_permanent() {
+fn a_curator_endorsement_from_a_third_root_reaches_permanent() {
     let mut bench = Bench::new();
     let proc = procedure("project:alpha", "release");
 
-    // Get it as high as devAuth allows: two independent leader roots -> project.
     for (root, author) in [
         ("human:alice", "project:lead/sub:1"),
         ("human:bob", "project:lead/sub:2"),
@@ -430,39 +443,28 @@ fn finding_no_devauth_identity_can_promote_to_permanent() {
             EvidenceType::Observed,
             author,
         );
-        bench.write(&proc, Tier::Project, &stamp);
+        assert_eq!(bench.write(&proc, Tier::Project, &stamp), Tier::Project);
     }
-    // And endorse it from a third, unrelated root.
-    let endorsement = bench.stamp(
+
+    // A leader endorsement is not enough: it tops out at the tier already held.
+    let leader = bench.stamp(
         DevIdentity::ProjectLeader,
         "human:carol",
         Some("project:lead/endorser"),
         EvidenceType::Observed,
         "s3",
     );
-    assert!(bench
-        .store
-        .endorse_procedure(proc.id, &endorsement)
-        .expect("the leader may endorse in its own namespace"));
-
+    assert!(bench.store.endorse_procedure(proc.id, &leader).unwrap());
     let (decision, facts) = bench.verdict(proc.id);
-    assert!(
-        facts.cross_authority_endorsement,
-        "a distinct endorsing root"
-    );
-    assert_eq!(
-        facts.endorsed_max_tier,
-        Some(Tier::Project),
-        "the only endorser in the roster tops out at project"
-    );
-    assert_eq!(facts.climb_ceiling(), Tier::Project);
+    assert!(facts.cross_authority_endorsement);
+    assert_eq!(facts.endorsed_max_tier, Some(Tier::Project));
     assert_eq!(
         decision,
         PromotionDecision::Hold,
-        "permanent is unreachable, however much corroboration is piled on"
+        "an endorser cannot vouch above its own ceiling"
     );
 
-    // The memory manager, which *does* reach permanent, cannot endorse at all.
+    // The curator can, and its root is shared with neither writer.
     let curator = bench.stamp(
         DevIdentity::MemoryManager,
         "human:dave",
@@ -470,11 +472,40 @@ fn finding_no_devauth_identity_can_promote_to_permanent() {
         EvidenceType::Observed,
         "s4",
     );
-    let err = bench
+    assert!(bench
         .store
         .endorse_procedure(proc.id, &curator)
-        .expect_err("the memory manager holds Curate, not Endorse");
-    assert!(format!("{err}").contains("lacks the endorse op"), "{err}");
+        .expect("the curator holds Endorse as well as Curate"));
+
+    let (decision, facts) = bench.verdict(proc.id);
+    assert_eq!(facts.endorsed_max_tier, Some(Tier::Permanent));
+    assert!(facts.cross_authority_endorsement);
+    assert_eq!(facts.climb_ceiling(), Tier::Permanent);
+    assert_eq!(decision, PromotionDecision::Climb(Tier::Permanent));
+}
+
+/// The top-tier rule's other half: corroboration alone never reaches permanent,
+/// however much of it there is. Only a cross-authority endorsement does.
+#[test]
+fn corroboration_alone_never_reaches_permanent() {
+    let mut bench = Bench::new();
+    let proc = procedure("project:alpha", "release");
+    for i in 0..6 {
+        let root = format!("human:independent-{i}");
+        let stamp = bench.stamp(
+            DevIdentity::ProjectLeader,
+            &root,
+            Some(&format!("project:lead/sub:{i}")),
+            EvidenceType::Observed,
+            &root,
+        );
+        bench.write(&proc, Tier::Project, &stamp);
+    }
+
+    let (decision, facts) = bench.verdict(proc.id);
+    assert_eq!(facts.distinct_delegation_roots, 6);
+    assert_eq!(facts.endorsed_max_tier, None);
+    assert_eq!(decision, PromotionDecision::Hold);
 }
 
 /// **Finding 4 — two of the three diversity axes are computed but never weighed.**

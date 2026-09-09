@@ -23,8 +23,12 @@
 //!
 //! The four sample identities ([`DevIdentity`]) have differentiated authority so
 //! the gradient is observable end to end: the interloper stays stuck at ephemeral,
-//! the worker writes task-tier, the project-leader can endorse into project tier,
-//! and the memory-manager curates.
+//! the worker writes task-tier, the project-leader endorses the worker's entry into
+//! project tier, and the memory-manager curates — and, holding both `Endorse` and a
+//! permanent ceiling, is the only identity that can carry anything to top tier.
+//! Every one of those is exercised in `boswell-gatekeeper`'s Sybil scenarios; the
+//! authorities are set so the whole gradient is actually reachable, which it was
+//! not until design §8.3 measured it.
 
 #![warn(missing_docs)]
 
@@ -189,14 +193,25 @@ impl DevIdentity {
                 ops: vec![Op::Write],
             },
             DevIdentity::ProjectLeader => Authority {
-                namespaces: vec!["project".into()],
+                // The leader's own project namespace *and* the worker's, because
+                // the gradient it exists to demonstrate is endorsing the worker's
+                // advocated entry (design §7.1). An authority that stopped at
+                // `project:*` could never reach anything the worker wrote, and the
+                // headline demo would be unreachable — see §8.3, finding 2.
+                namespaces: vec!["project".into(), "agent:worker".into()],
                 max_tier: Tier::Project,
                 ops: vec![Op::Read, Op::Write, Op::Endorse],
             },
             DevIdentity::MemoryManager => Authority {
                 namespaces: vec!["*".into()],
                 max_tier: Tier::Permanent,
-                ops: vec![Op::Read, Op::Write, Op::Curate],
+                // `Curate` is promote/demote/forget/GC (design §7.1), and promotion
+                // is expressed through endorsement — `endorsed_max_tier` is the only
+                // lever that raises the authority ceiling. Without `Endorse` the
+                // curator could not exercise the promotion its role is defined by,
+                // and permanent tier was unreachable for every identity — see §8.3,
+                // finding 3.
+                ops: vec![Op::Read, Op::Write, Op::Endorse, Op::Curate],
             },
         }
     }

@@ -346,8 +346,8 @@ gradient's behavior is observable end-to-end:
 |---|---|---|---|---|---|
 | `standard-worker` | `agent:worker` | `task` | read, write | `Verified` | The ordinary agent; writes task-tier, advocates upward. |
 | `untrusted-interloper` | `agent:interloper` | `ephemeral` | write (ephemeral only); evidence forced to `tool_output`/`reported` | `Asserted` | Red-team identity: demonstrates quarantine — its writes can't climb and its contradictions can't demote higher-tier memory. |
-| `project-leader` | `project:*` | `project` | read, write, **endorse** | `Attested` | Demonstrates promotion via authority endorsement (endorses a worker's advocated entry → it climbs to project/team tier). |
-| `memory-manager` | `*` | `permanent` | read, write, **curate** (promote/demote/forget/GC), resolve contradictions | `Attested` | The maintenance/curator role: demonstrates the Janitor-side lifecycle. |
+| `project-leader` | `project:*`, `agent:worker` | `project` | read, write, **endorse** | `Attested` | Demonstrates promotion via authority endorsement (endorses a worker's advocated entry → it climbs to project/team tier). Its authority spans the worker's namespace as well as its own, or it could never reach what the worker wrote (§8.3). |
+| `memory-manager` | `*` | `permanent` | read, write, **endorse**, **curate** (promote/demote/forget/GC), resolve contradictions | `Attested` | The maintenance/curator role: demonstrates the Janitor-side lifecycle. Holds `endorse` because promotion is expressed through endorsement, and is the only identity combining it with a permanent ceiling — so top-tier promotion is reachable at all (§8.3). |
 
 With these you can watch the full write path in a sandbox: the interloper advocates and stays
 stuck at ephemeral; the worker writes task-tier; the project-leader endorses and the entry
@@ -555,20 +555,33 @@ from the authenticated principal rather than from caller input; that holds today
 transport exists, and devAuth stamps the principal id directly), and it is the invariant any
 future authoring endpoint must preserve.
 
-**Finding 2 — the project leader cannot endorse the worker it leads.** devAuth's module doc
-states the gradient plainly: "the worker writes task-tier, the project-leader can endorse into
-project tier". Measured, that never happens. The leader's authority covers `project*`; the
-worker writes into `agent:worker`; `endorse_procedure` refuses on namespace before it looks at
-anything else. The endorsement half of the trust gradient is unreachable with the shipped
-roster — which also means every endorsement path in §5.2 has only ever been exercised by
-hand-built stamps, never by an identity provider.
+**Finding 2 — the project leader could not endorse the worker it leads. Resolved.** devAuth's
+module doc states the gradient plainly: "the worker writes task-tier, the project-leader can
+endorse into project tier". Measured, that never happened. The leader's authority covered
+`project*`; the worker writes into `agent:worker`; `endorse_procedure` refused on namespace
+before it looked at anything else — so the endorsement half of §5.2 had only ever been exercised
+by hand-built stamps, never by an identity provider.
 
-**Finding 3 — top tier is unreachable in devAuth.** A permanent climb needs an endorsement whose
-`max_tier` is permanent (§5.2) *and* a cross-authority endorser (§8.1). The only identity holding
-`Op::Endorse` is the project leader, capped at project; the memory manager reaches permanent but
-holds `Curate`, not `Endorse`. So no combination of the four identities promotes anything to
-permanent, however much corroboration is piled on. The top-tier rule is enforced but has never
-run end to end.
+*The repair:* the leader's authority now spans the worker's namespace as well as its own. §5.2's
+own words are "climbs when a **higher-authority parent** endorses", and a parent whose authority
+cannot reach its child is not a parent. The alternative — letting the worker write into the
+project namespace — was rejected because the worker's own scratch namespace is the thing that
+makes its writes *its own*, and widening it would have blurred the interloper demo alongside it.
+The two authorities have to overlap somewhere for the gradient to be observable at all; the
+overlap belongs on the side with more authority, not less.
+
+**Finding 3 — top tier was unreachable in devAuth. Resolved.** A permanent climb needs an
+endorsement whose `max_tier` is permanent (§5.2) *and* a cross-authority endorser (§8.1). The
+only identity holding `Op::Endorse` was the project leader, capped at project; the memory manager
+reached permanent but held `Curate`, not `Endorse`. So no combination of the four promoted
+anything to permanent, however much corroboration was piled on, and the top-tier rule was
+enforced without ever having run.
+
+*The repair:* the memory manager holds `Endorse` alongside `Curate`. §7.1 already defines curation
+as "promote/demote/forget/GC" — and promotion, in this model, is *expressed* through endorsement:
+`endorsed_max_tier` is the only lever that raises the authority ceiling. A curator that could not
+endorse could not perform the promotion its role is defined by. Granting it is not a widening of
+the curator's power but an admission of what its power already was.
 
 **Finding 4 — two of the three diversity axes are computed but never weighed.** §8.1's proxy is
 "distinct delegation-chain roots, distinct sessions spread over time, distinct evidence types".
@@ -577,10 +590,16 @@ only `min_distinct_roots`. A single burst — two roots, one session, one eviden
 exactly as readily as corroboration accumulated across sessions from varied evidence, so
 "spread over time" is currently aspirational.
 
-Findings 2 and 3 are defects in the *sample roster*, not in the trust model: they make the
-gradient unobservable, which is precisely what devAuth exists to provide. Finding 1 is a defect
-in the model's implementation and is the one that matters for §8 #1. Finding 4 is unfinished
+Findings 2 and 3 were defects in the *sample roster*, not in the trust model: they made the
+gradient unobservable, which is precisely what devAuth exists to provide. Finding 1 was a defect
+in the model's implementation and is the one that mattered for §8 #1. Finding 4 is unfinished
 work against §8.1's own stated proxy.
+
+Worth naming what findings 2 and 3 cost while they stood: **the endorsement path and the top-tier
+rule had unit tests and no end-to-end evidence.** Both were correct as written and neither had
+ever run against a stamp an identity provider minted, because the roster made them unreachable.
+That is the argument for the scenarios existing at all — a policy can be right and still be
+untested if nothing can get into the state it governs.
 
 
 ### 8.4 Posture & trust boundary — a thorny hedge, not a wall
