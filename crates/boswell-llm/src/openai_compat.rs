@@ -198,6 +198,20 @@ impl OpenAiCompatProvider {
         self
     }
 
+    /// Set the request timeout.
+    ///
+    /// The default suits a hosted endpoint. A local model behind this same
+    /// format is a different animal: it may spend a minute loading weights
+    /// before it emits a first token, and a reasoning model then generates its
+    /// whole chain of thought before the answer.
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.client = reqwest::Client::builder()
+            .timeout(timeout)
+            .build()
+            .expect("failed to build the HTTP client");
+        self
+    }
+
     /// Cap the tokens the model may generate.
     ///
     /// Left unset by default, because the field is not portable: OpenAI's
@@ -341,6 +355,42 @@ mod tests {
         // A variable name no environment will have set.
         let result = crate::key_from_env("BOSWELL_TEST_ABSENT_KEY_VAR");
         assert!(matches!(result, Err(LlmError::Authentication(_))));
+    }
+
+    /// The one test in this crate that talks to a real chat-completions
+    /// endpoint. Ollama serves this format at `/v1` alongside its native API,
+    /// which makes it the only way to exercise the whole request-and-parse
+    /// path — bearer auth, the `messages` array, `choices[0].message.content`
+    /// — without a vendor account or a bill.
+    ///
+    /// Ignored by default: it loads a model, which on a laptop means several
+    /// gigabytes of memory and a wait. Run it deliberately:
+    ///
+    /// ```text
+    /// ollama pull granite4.2:8b
+    /// cargo test -p boswell-llm --  --ignored openai_compat
+    /// ```
+    #[tokio::test]
+    #[ignore]
+    async fn talks_to_a_real_chat_completions_endpoint() {
+        let provider = OpenAiCompatProvider::new(
+            "http://localhost:11434/v1",
+            // Ollama ignores the value but the OpenAI-compatible path still
+            // wants the header.
+            "ollama",
+            "granite4.2:8b",
+        )
+        .with_max_retries(1)
+        // Cold-loading eight billion parameters from disk happens inside this
+        // timeout, and a reasoning model then thinks before it answers.
+        .with_timeout(Duration::from_secs(600));
+
+        let response = provider
+            .generate("Reply with the single word: OK")
+            .await
+            .expect("Ollama should answer when it is running and the model is pulled");
+
+        assert!(!response.trim().is_empty());
     }
 
     #[tokio::test]
