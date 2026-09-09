@@ -10,6 +10,11 @@ Boswell is a cognitive memory system designed as the long-term memory substrate 
 - **Speed by default, depth on demand** - Fast deterministic paths with optional LLM-assisted depth
 - **Local-first, network-capable** - Privacy and control with optional federation
 
+## Language
+
+[`CONTEXT.md`](./CONTEXT.md) is the project glossary: one word per concept, with the rejected
+synonyms listed so they stay rejected. Read it before naming anything.
+
 ## Architecture
 
 Boswell follows Clean Architecture principles with clear separation of concerns:
