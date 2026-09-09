@@ -34,3 +34,9 @@ pub use client::{
     ProcedureQuerySpec, QueryFilter,
 };
 pub use error::SdkError;
+
+/// The response to an [`report_outcome`](BoswellClient::report_outcome) call.
+///
+/// Re-exported so callers can name what the client hands back without taking a
+/// direct dependency on the gRPC crate.
+pub use boswell_grpc::proto::ReportOutcomeResponse;

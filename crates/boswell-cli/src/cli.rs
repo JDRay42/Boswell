@@ -65,6 +65,12 @@ pub enum Command {
     /// Manage configuration profiles
     Profile(ProfileArgs),
 
+    /// Navigate goal decompositions (procedural memory)
+    Goal(GoalArgs),
+
+    /// Retrieve and report on procedures (procedural memory)
+    Procedure(ProcedureArgs),
+
     /// Enter interactive REPL mode
     Repl,
 }
@@ -122,7 +128,9 @@ pub struct QueryArgs {
     pub subject: Option<String>,
 
     /// Filter by predicate (format: namespace:value or namespace:*)
-    #[arg(short, long)]
+    /// No short form: `-p` is the global --profile flag, and claiming it here
+    /// made `boswell query` panic on every invocation.
+    #[arg(long)]
     pub predicate: Option<String>,
 
     /// Filter by object (format: namespace:value or namespace:*)
@@ -146,7 +154,9 @@ pub struct QueryArgs {
 #[derive(Debug, Parser)]
 pub struct LearnArgs {
     /// JSON file containing claims to assert
-    #[arg(short, long)]
+    /// No short form: `-f` is the global --format flag, and claiming it here
+    /// made `boswell learn` panic on every invocation.
+    #[arg(long)]
     pub file: Option<String>,
 
     /// JSON array of claims from stdin
@@ -176,7 +186,9 @@ pub struct ForgetArgs {
     pub ids: Vec<String>,
 
     /// Read IDs from file (one per line)
-    #[arg(short, long)]
+    /// No short form: `-f` is the global --format flag, and claiming it here
+    /// made `boswell forget` panic on every invocation.
+    #[arg(long)]
     pub file: Option<String>,
 
     /// Read IDs from stdin (one per line)
@@ -295,10 +307,99 @@ impl From<TierArg> for boswell_domain::Tier {
 mod tests {
     use super::*;
 
+    /// `--help` must be handled as a clap "error" we inspect, never with
+    /// `parse_from`: on `--help` clap prints and calls `process::exit`, which
+    /// tears down the whole test binary. Every test the harness had not yet run
+    /// was then silently skipped while the suite still reported success.
     #[test]
     fn test_cli_parsing() {
-        let cli = Cli::parse_from(["boswell", "--help"]);
+        let err = Cli::try_parse_from(["boswell", "--help"]).unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelp);
+
+        // And a bare invocation really does parse to "no subcommand".
+        let cli = Cli::try_parse_from(["boswell"]).expect("bare invocation parses");
         assert!(cli.command.is_none());
+    }
+
+    /// clap only validates a subcommand's arguments when that subcommand's
+    /// parser is built, so a short-flag collision between a subcommand flag and
+    /// a `global = true` one compiles fine and panics at runtime the first time
+    /// someone runs it. `debug_assert` walks the whole tree, turning that into a
+    /// test failure instead of a user's crash. Both `procedure report` and
+    /// `goal expand` shipped such a collision before this test existed.
+    #[test]
+    fn the_command_tree_has_no_conflicting_flags() {
+        use clap::CommandFactory;
+        Cli::command().debug_assert();
+    }
+
+    /// A failure attribution only means something alongside a failure, and
+    /// getting it wrong mis-files the outcome, so the enum spellings the
+    /// instance expects are pinned here (design §3.3).
+    #[test]
+    fn outcome_and_failure_modes_use_the_wire_spellings() {
+        let cli = Cli::parse_from([
+            "boswell",
+            "procedure",
+            "report",
+            "01890000-0000-7000-8000-000000000000",
+            "--outcome",
+            "failure",
+            "--failure-mode",
+            "executor-error",
+        ]);
+        let Some(Command::Procedure(args)) = cli.command else {
+            panic!("expected a procedure command");
+        };
+        let ProcedureAction::Report {
+            outcome,
+            failure_mode,
+            ..
+        } = args.action
+        else {
+            panic!("expected a report action");
+        };
+        assert_eq!(outcome.as_str(), "failure");
+        assert_eq!(failure_mode.unwrap().as_str(), "executor_error");
+    }
+
+    /// Context tags rank a hop; they are accepted both repeated and
+    /// comma-separated so an operator can pass a situation either way.
+    #[test]
+    fn expand_accepts_context_tags_either_way() {
+        let split = Cli::parse_from([
+            "boswell",
+            "goal",
+            "expand",
+            "01890000-0000-7000-8000-000000000000",
+            "--context",
+            "time:quick,ldl:low",
+        ]);
+        let Some(Command::Goal(args)) = split.command else {
+            panic!("expected a goal command");
+        };
+        let GoalAction::Expand { context, .. } = args.action else {
+            panic!("expected an expand action");
+        };
+        assert_eq!(context, vec!["time:quick", "ldl:low"]);
+
+        let repeated = Cli::parse_from([
+            "boswell",
+            "goal",
+            "expand",
+            "01890000-0000-7000-8000-000000000000",
+            "--context",
+            "time:quick",
+            "--context",
+            "ldl:low",
+        ]);
+        let Some(Command::Goal(args)) = repeated.command else {
+            panic!("expected a goal command");
+        };
+        let GoalAction::Expand { context, .. } = args.action else {
+            panic!("expected an expand action");
+        };
+        assert_eq!(context, vec!["time:quick", "ldl:low"]);
     }
 
     /// `search` must not apply a similarity floor by default. A non-zero default
@@ -369,5 +470,203 @@ mod tests {
     fn test_tier_conversion() {
         let tier: boswell_domain::Tier = TierArg::Task.into();
         assert!(matches!(tier, boswell_domain::Tier::Task));
+    }
+}
+
+/// Arguments for the goal command.
+#[derive(Debug, Parser)]
+pub struct GoalArgs {
+    #[command(subcommand)]
+    pub action: GoalAction,
+}
+
+/// Goal-traversal actions (design 15 §3.2, §4.1).
+///
+/// Traversal is stateless: you hold the cursor. `list` finds an entry goal,
+/// `expand` shows one level, and you re-run `expand` on whichever child you
+/// pick until a candidate is a procedure. None of it issues a receipt.
+#[derive(Debug, Subcommand)]
+pub enum GoalAction {
+    /// Find goals by namespace or intent — the entry hop into a decomposition
+    List {
+        /// Filter by namespace prefix
+        #[arg(short, long)]
+        namespace: Option<String>,
+
+        /// Filter by a case-insensitive substring of the goal's intent
+        #[arg(short, long)]
+        intent_contains: Option<String>,
+
+        /// Maximum results
+        #[arg(short, long)]
+        limit: Option<u32>,
+    },
+
+    /// Show one goal by id
+    Show {
+        /// Goal id (UUIDv7)
+        id: String,
+    },
+
+    /// Expand one goal into its ranked candidates — a single traversal hop
+    Expand {
+        /// Goal id (UUIDv7)
+        id: String,
+
+        /// Situational context tags, repeatable or comma-separated
+        /// (e.g. --context time:quick --context ldl:low).
+        /// No short form: `-c` is the global --config flag.
+        #[arg(long, value_delimiter = ',')]
+        context: Vec<String>,
+    },
+}
+
+/// Arguments for the procedure command.
+#[derive(Debug, Parser)]
+pub struct ProcedureArgs {
+    #[command(subcommand)]
+    pub action: ProcedureAction,
+}
+
+/// Procedure retrieval and outcome reporting (design 15 §3.3).
+///
+/// Retrieval is **not free**: every procedure handed out carries an execution
+/// receipt, and the principal it was issued to is obliged to answer it with
+/// `procedure report` before it expires. An unanswered receipt counts as
+/// `unknown` against the procedure — silence is not success.
+#[derive(Debug, Subcommand)]
+pub enum ProcedureAction {
+    /// Retrieve procedures for a goal or intent — ISSUES A RECEIPT FOR EACH
+    List {
+        /// Filter by exact goal grouping key
+        #[arg(short, long)]
+        goal: Option<String>,
+
+        /// Filter by namespace prefix
+        #[arg(short, long)]
+        namespace: Option<String>,
+
+        /// Filter by a case-insensitive substring of the procedure's intent
+        #[arg(short, long)]
+        intent_contains: Option<String>,
+
+        /// Include superseded (non-current) versions
+        #[arg(long)]
+        include_superseded: bool,
+
+        /// Maximum results
+        #[arg(short, long)]
+        limit: Option<u32>,
+
+        /// The principal the receipts are issued to — who is on the hook to
+        /// report. Defaults to the active profile's instance id.
+        #[arg(long = "as")]
+        as_principal: Option<String>,
+
+        /// Correlation: task id, stamped onto the issued receipts
+        #[arg(long)]
+        task_id: Option<String>,
+
+        /// Correlation: session id, stamped onto the issued receipts
+        #[arg(long)]
+        session_id: Option<String>,
+    },
+
+    /// Fetch one procedure by id — ISSUES A RECEIPT
+    Show {
+        /// Procedure id (UUIDv7)
+        id: String,
+
+        /// The principal the receipt is issued to
+        #[arg(long = "as")]
+        as_principal: Option<String>,
+
+        /// Correlation: task id
+        #[arg(long)]
+        task_id: Option<String>,
+
+        /// Correlation: session id
+        #[arg(long)]
+        session_id: Option<String>,
+    },
+
+    /// Answer an outstanding execution receipt
+    Report {
+        /// Receipt id (UUIDv7) being answered
+        receipt_id: String,
+
+        /// How the run ended
+        #[arg(short, long, value_enum)]
+        outcome: OutcomeArg,
+
+        /// Failure attribution. Valid only with --outcome failure.
+        /// No short form: `-f` is the global --format flag.
+        #[arg(long, value_enum)]
+        failure_mode: Option<FailureModeArg>,
+
+        /// Names the step that failed (use with --failure-mode step-failed)
+        #[arg(long)]
+        failed_step: Option<String>,
+
+        /// How confident the executor is in this report (0.0-1.0)
+        #[arg(long)]
+        executor_confidence: Option<f64>,
+
+        /// What the run cost
+        #[arg(long)]
+        cost: Option<f64>,
+
+        /// Free-text notes
+        #[arg(long)]
+        notes: Option<String>,
+    },
+}
+
+/// How an execution ended.
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum OutcomeArg {
+    /// The procedure achieved its postconditions
+    Success,
+    /// The procedure was run and did not achieve them
+    Failure,
+    /// The run was given up before reaching an outcome
+    Abandoned,
+}
+
+impl OutcomeArg {
+    /// The wire form.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            OutcomeArg::Success => "success",
+            OutcomeArg::Failure => "failure",
+            OutcomeArg::Abandoned => "abandoned",
+        }
+    }
+}
+
+/// Who or what a failure is attributed to (design §3.3). The attribution
+/// matters: `executor-error` leaves the procedure's counters alone, and
+/// `preconditions-stale` flags the precondition check rather than the body.
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum FailureModeArg {
+    /// The preconditions no longer held — blames the check, not the body
+    PreconditionsStale,
+    /// A step of the procedure failed
+    StepFailed,
+    /// The procedure ran but produced a bad result
+    BadResult,
+    /// The executor got it wrong — does NOT demote the procedure
+    ExecutorError,
+}
+
+impl FailureModeArg {
+    /// The wire form.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            FailureModeArg::PreconditionsStale => "preconditions_stale",
+            FailureModeArg::StepFailed => "step_failed",
+            FailureModeArg::BadResult => "bad_result",
+            FailureModeArg::ExecutorError => "executor_error",
+        }
     }
 }
