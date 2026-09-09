@@ -506,9 +506,9 @@ because a graph damaged outside the API carries no such guarantee.
 `crates/boswell-gatekeeper/tests/sybil_scenarios.rs` stands devAuth's four sample identities
 up against the real `SqliteStore` write path, the real
 `corroboration_facts_for_procedure`, and the real `PromotionGatekeeper`, and records the
-end-to-end verdict. Scenarios that pass are evidence the defense works; the ones named
-`finding_*` are evidence it does not, and they assert *today's* behaviour so that closing a gap
-shows up as a diff.
+end-to-end verdict. All four findings below have since been closed, so every scenario now asserts
+an intent; while one was open it was named `finding_*` and pinned today's behaviour, so that
+closing it showed up as a diff.
 
 **What holds up.** The honest clone swarm is refused. Nine subagents fanned out under one
 puppeteer produce nine distinct author identities and exactly **one** delegation root, and the
@@ -583,16 +583,38 @@ as "promote/demote/forget/GC" — and promotion, in this model, is *expressed* t
 endorse could not perform the promotion its role is defined by. Granting it is not a widening of
 the curator's power but an admission of what its power already was.
 
-**Finding 4 — two of the three diversity axes are computed but never weighed.** §8.1's proxy is
-"distinct delegation-chain roots, distinct sessions spread over time, distinct evidence types".
-The store computes all three and carries them on `CorroborationFacts`; `PromotionConfig` reads
-only `min_distinct_roots`. A single burst — two roots, one session, one evidence type — promotes
-exactly as readily as corroboration accumulated across sessions from varied evidence, so
-"spread over time" is currently aspirational.
+**Finding 4 — two of the three diversity axes were computed but never weighed. Resolved, with a
+default that keeps them off.** §8.1's proxy is "distinct delegation-chain roots, distinct sessions
+spread over time, distinct evidence types". The store computed all three and carried them on
+`CorroborationFacts`; `PromotionConfig` read only `min_distinct_roots`, so a single burst promoted
+exactly as readily as corroboration accumulated across sessions from varied evidence.
+
+`PromotionConfig` now carries `min_distinct_sessions` and `min_distinct_evidence_types`, both
+narrowing the **corroboration** trigger only — endorsement is an authority judgement and
+effectiveness an outcome one, and neither is about independence. Both default to `0`, meaning
+not enforced, and the default is the interesting part:
+
+- **Sessions.** `distinct_sessions` is counted over an entry's *write* and *endorse* stamps.
+  Reports are excluded from corroboration deliberately, and reports are the only stamps anything
+  currently populates a session on (propagated from the receipt). Writes and endorsements are
+  minted in-process today, where devAuth leaves `session_id` as `None` and the Janitor's own
+  writes have no session to name. A non-zero default would therefore not make promotion stricter;
+  it would make corroboration unreachable. The precondition for raising it is an authoring
+  transport that stamps sessions onto writes, and that is recorded on the field itself.
+- **Evidence types.** Weak evidence is already bounded, and more tightly than a diversity count
+  would bound it: `EvidenceType::tier_ceiling` caps what `tool_output` or `reported` can reach at
+  all, so corroboration built entirely on weak evidence cannot pass task tier however many roots
+  back it. This axis is belt-and-braces over a control that already works, which is a reason to
+  offer it and not a reason to impose it.
+
+Shipping the mechanism switched off is the same call §8.2 made for its three collection policies:
+build them, make the choice explicit and per-operator, and let the consequence be measurable
+either way. What it is not is a claim that "spread over time" is now enforced — it is enforceable,
+which is a smaller and more honest thing to have.
 
 Findings 2 and 3 were defects in the *sample roster*, not in the trust model: they made the
 gradient unobservable, which is precisely what devAuth exists to provide. Finding 1 was a defect
-in the model's implementation and is the one that mattered for §8 #1. Finding 4 is unfinished
+in the model's implementation and is the one that mattered for §8 #1. Finding 4 was unfinished
 work against §8.1's own stated proxy.
 
 Worth naming what findings 2 and 3 cost while they stood: **the endorsement path and the top-tier
