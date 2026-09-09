@@ -390,7 +390,9 @@ devAuth is a bring-up and demonstration tool for the trust model — never a sho
 ## 8. Open problems (explicit, unsolved)
 
 1. **Sybil independence.** "N distinct authors corroborate" is gameable by correlated clones;
-   corroboration needs an independence notion we don't have.
+   corroboration needs an independence notion we don't have. **Partly measured — see §8.3.**
+   The delegation-root proxy holds against an honest clone swarm and fails against one that
+   simply declines to declare its provenance.
 2. **Effectiveness attribution.** On failure, was it the *procedure* or the *executor*?
    Demoting a good procedure for a bad executor's mistake is unfair. **Largely addressed** by
    the reporting contract (§3.3): the reporter supplies `failure_mode`, the gatekeeper weights
@@ -413,6 +415,39 @@ devAuth is a bring-up and demonstration tool for the trust model — never a sho
    the write guard makes a cycle unbuildable through the API, but a graph restored from backup
    or edited directly carries no such promise, and a descent that trusted the write guard alone
    would spin on one forever.
+
+### 8.1 How we intend to make these tractable
+
+Sorted by what actually resolves each — only one is genuine research:
+
+- **Decide and test (engineering, not research):** promotion timing (#4 — a Janitor-style
+  background pass, interval configurable, with a synchronous fast-track for authority
+  endorsements); graph integrity under decay (#5 — pick a rule: an edge pins its child against
+  GC, *or* cascade + re-parent orphans to the nearest live ancestor; prototype both, choose by
+  behavior); cycle guards (#6 — reject on write any edge that would close a cycle, plus a
+  visited-set + depth cap at traversal).
+- **Largely handled by the reporting contract (§3.3):** attribution (#2). The reporter supplies
+  `failure_mode`; the gatekeeper weights it by reporter trust.
+- **Empirical — needs a running system + devAuth, not more design:** Sybil independence (#1).
+  Stand up devAuth, script the four identities through cooperative and adversarial (clone-swarm)
+  scenarios, and measure. Pragmatic proxy for independence: weight corroboration by **provenance
+  diversity** — distinct delegation-chain roots, distinct sessions spread over time, distinct
+  evidence types — and require **cross-authority** endorsement (a different org branch) for
+  top-tier promotion. Accept it as mitigated, not solved; borrow from web-of-trust and
+  reputation-system literature.
+- **Sequence, don't block:** authoring & learning (#3). Ship hand-authoring; instrument real
+  usage; build a procedure/goal extractor once there is a corpus of real episodes to learn from
+  (the `Extractor` is the model). Both attribution and authoring echo **reinforcement-learning
+  credit assignment** — borrow that framing rather than reinventing it.
+
+Two cross-cutting principles make the unsolved ones safe to live with:
+- **Bound the damage.** Where a problem can't be fully solved (Sybil), ensure the worst case is
+  a *reversible* false promotion a `memory-manager` can demote — never irreversible corruption.
+  Reversibility is the safety net.
+- **Phase the risk.** Single-principal procedural memory (one agent's how-to across its own
+  sessions) is useful on its own and trips almost none of these problems; the team-trust problems
+  only bite at multi-agent scale — by which point a running single-principal system has produced
+  the data needed to attack them.
 
 ### 8.2 Graph integrity under decay — what the prototypes showed
 
@@ -463,40 +498,67 @@ that already existed; closing a cycle would need `child ->* ancestor` as well, w
 write-time guard (#6) already refuses. `collect_goal` still handles the cycle error defensively,
 because a graph damaged outside the API carries no such guarantee.
 
-### 8.1 How we intend to make these tractable
+### 8.3 Sybil independence — what the scenarios measured
 
-Sorted by what actually resolves each — only one is genuine research:
+§8.1 calls #1 *empirical, not design*, so it was measured rather than argued.
+`crates/boswell-gatekeeper/tests/sybil_scenarios.rs` stands devAuth's four sample identities
+up against the real `SqliteStore` write path, the real
+`corroboration_facts_for_procedure`, and the real `PromotionGatekeeper`, and records the
+end-to-end verdict. Scenarios that pass are evidence the defense works; the ones named
+`finding_*` are evidence it does not, and they assert *today's* behaviour so that closing a gap
+shows up as a diff.
 
-- **Decide and test (engineering, not research):** promotion timing (#4 — a Janitor-style
-  background pass, interval configurable, with a synchronous fast-track for authority
-  endorsements); graph integrity under decay (#5 — pick a rule: an edge pins its child against
-  GC, *or* cascade + re-parent orphans to the nearest live ancestor; prototype both, choose by
-  behavior); cycle guards (#6 — reject on write any edge that would close a cycle, plus a
-  visited-set + depth cap at traversal).
-- **Largely handled by the reporting contract (§3.3):** attribution (#2). The reporter supplies
-  `failure_mode`; the gatekeeper weights it by reporter trust.
-- **Empirical — needs a running system + devAuth, not more design:** Sybil independence (#1).
-  Stand up devAuth, script the four identities through cooperative and adversarial (clone-swarm)
-  scenarios, and measure. Pragmatic proxy for independence: weight corroboration by **provenance
-  diversity** — distinct delegation-chain roots, distinct sessions spread over time, distinct
-  evidence types — and require **cross-authority** endorsement (a different org branch) for
-  top-tier promotion. Accept it as mitigated, not solved; borrow from web-of-trust and
-  reputation-system literature.
-- **Sequence, don't block:** authoring & learning (#3). Ship hand-authoring; instrument real
-  usage; build a procedure/goal extractor once there is a corpus of real episodes to learn from
-  (the `Extractor` is the model). Both attribution and authoring echo **reinforcement-learning
-  credit assignment** — borrow that framing rather than reinventing it.
+**What holds up.** The honest clone swarm is refused. Nine subagents fanned out under one
+puppeteer produce nine distinct author identities and exactly **one** delegation root, and the
+gatekeeper holds — raw author count would have promoted it. The interloper stays on the floor:
+its evidence is coerced to `tool_output` and its authority caps entry at ephemeral, so nothing
+it writes can climb. And corroboration is correctly *not* a grant of authority — two independent
+roots backing a worker's procedure still cannot lift it past the worker's own `max_tier`.
 
-Two cross-cutting principles make the unsolved ones safe to live with:
-- **Bound the damage.** Where a problem can't be fully solved (Sybil), ensure the worst case is
-  a *reversible* false promotion a `memory-manager` can demote — never irreversible corruption.
-  Reversibility is the safety net.
-- **Phase the risk.** Single-principal procedural memory (one agent's how-to across its own
-  sessions) is useful on its own and trips almost none of these problems; the team-trust problems
-  only bite at multi-agent scale — by which point a running single-principal system has produced
-  the data needed to attack them.
+**Finding 1 — the diversity signal is opt-in for the attacker.** `root_of` derives a stamp's
+delegation root from its chain and **falls back to the author when there is none**. A clone that
+roots its chain at itself, or omits the chain entirely, is therefore indistinguishable from an
+independent principal. The same nine-clone swarm that is held when it declares its puppeteer
+climbs to project tier when it declines to — one compromised project-lead credential, fanned out
+into self-rooted subagents, manufactures the corroboration the rule exists to require. The only
+difference between the held case and the promoted one is whether the adversary chose to be
+honest about its provenance, which is not a property a defense may depend on.
 
-### 8.2 Posture & trust boundary — a thorny hedge, not a wall
+*Unresolved.* The candidates are (a) an unrooted or self-rooted stamp contributes no diversity
+root at all — fail closed, at the cost of denying corroboration to genuinely independent
+principals who write directly; (b) all self-rooted stamps collapse into a single bucket; (c)
+count roots only from stamps whose delegation the `IdentityProvider` actually verified, making
+assurance the gate. Each should be built and measured the way §8.2's three policies were.
+
+**Finding 2 — the project leader cannot endorse the worker it leads.** devAuth's module doc
+states the gradient plainly: "the worker writes task-tier, the project-leader can endorse into
+project tier". Measured, that never happens. The leader's authority covers `project*`; the
+worker writes into `agent:worker`; `endorse_procedure` refuses on namespace before it looks at
+anything else. The endorsement half of the trust gradient is unreachable with the shipped
+roster — which also means every endorsement path in §5.2 has only ever been exercised by
+hand-built stamps, never by an identity provider.
+
+**Finding 3 — top tier is unreachable in devAuth.** A permanent climb needs an endorsement whose
+`max_tier` is permanent (§5.2) *and* a cross-authority endorser (§8.1). The only identity holding
+`Op::Endorse` is the project leader, capped at project; the memory manager reaches permanent but
+holds `Curate`, not `Endorse`. So no combination of the four identities promotes anything to
+permanent, however much corroboration is piled on. The top-tier rule is enforced but has never
+run end to end.
+
+**Finding 4 — two of the three diversity axes are computed but never weighed.** §8.1's proxy is
+"distinct delegation-chain roots, distinct sessions spread over time, distinct evidence types".
+The store computes all three and carries them on `CorroborationFacts`; `PromotionConfig` reads
+only `min_distinct_roots`. A single burst — two roots, one session, one evidence type — promotes
+exactly as readily as corroboration accumulated across sessions from varied evidence, so
+"spread over time" is currently aspirational.
+
+Findings 2 and 3 are defects in the *sample roster*, not in the trust model: they make the
+gradient unobservable, which is precisely what devAuth exists to provide. Finding 1 is a defect
+in the model's implementation and is the one that matters for §8 #1. Finding 4 is unfinished
+work against §8.1's own stated proxy.
+
+
+### 8.4 Posture & trust boundary — a thorny hedge, not a wall
 
 Boswell does not aim to be perfect or unassailable; it aims to **work**. The target for the
 whole trust model is a *thorny hedge*: raise the cost of casual or careless memory poisoning,

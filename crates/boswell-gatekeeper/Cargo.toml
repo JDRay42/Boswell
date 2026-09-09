@@ -13,6 +13,10 @@ serde = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
 tempfile = "3.8"
+# Dev-only: the four sample identities are how the trust gradient is exercised in
+# the Sybil scenarios (design §8 #1). Never a normal dependency — no production
+# path names this crate.
+boswell-devauth = { workspace = true }
 
 [lints]
 workspace = true
