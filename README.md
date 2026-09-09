@@ -282,6 +282,14 @@ for the following.
   all, writes are stamped with the lowest assurance and nothing is promoted. You decide which
   agents to run and what each may write, especially to higher (project/permanent) tiers. Run
   only agents you're willing to trust with the tier you grant them.
+
+  If you want a concrete starting point for a local deployment, [Pocket ID](https://pocket-id.org)
+  is a reasonable one: a single Go binary over SQLite, passkey-only, that binds to loopback and
+  speaks the `device_code`, `refresh_token` and `client_credentials` grants a headless agent
+  needs to hold a credential without a browser in the loop. WebAuthn requires a secure context,
+  so give it a locally-trusted certificate (`mkcert`) rather than plain HTTP. **Boswell ships no
+  adapter for it.** Wiring one is yours to write against the `IdentityProvider` port, and until
+  you do, writes are stamped `Assurance::None` exactly as described above.
 - **The gRPC instance does not authenticate. Keep it on `127.0.0.1`.** This is a hard
   requirement, not a preference. The instance checks only that a request carries a non-empty
   `auth_token`; it does not verify the router's signature, so any process that can reach the
