@@ -271,6 +271,39 @@ The "start simple, grow" path from [ADR-020](../ADRs/020-swappable-storage-backe
   [Backup & Recovery](../architecture/16-backup-recovery.md). The design exists; no code
   does. *open*
 
+## LLM providers
+
+The adapter layer from [ADR-015](../ADRs/015-pluggable-llm-providers.md): every subsystem
+that needs a model calls one trait, and configuration decides who answers it.
+
+- **`LlmProvider` trait, the deterministic `MockProvider`, and the local Ollama adapter.**
+  *shipped*
+- **Hosted adapters — OpenAI, OpenRouter, DeepSeek, Anthropic, Google Gemini.** Five
+  vendors, three adapters: OpenAI, OpenRouter and DeepSeek share one wire format, so
+  `OpenAiCompatProvider` serves all three and takes any other endpoint speaking it, while
+  `AnthropicProvider` and `GeminiProvider` exist because their request and response shapes
+  genuinely differ, not because of vendor branding. Keys arrive as constructor arguments or
+  from the vendors' conventional environment variables; no provider derives `Debug`, so a
+  key cannot reach a log through `{:?}`. A model that declines to answer now has its own
+  error — both Anthropic and Google report a refusal as an HTTP 200, which without it reads
+  as an empty answer. *shipped* (#PR)
+- **Per-subsystem provider configuration.** ADR-015's actual decision was that each
+  subsystem — Extractor, Gatekeeper, Janitor, Synthesizer — maps to a provider
+  independently. The trait supports that; nothing reads configuration to do it. The
+  Extractor is handed one provider at construction and the rest have no wiring at all.
+  Until this ships, "pluggable" means a Rust caller can choose, not an operator. *open*
+- **Schema-constrained decoding.** `generate_structured` ignores its `schema` argument on
+  every adapter, Ollama's included, and returns whatever text came back. Each vendor
+  constrains decoding differently — `response_format`, `output_config.format`,
+  `responseSchema`, Ollama's JSON mode — and the trait says nothing about what a `schema`
+  string contains, so honoring it means first deciding that contract. The Extractor parses
+  free text today and does not call it. *open*
+- **Cost and token accounting.** Every hosted response carries usage counts and every one
+  of them is discarded. Nothing in Boswell can answer what an extraction run cost. *open*
+- **Streaming, tool use and multi-turn conversation.** Absent on purpose. The trait is one
+  prompt in, one string out; widening it is a change to the port, which is a decision about
+  what subsystems are allowed to ask for, not an adapter feature. *deferred*
+
 ---
 
 # Appendix: the original five-phase plan (February 2026)

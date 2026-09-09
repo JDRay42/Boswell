@@ -31,7 +31,7 @@ Boswell follows Clean Architecture principles with clear separation of concerns:
 
 ### Infrastructure Layer
 - `boswell-store` - Claim storage (SQLite + HNSW vector index)
-- `boswell-llm` - LLM provider port. Two adapters ship: **Ollama** and a test mock. There is no hosted-provider adapter (no Anthropic, no OpenAI) — the abstraction is a trait shape, not a provider set.
+- `boswell-llm` - LLM provider port. Adapters ship for **Ollama** (local), a test mock, and four hosted vendors: **OpenAI**, **OpenRouter**, **DeepSeek** (one adapter — they share OpenAI's chat-completions format, and it takes any other endpoint that speaks it), **Anthropic** and **Google Gemini**. Each hosted adapter takes an API key, or reads the vendor's conventional environment variable. They generate text and nothing else: no streaming, no tool use, no multi-turn, and `generate_structured` ignores its schema argument on every adapter including Ollama's.
 - `boswell-grpc` - gRPC API surface
 
 ### Interface Layer
