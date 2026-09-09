@@ -20,7 +20,7 @@ synonyms listed so they stay rejected. Read it before naming anything.
 Boswell follows Clean Architecture principles with clear separation of concerns:
 
 ### Domain Layer (innermost)
-- `boswell-domain` - Core business logic, value objects, and trait definitions (zero external dependencies)
+- `boswell-domain` - Core business logic, value objects, and trait definitions (depends on nothing but `uuid`, for UUIDv7 identifiers per [ADR-011](docs/ADRs/011-ulid-over-uuid.md))
 
 ### Application Layer
 - `boswell-extractor` - Converts unstructured text to structured claims
@@ -31,12 +31,12 @@ Boswell follows Clean Architecture principles with clear separation of concerns:
 
 ### Infrastructure Layer
 - `boswell-store` - Claim storage (SQLite + HNSW vector index)
-- `boswell-llm` - Pluggable LLM provider abstractions
+- `boswell-llm` - LLM provider port. Two adapters ship: **Ollama** and a test mock. There is no hosted-provider adapter (no Anthropic, no OpenAI) — the abstraction is a trait shape, not a provider set.
 - `boswell-grpc` - gRPC API surface
 
 ### Interface Layer
 - `boswell-sdk` - Rust client SDK
-- `boswell-mcp` - MCP (Model Context Protocol) server
+- `boswell-mcp` - MCP (Model Context Protocol) server. **Claims only** — five tools (assert, query, learn, forget, semantic search). Goals and procedures are not exposed over MCP; use the CLI or the HTTP gateway for those.
 - `boswell-cli` - Command-line interface
 - `boswell-gateway` - Public, authenticated HTTP/JSON API (see [HTTP API guide](docs/integrations/http-api.md))
 
@@ -49,7 +49,7 @@ Boswell follows Clean Architecture principles with clear separation of concerns:
 
 ### Prerequisites
 
-- Rust 1.88+ (install via [rustup](https://rustup.rs/) or Homebrew)
+- Rust 1.98 (install via [rustup](https://rustup.rs/) or Homebrew). `rust-toolchain.toml` pins the toolchain, so rustup will fetch it for you; the `rust-version` floor in `Cargo.toml` is 1.88 but the pinned build is what CI runs.
 - Protocol Buffers compiler (`brew install protobuf`)
 - Ollama for local LLM testing (`brew install ollama`)
   - Semantic search uses a local embedding model; pull it with `ollama pull embeddinggemma` (see [ADR-013](docs/ADRs/013-local-embedding-models.md))
@@ -125,8 +125,10 @@ To keep memory healthy automatically, enable the background Janitor under
 `[janitor]` in the config (`enabled = true`). It runs decay-aware sweeps on a
 schedule: stale claims past their tier TTL are garbage-collected, and claims
 whose age-decayed confidence (ADR-007) has fallen below the demotion threshold
-are demoted a tier. Set `dry_run = true` to log intended changes without
-applying them.
+are demoted a tier. The same pass expires unanswered execution receipts, which is
+what makes "silence is not success" true rather than aspirational (see
+[procedural memory](#navigating-procedural-memory-from-the-cli) below). Set
+`dry_run = true` to log intended changes without applying them.
 
 To generate emergent insights, enable the background Synthesizer under
 `[synthesizer]` (`enabled = true`; requires an Ollama chat model, e.g.
@@ -150,6 +152,11 @@ authenticated HTTP/JSON API so remote agents (e.g. Claude on the web) can use
 Boswell over HTTPS. It reuses the SDK internally and keeps the gRPC instance
 private; serve TLS and public reach via a reverse proxy or tunnel in front of it.
 
+It is the only component with real request authentication: SHA-256-hashed bearer
+API keys, per-key scopes and rate limits, and namespace isolation. Its surface
+covers claims (including batch writes and `learn`), relationships, search and
+recall, extraction, hook ingest, and the goal/procedure/receipt endpoints.
+
 ```bash
 # Write a starter config and add your API-key hashes (see the file's comments)
 cargo run -p boswell-gateway -- init config/gateway.toml
@@ -167,6 +174,13 @@ claim DTO, and deployment.
 
 Beyond claims, Boswell stores **procedures** (how-tos) grouped under **goals**
 (how work decomposes). The CLI walks that structure.
+
+The examples below invoke `boswell`, the CLI binary. Install it, or substitute
+`cargo run -p boswell-cli --` for `boswell` throughout:
+
+```bash
+cargo install --path crates/boswell-cli
+```
 
 Traversal is stateless — you hold the cursor. Find an entry goal, expand one
 level, pick a child, expand again, until a candidate is a procedure:
@@ -213,15 +227,22 @@ surface over HTTP.
 
 ## Project Status
 
-🚧 **In Development** — core lifecycle complete end-to-end.
+🚧 **In Development** — core lifecycle complete end-to-end; **not yet secure for
+multi-host deployment**, because the gRPC instance does not authenticate (see
+[what's expected of implementers](#running-boswell--whats-expected-of-implementers)).
 
 The full organic-memory loop runs across the two-process architecture (router +
 instance): assert claims → semantic retrieval via a local embedder → age-based
 confidence decay → decay-aware maintenance (tier demotion + GC) → LLM-backed
 synthesis of emergent insights → LLM-backed contradiction detection. All
 maintenance services run as opt-in background workers inside the instance server.
+Alongside claims, procedural memory — goals, procedures, execution receipts and
+the effectiveness loop — runs over the same stack, reachable from the CLI and the
+HTTP gateway.
 
-See [docs/development/roadmap.md](docs/development/roadmap.md) for the development roadmap and [docs/architecture/](docs/architecture/) for component specs.
+[docs/development/roadmap.md](docs/development/roadmap.md) is the single source of
+truth for what is built, what is open, and what is deferred on purpose;
+[docs/architecture/](docs/architecture/) holds the component specs.
 
 ## Integrations
 
@@ -254,56 +275,57 @@ for the following.
 
 - **Identity & access are yours to govern.** Boswell provides provenance, tiers, gatekeeping,
   and (by design) an identity-provider port with assurance-gated write tiers — but it does not
-  ship a production identity system. You decide which agents to run and what each may write,
-  especially to higher (project/permanent) tiers. Run only agents you're willing to trust with
-  the tier you grant them.
-- **Don't expose the instance carelessly.** The gRPC instance is meant to stay bound to
-  `127.0.0.1`. Reach it from remote agents only through the authenticated, TLS-fronted
-  [`boswell-gateway`](docs/integrations/http-api.md); see the
+  ship a production identity system. The only adapter in the repo is
+  [`boswell-devauth`](crates/boswell-devauth/), a **development-only** stand-in with four
+  sample identities; it refuses to start unless you opt in explicitly and have declared a
+  non-production `BOSWELL_ENV` (an undeclared one counts as production). With no provider at
+  all, writes are stamped with the lowest assurance and nothing is promoted. You decide which
+  agents to run and what each may write, especially to higher (project/permanent) tiers. Run
+  only agents you're willing to trust with the tier you grant them.
+- **The gRPC instance does not authenticate. Keep it on `127.0.0.1`.** This is a hard
+  requirement, not a preference. The instance checks only that a request carries a non-empty
+  `auth_token`; it does not verify the router's signature, so any process that can reach the
+  port can write to any tier. The router issues a properly signed JWT and the SDK carries it,
+  but nothing on the instance side reads it yet — tracked in the
+  [roadmap](docs/development/roadmap.md) under *Identity, trust and security*. Reach memory
+  from remote agents only through [`boswell-gateway`](docs/integrations/http-api.md), which
+  **does** authenticate: SHA-256-hashed bearer API keys, per-key scopes and rate limits, and
+  namespace isolation. Put TLS in front of the gateway with a reverse proxy or tunnel — the
+  gateway does not terminate it, and neither does the instance (setting `enable_tls` on the
+  instance refuses to start rather than pretending). Rotate gateway API keys and the router
+  `jwt_secret`; never ship the placeholder secrets. See the
   [security model](docs/architecture/10-security.md) and the
-  [hooks integration guide](docs/integrations/claude-code-hooks.md). Rotate the router
-  `jwt_secret` and gateway API keys; never ship the placeholder secrets to production.
+  [hooks integration guide](docs/integrations/claude-code-hooks.md).
 - **Back up your memory, and test the restore.** Memory is durable state. Run regular (e.g.
   nightly) backups and periodically test restoring them; catastrophic poisoning or disk loss is
-  recovered from backups plus provenance-targeted cleanup. See
-  [Backup & Recovery](docs/architecture/16-backup-recovery.md).
+  recovered from backups plus provenance-targeted cleanup. **Boswell ships no backup tooling
+  yet** — `boswell backup` / `boswell restore` are on the roadmap, so today this means copying
+  the database file yourself while the instance is stopped. See
+  [Backup & Recovery](docs/architecture/16-backup-recovery.md) for the strategy.
 - **Maintenance behavior is opt-in.** The Janitor, Synthesizer, and Contradiction workers are
   off by default; enabling them changes how memory decays, is garbage-collected, and is
   reconciled. Turn them on deliberately.
 - **Provide the runtime dependencies.** Semantic search needs Ollama with an embedding model
   (or `backend = "mock"` for offline/no-Ollama use); building needs a protobuf compiler.
 
-## Choosing Your Data Store
+## Data Store
 
-Boswell's persistence sits behind a single storage port (the `ClaimStore` trait), so the engine
-underneath is a **swappable adapter** — the memory model, the API, and the gateway stay identical
-regardless of what stores the data (see
-[ADR-020](docs/ADRs/020-swappable-storage-backends.md)).
+Boswell ships **one** storage adapter: an **embedded SQLite store** with a local vector
+index — zero-dependency, single-file, and the right choice for a local instance. There is
+no second adapter today and therefore no decision to make.
 
-**Start simple.** Today Boswell ships one adapter: an **embedded SQLite store** with a local
-vector index — zero-dependency, single-file, ideal for a local, single-agent instance. This is
-where almost everyone should begin.
-
-**Grow when you need to.** As you move toward shared, multi-agent, or hosted use, a **Postgres +
-pgvector** adapter is the planned growth path (not yet shipped — see the
-[backlog](docs/development/roadmap.md#backlog--future-work)): concurrent writers,
-networked/shared access, point-in-time recovery, and standard database operations.
-
-| If you have… | Prefer |
-|---|---|
-| One agent, one machine, getting started | **SQLite** (embedded, default) |
-| Many concurrent agents / a shared or hosted instance | **Postgres + pgvector** (planned) |
-| A hard "no external services" constraint | **SQLite** |
-| Existing Postgres ops, replication, and backups you trust | **Postgres + pgvector** (planned) |
-
-You aren't locked in: a planned **data-store migration tool** will move your memories from one
-adapter to another when you outgrow the simple setup, so starting small costs you nothing later.
+Persistence sits behind a storage port (the `ClaimStore` trait), and a **Postgres + pgvector**
+adapter for shared, multi-agent or hosted use is the intended growth path
+([ADR-020](docs/ADRs/020-swappable-storage-backends.md)). Both it and a data-store migration
+tool are open work, and the port itself needs hardening before a second implementation can sit
+behind it — see the [roadmap](docs/development/roadmap.md) under *Storage portability* for
+where that stands.
 
 ## Documentation
 
 - [Architecture Documentation](docs/architecture/) - System design and component specifications
 - [Architecture Decision Records](docs/ADRs/) - Key technical decisions and rationale
-- [Development Plan](docs/development/roadmap.md) - Phased implementation roadmap
+- [Roadmap](docs/development/roadmap.md) - The single source of truth for what is built, what is open, and what is deferred
 - [Importing Personal Memory](docs/importing-personal-memory.md) - Seed an instance with facts about yourself
 - [Claude Code Hooks Integration](docs/integrations/claude-code-hooks.md) - Wire an agent's lifecycle into Boswell's memory (local examples + secure public-serving design)
 - [Backup & Recovery](docs/architecture/16-backup-recovery.md) - Durability strategy: consistent snapshots of the store + vector index, and how to restore
