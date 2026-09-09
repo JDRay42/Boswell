@@ -17,6 +17,9 @@ tonic-build = "0.12"
 
 [dev-dependencies]
 boswell-store = { workspace = true }
+# Dev-only: the sample identities are how the trust gradient is exercised in
+# tests. Never a normal dependency — no production path names this crate.
+boswell-devauth = { workspace = true }
 
 [lints]
 workspace = true

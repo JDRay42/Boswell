@@ -128,6 +128,17 @@ pub trait IdentityProvider {
 
     /// Verify a delegation chain, returning validity and attested assurance.
     fn verify_delegation(&self, chain: &DelegationChain) -> DelegationVerdict;
+
+    /// Whether this provider issues *development* identities that must never be
+    /// trusted for long-term memory (design §7.2).
+    ///
+    /// Defaults to `false`. The development adapter overrides it to `true`, which
+    /// is what taints every stamp it authors with `dev_provider` and what makes
+    /// the transport mark its responses — so no production crate has to name the
+    /// dev adapter to know it is in play.
+    fn is_dev_provider(&self) -> bool {
+        false
+    }
 }
 
 /// Maps an authenticated [`Principal`] to what it may do in Boswell (design §6).

@@ -2,6 +2,7 @@
 //! a simple per-key token-bucket rate limiter.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Instant;
 
@@ -27,6 +28,11 @@ struct Inner {
     buckets: StdMutex<HashMap<String, Bucket>>,
     /// Requests per minute per key; 0 disables limiting.
     rate_limit_per_minute: u32,
+    /// Whether the instance behind us runs a development identity adapter
+    /// (design §7.2). Learned from the instance rather than configured here, so
+    /// an operator cannot forget to declare it — and refreshed on every health
+    /// check.
+    dev_auth: AtomicBool,
 }
 
 struct Bucket {
@@ -68,6 +74,7 @@ impl AppState {
                 keys,
                 buckets: StdMutex::new(HashMap::new()),
                 rate_limit_per_minute: config.rate_limit_per_minute,
+                dev_auth: AtomicBool::new(false),
             }),
         }
     }
@@ -75,6 +82,28 @@ impl AppState {
     /// The shared SDK client.
     pub fn client(&self) -> &TokioMutex<BoswellClient> {
         &self.inner.client
+    }
+
+    /// Whether the instance behind this gateway runs a development identity
+    /// adapter, as last reported by it.
+    ///
+    /// Starts `false` and is only ever set from the instance's own answer, so a
+    /// gateway that has not yet spoken to its instance does not *claim* the
+    /// memory is trustworthy — it simply has nothing to mark yet.
+    pub fn is_dev_auth(&self) -> bool {
+        self.inner.dev_auth.load(Ordering::Relaxed)
+    }
+
+    /// Record what the instance reported about its identity backend.
+    pub fn set_dev_auth(&self, dev_auth: bool) {
+        let previous = self.inner.dev_auth.swap(dev_auth, Ordering::Relaxed);
+        if dev_auth && !previous {
+            tracing::warn!(
+                "the instance behind this gateway is running boswell-devauth: \
+                 responses will carry X-Boswell-Auth: dev-untrusted, and nothing \
+                 served here may be trusted for long-term memory"
+            );
+        }
     }
 
     /// Look up an [`AuthContext`] by the SHA-256 hash of the presented key.

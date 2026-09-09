@@ -214,6 +214,10 @@ pub struct HealthStatus {
     pub claim_count: i64,
     /// Optional human-readable message.
     pub message: String,
+    /// Whether the instance is running under a development identity adapter
+    /// (design §7.2). When true, nothing this instance serves may be trusted
+    /// for long-term memory, and downstream layers must say so.
+    pub dev_auth: bool,
 }
 
 /// Result of a server-side extraction (`Extract` RPC), as seen by the SDK.
@@ -257,6 +261,10 @@ pub struct BoswellClient {
     instance_endpoint: Option<String>,
     grpc_client: Option<BosWellServiceClient<Channel>>,
     http_client: reqwest::Client,
+    /// Whether the connected instance runs a development identity adapter.
+    /// Learned from the health check; devAuth is a startup decision, so this is
+    /// accurate for the life of the connection.
+    dev_auth: bool,
 }
 
 impl BoswellClient {
@@ -272,7 +280,18 @@ impl BoswellClient {
                 .pool_max_idle_per_host(10)
                 .build()
                 .expect("Failed to build HTTP client"),
+            dev_auth: false,
         }
+    }
+
+    /// Whether the connected instance runs a development identity adapter
+    /// (design §7.2), as reported by the last health check.
+    ///
+    /// A caller that surfaces Boswell's answers onward — a gateway, a UI — must
+    /// mark them when this is true: they came from fake, preset identities and
+    /// must not be trusted for long-term memory.
+    pub fn is_dev_auth(&self) -> bool {
+        self.dev_auth
     }
 
     /// Establish session with Router and connect to gRPC instance
@@ -965,12 +984,18 @@ impl BoswellClient {
         }
         .to_string();
 
+        // Remembered so callers that do not poll health can still tell: devAuth
+        // is a startup decision (the adapter fails closed at construction), so
+        // learning it at connect time is accurate for the life of the channel.
+        self.dev_auth = response.dev_auth;
+
         Ok(HealthStatus {
             status,
             version: response.version,
             uptime_seconds: response.uptime_seconds,
             claim_count: response.claim_count,
             message: response.message,
+            dev_auth: response.dev_auth,
         })
     }
 }

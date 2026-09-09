@@ -366,6 +366,28 @@ claims its preconditions read.
 A goal that exists but whose children were all filtered out returns `200` with
 empty `candidates`; a goal that does not exist (or is out of scope) returns `404`.
 
+## `X-Boswell-Auth` — the development-identity marker
+
+If the instance behind the gateway is running the development identity adapter
+(`boswell-devauth`), **every** response carries:
+
+```
+X-Boswell-Auth: dev-untrusted
+```
+
+including error and unauthorized responses. It means the identities behind the
+memory you are reading are fake preset roles, not a real identity provider —
+useful for trialling Boswell, and **not to be trusted for long-term memory**.
+Every write made under it is also stamped `dev_provider` in its provenance, so
+dev-authored entries stay distinguishable and can be swept.
+
+The absence of the header is not a positive assurance of anything; it only means
+no development adapter was reported. `GET /v1/health` echoes the same fact as
+`instance.dev_auth`.
+
+Clients that persist or forward Boswell's answers should refuse to promote
+anything they received under this header into durable storage.
+
 ## Claim DTO
 
 ```json

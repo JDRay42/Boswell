@@ -329,9 +329,13 @@ not close Sybil-weighting.
 ## 7. devAuth — an optional, repo-included development identity adapter
 
 To let anyone stand Boswell up and exercise the whole trust gradient **without** a real
-identity system, the repo ships an optional `IdentityProvider` adapter, **devAuth**
-(`boswell-devauth`, feature-gated, off by default). It is deliberately, loudly
-**development/testing only**.
+identity system, the repo ships an `IdentityProvider` adapter, **devAuth**
+(`boswell-devauth`), with preset roles. It is a **stand-in until an operator brings their
+own identity provider**, and it is deliberately, loudly **development/testing only**.
+
+devAuth is reached only through the [`IdentityProvider`](#6-identity-as-a-port-identityprovider--iauth)
+port: exactly one place in the tree (the instance server's composition root) names the
+crate, and every other layer — gRPC, store, gateway, CLI — sees the port alone.
 
 ### 7.1 Sample identities
 
@@ -353,17 +357,28 @@ climbs; the memory-manager curates and demotes.
 
 devAuth must make it impossible to *accidentally* treat it as real:
 
-- **Refuses to run without explicit opt-in** — a config flag (`allow_dev_auth = true`) or CLI
-  flag; otherwise the process exits with an explanatory error.
-- **Hard production lockout** — selecting devAuth while a production environment/flag is set is
-  a fatal error; the adapter is behind a non-default Cargo feature so production builds can
-  exclude it entirely.
+- **Refuses to run without explicit opt-in** — `BOSWELL_ALLOW_DEV_AUTH`; otherwise devAuth
+  refuses to construct and the instance continues with *no* identity backend.
+- **Hard production lockout** — `BOSWELL_ENV=production` is a fatal refusal regardless of
+  opt-in. **An undeclared environment counts as production**: `BOSWELL_ENV` must be set to
+  something non-production for devAuth to start. The realistic hazard for a bring-up adapter
+  is not malice but drift — trial it, like it, deploy it, never think about identity again —
+  and that path never sets `BOSWELL_ENV` at all, so reading "unset" as "not production" would
+  keep fake identities alive straight through the transition.
+- **Not behind a Cargo feature, deliberately.** An earlier draft of this section called for a
+  non-default feature. That was wrong for what devAuth is *for*: someone clones the repo to
+  watch the trust gradient work, and a build flag is friction aimed squarely at that audience.
+  It would also ship untested, since CI builds default features only. The guarding is at
+  startup instead (above), and nothing on the production path names the crate, so a build that
+  never enables devAuth never constructs it.
 - **Persistent warnings** — a startup banner, a warning on **every** principal assignment /
   token issuance, and a warning line in logs, all stating that these identities are for
   development and testing only and **must not be trusted for long-term memory**.
-- **Surfaced downstream** — every response served under a devAuth principal carries a marker
-  (e.g. an `X-Boswell-Auth: dev-untrusted` header and/or a `warnings[]` field) so calling
-  agents and the gateway see it too.
+- **Surfaced downstream** — every response served under a devAuth principal carries an
+  `X-Boswell-Auth: dev-untrusted` header, on rejected requests as much as successful ones. The
+  instance reports its own status (`HealthCheckResponse.dev_auth`); the gateway learns it on
+  connect and refreshes it on each health check, so the marker is derived from what is
+  actually running rather than from gateway config an operator could forget to set.
 - **Provenance tainting** — every write under devAuth is stamped `dev_provider: true` in its
   provenance, so dev-authored entries are always distinguishable and can be swept.
 - **Store isolation (recommended default)** — devAuth points at a **separate, ephemeral** store
@@ -459,14 +474,17 @@ adversary who already controls the host.
      `GET /v1/procedures`, `GET /v1/procedures/{id}`,
      `POST /v1/receipts/{id}/report`. Retrieval issues the execution receipt;
      hooks can now close the loop. See `docs/integrations/http-api.md`.
-   - **7b (in progress).** Goals and `expand` over the same three layers —
+   - **7b (done).** Goals and `expand` over the same three layers —
      `QueryGoals`/`GetGoal`/`Expand`, and `GET /v1/goals`, `GET /v1/goals/{id}`,
      `GET /v1/goals/{id}/expand` — plus CLI commands and the devAuth
      `X-Boswell-Auth` marker. Traversal issues **no** receipt: only retrieving a
      leaf procedure for execution creates a reporting obligation. Goal
      *authoring* over the wire is deliberately out of scope, for the same reason
      procedure authoring was in 7a — it is a §5 gatekept, provenance-stamped
-     write, not a read.
+     write, not a read. Also: CLI commands (`boswell goal …`, `boswell procedure …`), and
+     the `IdentityProvider` port wired through the transport so a reporter's assurance
+     comes from an identity backend instead of being hardcoded to `none` — which is what
+     makes §7.1's four sample identities behave differently from one another.
 
 ## 10. Relationship to existing components
 

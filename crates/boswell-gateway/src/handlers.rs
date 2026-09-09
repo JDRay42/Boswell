@@ -146,16 +146,22 @@ fn audit(ctx: &AuthContext, operation: &str, namespace: &str, count: usize) {
 pub async fn health(State(state): State<AppState>) -> Json<Value> {
     let mut client = state.client().lock().await;
     match client.health().await {
-        Ok(h) => Json(json!({
-            "status": "ok",
-            "service": "boswell-gateway",
-            "instance": {
-                "status": h.status,
-                "version": h.version,
-                "uptime_seconds": h.uptime_seconds,
-                "claim_count": h.claim_count,
-            }
-        })),
+        Ok(h) => {
+            // Refresh the marker from the instance's own answer on every health
+            // check, so a restarted instance is picked up without restarting us.
+            state.set_dev_auth(h.dev_auth);
+            Json(json!({
+                "status": "ok",
+                "service": "boswell-gateway",
+                "instance": {
+                    "status": h.status,
+                    "version": h.version,
+                    "uptime_seconds": h.uptime_seconds,
+                    "claim_count": h.claim_count,
+                    "dev_auth": h.dev_auth,
+                }
+            }))
+        }
         Err(e) => Json(json!({
             "status": "degraded",
             "service": "boswell-gateway",

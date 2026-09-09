@@ -5,8 +5,8 @@
 use boswell_domain::traits::{ClaimQuery, ClaimStore, GoalStore, ProcedureStore};
 use boswell_domain::GoalQuery;
 use boswell_domain::{
-    Assurance, Authority, Claim, ClaimId, DelegationChain, EvidenceType, ExecutionReceipt, Op,
-    ProcedureQuery, ProvenanceStamp, Tier as DomainTier,
+    Assurance, Authority, Claim, ClaimId, DelegationChain, EvidenceType, ExecutionReceipt,
+    IdentityProvider, Op, ProcedureQuery, ProvenanceStamp, Tier as DomainTier,
 };
 use std::sync::{Arc, Mutex};
 use tonic::{Request, Response, Status};
@@ -56,6 +56,9 @@ pub struct BosWellServiceImpl<S: ClaimStore> {
     start_time: std::time::Instant,
     extractor: Option<Arc<dyn ServerExtractor>>,
     receipt_ttl_ms: u64,
+    /// The identity port (design §6). `None` means no identity backend is
+    /// wired, and every self-report is stamped [`Assurance::None`].
+    identity: Option<Arc<dyn IdentityProvider + Send + Sync>>,
 }
 
 /// How long an issued procedure's execution receipt stays open before it
@@ -74,6 +77,7 @@ impl<S: ClaimStore> BosWellServiceImpl<S> {
             start_time: std::time::Instant::now(),
             extractor: None,
             receipt_ttl_ms: DEFAULT_RECEIPT_TTL_MS,
+            identity: None,
         }
     }
 
@@ -117,6 +121,85 @@ impl<S: ClaimStore> BosWellServiceImpl<S> {
     pub fn with_extractor(mut self, extractor: Arc<dyn ServerExtractor>) -> Self {
         self.extractor = Some(extractor);
         self
+    }
+
+    /// Attach an [`IdentityProvider`] (design §6), the port that decides how much
+    /// a reporter's word is worth.
+    ///
+    /// Without one, every self-report is stamped [`Assurance::None`], whose tier
+    /// ceiling is `ephemeral` — so *any* negative report against a shared
+    /// `project`/`permanent`-tier procedure is quarantined, and the four devAuth
+    /// sample identities would be indistinguishable from each other. Attaching a
+    /// provider is what makes the trust gradient observable.
+    ///
+    /// This takes the domain **port**, never a concrete adapter, so no crate on
+    /// the production path names the development one.
+    pub fn with_identity_provider(
+        mut self,
+        identity: Arc<dyn IdentityProvider + Send + Sync>,
+    ) -> Self {
+        self.identity = Some(identity);
+        self
+    }
+
+    /// Whether this instance is running under a development identity adapter,
+    /// whose responses must be marked (design §7.2).
+    pub fn is_dev_auth(&self) -> bool {
+        self.identity.as_ref().is_some_and(|p| p.is_dev_provider())
+    }
+
+    /// The provenance stamp for an executor's self-report (design §3.3).
+    ///
+    /// The author is the principal the receipt was issued to, not whoever is
+    /// calling: a report is only ever a self-report against an outstanding
+    /// receipt. Assurance comes from the identity port's verdict on that
+    /// principal's delegation chain; with no port wired it stays
+    /// [`Assurance::None`], which is what makes the gatekeeper quarantine a
+    /// negative self-report against a team-tier procedure rather than letting
+    /// one executor tank a shared how-to.
+    fn self_report_stamp(
+        &self,
+        receipt: &ExecutionReceipt,
+        namespace: String,
+        now: u64,
+    ) -> ProvenanceStamp {
+        let chain = DelegationChain(vec![receipt.issued_to.clone()]);
+
+        // An invalid chain is worth no more than no chain at all.
+        let assurance = match self.identity.as_ref() {
+            Some(provider) => {
+                let verdict = provider.verify_delegation(&chain);
+                if verdict.valid {
+                    verdict.assurance
+                } else {
+                    Assurance::None
+                }
+            }
+            None => Assurance::None,
+        };
+
+        ProvenanceStamp {
+            author: receipt.issued_to.clone(),
+            delegation_chain: chain,
+            authority: Authority {
+                namespaces: if namespace.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![namespace]
+                },
+                max_tier: DomainTier::Ephemeral,
+                ops: vec![Op::Read, Op::Write],
+            },
+            // The executor watched its own run, so the evidence is first-hand;
+            // the assurance above is what bounds how far it can move a shared
+            // procedure.
+            evidence: EvidenceType::Observed,
+            assurance,
+            task_id: receipt.task_id.clone(),
+            session_id: receipt.session_id.clone(),
+            timestamp: now,
+            dev_provider: self.is_dev_auth(),
+        }
     }
 }
 
@@ -521,6 +604,7 @@ where
             uptime_seconds: self.start_time.elapsed().as_secs() as i64,
             claim_count,
             message: "Service is healthy".to_string(),
+            dev_auth: self.is_dev_auth(),
         }))
     }
 
@@ -675,7 +759,7 @@ where
             .map(|p| p.namespace)
             .unwrap_or_default();
 
-        let stamp = self_report_stamp(&stored.receipt, namespace, now);
+        let stamp = self.self_report_stamp(&stored.receipt, namespace, now);
 
         let outcome = store
             .report_receipt(receipt_id, &report, &stamp, now)
@@ -887,36 +971,6 @@ fn namespace_in_scope(scope: Option<&str>, namespace: &str) -> bool {
         None => true,
         Some(s) if s.is_empty() || s == "*" => true,
         Some(s) => namespace == s || namespace.starts_with(&format!("{}:", s)),
-    }
-}
-
-/// The provenance stamp for an executor's self-report (design §3.3).
-///
-/// Assurance is [`Assurance::None`] because this transport has no
-/// `IdentityProvider` wired: the identity is self-claimed. That is deliberate —
-/// it is what makes the gatekeeper quarantine a negative self-report against a
-/// team-tier procedure instead of letting one executor tank a shared how-to.
-fn self_report_stamp(receipt: &ExecutionReceipt, namespace: String, now: u64) -> ProvenanceStamp {
-    ProvenanceStamp {
-        author: receipt.issued_to.clone(),
-        delegation_chain: DelegationChain(vec![receipt.issued_to.clone()]),
-        authority: Authority {
-            namespaces: if namespace.is_empty() {
-                Vec::new()
-            } else {
-                vec![namespace]
-            },
-            max_tier: DomainTier::Ephemeral,
-            ops: vec![Op::Read, Op::Write],
-        },
-        // The executor watched its own run, so the evidence is first-hand; the
-        // assurance above is what bounds how far it can move a shared procedure.
-        evidence: EvidenceType::Observed,
-        assurance: Assurance::None,
-        task_id: receipt.task_id.clone(),
-        session_id: receipt.session_id.clone(),
-        timestamp: now,
-        dev_provider: false,
     }
 }
 
@@ -2266,6 +2320,263 @@ mod tests {
                 .unwrap_err();
 
             assert_eq!(err.code(), tonic::Code::Unimplemented);
+        }
+    }
+
+    // ---- Identity port and the devAuth marker (design 15 §6, §7.2) ----
+
+    mod identity {
+        use super::*;
+        use boswell_devauth::{DevAuth, DevAuthConfig, DevIdentity};
+        use boswell_domain::{
+            BodyFormat, ClaimMatch, Expect, Precondition, PreconditionCheck, Procedure,
+            ProcedureId, ProcedureSource, Tier as DomainTierEnum,
+        };
+        use boswell_store::SqliteStore;
+
+        const NOW: u64 = 1_700_000_000_000;
+
+        fn dev_auth() -> Arc<dyn boswell_domain::IdentityProvider + Send + Sync> {
+            Arc::new(
+                DevAuth::new(&DevAuthConfig {
+                    allow_dev_auth: true,
+                    production: false,
+                    environment_declared: true,
+                })
+                .expect("devAuth starts in a declared non-production environment"),
+            )
+        }
+
+        /// A project-tier procedure gated on a claim the fixture store holds.
+        fn project_procedure() -> Procedure {
+            Procedure {
+                id: ProcedureId::new(),
+                namespace: "project".into(),
+                name: "blue-green-deploy".into(),
+                version: 1,
+                supersedes: None,
+                is_current: true,
+                source: ProcedureSource::Authored,
+                goal: "goal:project/deploy".into(),
+                intent: "deploy without downtime".into(),
+                tags: vec![],
+                parameters: vec![],
+                preconditions: vec![Precondition {
+                    kind: "resource".into(),
+                    description: "a green stack exists".into(),
+                    check: PreconditionCheck {
+                        match_pattern: ClaimMatch {
+                            subject: "stack".into(),
+                            predicate: "has".into(),
+                            object: "green".into(),
+                        },
+                        min_confidence: 0.6,
+                        expect: Expect::Exists,
+                    },
+                }],
+                required_tools: vec![],
+                postconditions: vec![],
+                est_duration_sec: None,
+                usage_notes: String::new(),
+                context_tags: vec![],
+                body_format: BodyFormat::Prose,
+                content_type: "text/plain".into(),
+                body: "drain, swap, verify".into(),
+                tier: DomainTierEnum::Project,
+                use_count: 0,
+                success_count: 0,
+                failure_count: 0,
+                unknown_count: 0,
+                last_used_at: None,
+                created_at: NOW,
+                updated_at: NOW,
+                stale_at: None,
+            }
+        }
+
+        fn service_with(with_identity: bool) -> (BosWellServiceImpl<SqliteStore>, ProcedureId) {
+            let mut store = SqliteStore::new(":memory:", false, 0).unwrap();
+            store
+                .assert_claim(Claim::new(
+                    ClaimId::new(),
+                    "project".into(),
+                    "stack".into(),
+                    "has".into(),
+                    "green".into(),
+                    (0.8, 0.9),
+                    "project".into(),
+                    NOW,
+                ))
+                .unwrap();
+            let procedure = project_procedure();
+            let id = procedure.id;
+            store.upsert_procedure(&procedure).unwrap();
+
+            let mut svc = BosWellServiceImpl::new(Arc::new(Mutex::new(store)));
+            if with_identity {
+                svc = svc.with_identity_provider(dev_auth());
+            }
+            (svc, id)
+        }
+
+        /// Issue a receipt to `principal`, then answer it with a negative report
+        /// blaming the procedure, and return the response.
+        async fn negative_report_as(
+            service: &BosWellServiceImpl<SqliteStore>,
+            principal: &str,
+        ) -> ReportOutcomeResponse {
+            let issued = service
+                .query_procedures(Request::new(QueryProceduresRequest {
+                    namespace: None,
+                    goal: None,
+                    intent_contains: None,
+                    include_superseded: false,
+                    limit: None,
+                    issued_to: principal.to_string(),
+                    task_id: None,
+                    session_id: None,
+                    auth_token: "token".to_string(),
+                }))
+                .await
+                .unwrap()
+                .into_inner();
+
+            let receipt_id = issued.procedures[0]
+                .receipt
+                .as_ref()
+                .unwrap()
+                .receipt_id
+                .clone();
+
+            service
+                .report_outcome(Request::new(ReportOutcomeRequest {
+                    receipt_id,
+                    outcome: "failure".to_string(),
+                    failure_mode: Some("bad_result".to_string()),
+                    failed_step: None,
+                    executor_confidence: None,
+                    cost: None,
+                    notes: None,
+                    auth_token: "token".to_string(),
+                }))
+                .await
+                .unwrap()
+                .into_inner()
+        }
+
+        /// Without an identity port every report is `Assurance::None`, whose tier
+        /// ceiling is `ephemeral` — so a negative report against a project-tier
+        /// procedure is quarantined no matter who claims to be sending it. This
+        /// is the pre-existing behaviour and must not regress.
+        #[tokio::test]
+        async fn without_an_identity_port_every_reporter_is_quarantined() {
+            let (service, _) = service_with(false);
+
+            for principal in [
+                DevIdentity::StandardWorker.principal_id(),
+                DevIdentity::ProjectLeader.principal_id(),
+            ] {
+                let resp = negative_report_as(&service, principal).await;
+                assert!(
+                    resp.quarantined,
+                    "{} should be quarantined: {}",
+                    principal, resp.message
+                );
+            }
+        }
+
+        /// With the port wired, the four sample identities stop being
+        /// interchangeable: a `verified` worker's negative report moves a
+        /// project-tier procedure, while the `asserted` interloper's is still
+        /// quarantined. Making that difference observable is the entire purpose
+        /// of the sample identities (§7.1) — it is what the transport could not
+        /// show while assurance was hardcoded to `none`.
+        #[tokio::test]
+        async fn the_identity_port_makes_the_trust_gradient_observable() {
+            let (service, procedure_id) = service_with(true);
+
+            let interloper =
+                negative_report_as(&service, DevIdentity::UntrustedInterloper.principal_id()).await;
+            assert!(
+                interloper.quarantined,
+                "the interloper must not move a shared procedure: {}",
+                interloper.message
+            );
+            assert!(!interloper.counted_as_failure);
+
+            let worker =
+                negative_report_as(&service, DevIdentity::StandardWorker.principal_id()).await;
+            assert!(
+                !worker.quarantined,
+                "a verified worker's report should apply: {}",
+                worker.message
+            );
+            assert!(worker.counted_as_failure);
+
+            let store = service.store.lock().unwrap();
+            let after = ProcedureStore::get_procedure(&*store, procedure_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                after.failure_count, 1,
+                "exactly one of the two reports should have counted"
+            );
+        }
+
+        /// An unrecognised principal gets the weakest verdict the provider will
+        /// give, never a default-trusted one.
+        #[tokio::test]
+        async fn an_unknown_principal_stays_untrusted() {
+            let (service, _) = service_with(true);
+            let resp = negative_report_as(&service, "agent:nobody-i-know").await;
+            assert!(resp.quarantined, "{}", resp.message);
+        }
+
+        /// Every write authored under the development adapter is tainted, so
+        /// dev-authored entries stay distinguishable and sweepable (§7.2).
+        #[tokio::test]
+        async fn dev_authored_reports_are_tainted() {
+            let (service, _) = service_with(true);
+            let receipt = ExecutionReceipt::issue(
+                &project_procedure(),
+                DevIdentity::StandardWorker.principal_id(),
+                NOW,
+                60_000,
+            );
+
+            let stamp = service.self_report_stamp(&receipt, "project".to_string(), NOW);
+            assert!(stamp.dev_provider);
+            assert_eq!(stamp.assurance, Assurance::Verified);
+            assert_eq!(stamp.author, DevIdentity::StandardWorker.principal_id());
+
+            // And an instance with no identity backend taints nothing.
+            let (plain, _) = service_with(false);
+            let untainted = plain.self_report_stamp(&receipt, "project".to_string(), NOW);
+            assert!(!untainted.dev_provider);
+            assert_eq!(untainted.assurance, Assurance::None);
+        }
+
+        /// The instance reports its own dev-auth status, which is what lets the
+        /// gateway mark responses without being configured to (§7.2).
+        #[tokio::test]
+        async fn health_reports_whether_dev_auth_is_active() {
+            let (dev, _) = service_with(true);
+            assert!(dev.is_dev_auth());
+            let resp = dev
+                .health_check(Request::new(HealthCheckRequest {}))
+                .await
+                .unwrap()
+                .into_inner();
+            assert!(resp.dev_auth);
+
+            let (plain, _) = service_with(false);
+            assert!(!plain.is_dev_auth());
+            let resp = plain
+                .health_check(Request::new(HealthCheckRequest {}))
+                .await
+                .unwrap()
+                .into_inner();
+            assert!(!resp.dev_auth);
         }
     }
 }

@@ -23,8 +23,10 @@ pub mod extraction;
 
 use std::sync::{Arc, Mutex};
 
+use boswell_devauth::{DevAuth, DevAuthConfig};
 use boswell_domain::traits::ClaimStore;
-use boswell_grpc::{start_server_with_extractor, ServerConfig, ServerExtractor};
+use boswell_domain::IdentityProvider;
+use boswell_grpc::{start_server_with_identity, ServerConfig, ServerExtractor};
 use boswell_store::{EmbeddingModel, OllamaEmbeddingModel, SqliteStore};
 use thiserror::Error;
 
@@ -208,6 +210,20 @@ pub async fn run(config: InstanceConfig) -> Result<(), ServerError> {
         None
     };
 
+    // The one place in the tree that names the development identity adapter.
+    // Everything below here — grpc, store, gateway — sees only the domain
+    // `IdentityProvider` port, so the production path never mentions devAuth.
+    //
+    // No cargo feature gates this. devAuth exists so somebody can clone the repo
+    // and watch the trust gradient work with preset roles before they have an
+    // identity provider of their own; a non-default feature would put a build
+    // flag in front of exactly that audience, and (since CI builds default
+    // features only) would ship the gated path untested. The guarding is at
+    // startup instead: `DevAuth::new` refuses unless the operator has opted in
+    // *and* declared a non-production environment, every stamp it authors is
+    // tainted `dev_provider`, and every response downstream carries a marker.
+    let identity = build_dev_identity();
+
     let server_config = ServerConfig::new(config.bind_address.clone(), config.bind_port);
 
     tracing::info!(
@@ -217,9 +233,47 @@ pub async fn run(config: InstanceConfig) -> Result<(), ServerError> {
         config.storage.db_path
     );
 
-    start_server_with_extractor(server_config, store, extractor)
+    start_server_with_identity(server_config, store, extractor, identity)
         .await
         .map_err(|e| ServerError::Serve(e.to_string()))
+}
+
+/// Construct the development identity adapter if — and only if — the operator
+/// has asked for it and the environment permits it (design §7.2).
+///
+/// Returns `None` in every other case, including every refusal, so the absence
+/// of an identity backend is the default and a misconfigured devAuth degrades to
+/// "no identity backend" rather than to "trusted identities". A refusal is
+/// logged at `warn` because an operator who asked for devAuth and did not get it
+/// needs to know why.
+fn build_dev_identity() -> Option<Arc<dyn IdentityProvider + Send + Sync>> {
+    let cfg = DevAuthConfig::from_env();
+
+    // Say nothing at all when nobody asked: the common case is a normal
+    // instance, and a warning there would be noise that trains operators to
+    // ignore the ones that matter.
+    if !cfg.allow_dev_auth {
+        return None;
+    }
+
+    match DevAuth::new(&cfg) {
+        Ok(dev) => {
+            eprintln!("{}", DevAuth::banner());
+            tracing::warn!(
+                "boswell-devauth is ENABLED: identities are fake and must not be \
+                 trusted for long-term memory"
+            );
+            Some(Arc::new(dev) as Arc<dyn IdentityProvider + Send + Sync>)
+        }
+        Err(e) => {
+            tracing::warn!(
+                "boswell-devauth was requested but refused to start ({}); \
+                 continuing with no identity backend",
+                e
+            );
+            None
+        }
+    }
 }
 
 /// Spawn the background Janitor sweep loop against the shared store.
