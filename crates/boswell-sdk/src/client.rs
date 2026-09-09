@@ -127,14 +127,20 @@ impl BoswellClient {
         self.connect().await
     }
 
-    /// Assert a claim
+    /// Assert a claim.
+    ///
+    /// `confidence` is an interval `(lower, upper)`, matching the domain claim
+    /// model and ADR-003. Callers that genuinely have only a point estimate pass
+    /// `(c, c)`; callers that have a range must not pre-collapse it, since the
+    /// width of the interval is itself meaningful — a narrow interval asserts
+    /// that the system has a clear picture.
     pub async fn assert(
         &mut self,
         namespace: &str,
         subject: &str,
         predicate: &str,
         object: &str,
-        confidence: Option<f64>,
+        confidence: Option<(f64, f64)>,
         tier: Option<Tier>,
     ) -> Result<ClaimId, SdkError> {
         let mut retried = false;
@@ -143,7 +149,8 @@ impl BoswellClient {
             let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
             let token = self.session_token.as_ref().ok_or(SdkError::NotConnected)?;
 
-            let confidence_interval = confidence.map(|c| ConfidenceInterval { lower: c, upper: c });
+            let confidence_interval =
+                confidence.map(|(lower, upper)| ConfidenceInterval { lower, upper });
 
             let tier_i32 = tier
                 .map(grpc_tier_from_domain_tier)

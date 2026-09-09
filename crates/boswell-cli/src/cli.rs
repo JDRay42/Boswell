@@ -203,7 +203,13 @@ pub struct SearchArgs {
     pub limit: usize,
 
     /// Minimum similarity threshold (0.0-1.0)
-    #[arg(short, long, default_value = "0.7")]
+    ///
+    /// Defaults to 0.0: results come back ranked by similarity and capped by
+    /// `--limit`, with each score shown. A non-zero floor is a model-specific
+    /// tuning decision — cosine scores for short entity triples sit well below
+    /// what the value intuitively suggests — so filtering is opt-in rather than
+    /// silently hiding every result. Matches the gateway's `min_similarity`.
+    #[arg(short, long, default_value = "0.0")]
     pub threshold: f64,
 }
 
@@ -293,6 +299,55 @@ mod tests {
     fn test_cli_parsing() {
         let cli = Cli::parse_from(["boswell", "--help"]);
         assert!(cli.command.is_none());
+    }
+
+    /// `search` must not apply a similarity floor by default. A non-zero default
+    /// silently returned "No matching claims found" for every query, because
+    /// cosine scores on short entity triples sit below it.
+    #[test]
+    fn test_search_has_no_default_similarity_floor() {
+        let cli = Cli::parse_from(["boswell", "search", "anything"]);
+        let Some(Command::Search(args)) = cli.command else {
+            panic!("expected a search command");
+        };
+        assert_eq!(args.threshold, 0.0);
+        assert_eq!(args.limit, 10);
+    }
+
+    /// An explicit threshold is still honored.
+    #[test]
+    fn test_search_threshold_is_overridable() {
+        let cli = Cli::parse_from(["boswell", "search", "q", "--threshold", "0.42"]);
+        let Some(Command::Search(args)) = cli.command else {
+            panic!("expected a search command");
+        };
+        assert_eq!(args.threshold, 0.42);
+    }
+
+    /// `assert` must carry both bounds so the write path can store a real
+    /// interval rather than a collapsed point (ADR-003).
+    #[test]
+    fn test_assert_preserves_both_confidence_bounds() {
+        let cli = Cli::parse_from([
+            "boswell",
+            "assert",
+            "person:jd",
+            "rel:uses",
+            "lang:rust",
+            "-l",
+            "0.8",
+            "-u",
+            "0.95",
+        ]);
+        let Some(Command::Assert(args)) = cli.command else {
+            panic!("expected an assert command");
+        };
+        assert_eq!(args.confidence_lower, 0.8);
+        assert_eq!(args.confidence_upper, 0.95);
+        assert!(
+            args.confidence_lower < args.confidence_upper,
+            "the bounds must stay distinct, not be averaged into a point"
+        );
     }
 
     #[test]

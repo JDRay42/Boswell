@@ -17,7 +17,14 @@ async fn test_sdk_not_connected_error() {
 
     // Try to assert without connecting
     let result = client
-        .assert("test", "subject", "predicate", "object", Some(0.9), None)
+        .assert(
+            "test",
+            "subject",
+            "predicate",
+            "object",
+            Some((0.9, 0.9)),
+            None,
+        )
         .await;
 
     assert!(result.is_err());
@@ -100,7 +107,7 @@ async fn test_e2e_full_flow() {
             "Alice",
             "knows",
             "Rust",
-            Some(0.95),
+            Some((0.95, 0.95)),
             Some(Tier::Permanent),
         )
         .await
@@ -151,7 +158,7 @@ async fn test_e2e_batch_operations() {
             "A",
             "type",
             "one",
-            Some(0.9),
+            Some((0.9, 0.9)),
             Some(Tier::Task),
         )
         .await
@@ -163,7 +170,7 @@ async fn test_e2e_batch_operations() {
             "B",
             "type",
             "two",
-            Some(0.8),
+            Some((0.8, 0.8)),
             Some(Tier::Task),
         )
         .await
@@ -192,12 +199,26 @@ async fn test_e2e_confidence_filtering() {
 
     // Assert claims with different confidence
     let id_high = client
-        .assert("test_conf", "high", "confidence", "0.95", Some(0.95), None)
+        .assert(
+            "test_conf",
+            "high",
+            "confidence",
+            "0.95",
+            Some((0.95, 0.95)),
+            None,
+        )
         .await
         .expect("Failed to assert high");
 
     let id_low = client
-        .assert("test_conf", "low", "confidence", "0.55", Some(0.55), None)
+        .assert(
+            "test_conf",
+            "low",
+            "confidence",
+            "0.55",
+            Some((0.55, 0.55)),
+            None,
+        )
         .await
         .expect("Failed to assert low");
 

@@ -30,7 +30,10 @@ pub async fn execute_assert(
 
     // Use the subject namespace as the overall namespace
     let namespace = &subject_ns;
-    let confidence = (args.confidence_lower + args.confidence_upper) / 2.0;
+    // Pass the interval through as given. Collapsing it here (to a midpoint, say)
+    // would assert a precision the user never claimed: per ADR-003 the width of
+    // the interval carries meaning, and narrowing it is the reader's choice.
+    let confidence = (args.confidence_lower, args.confidence_upper);
     let tier: boswell_domain::Tier = args.tier.into();
 
     // Format subject, predicate, object as "namespace:value"
