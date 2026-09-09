@@ -11,6 +11,31 @@
 //!
 //! - `MockProvider`: Deterministic mock for testing
 //! - `OllamaProvider`: Local Ollama API integration
+//! - `OpenAiCompatProvider`: OpenAI, OpenRouter, DeepSeek, and anything else
+//!   speaking OpenAI's chat completions format
+//! - `AnthropicProvider`: Anthropic's Messages API
+//! - `GeminiProvider`: Google's Generative Language API
+//!
+//! # What the hosted providers do not do yet
+//!
+//! `generate_structured` ignores its `schema` argument on every provider in
+//! this crate, hosted ones included: it calls `generate` and returns the text.
+//! Each vendor constrains decoding differently — `response_format`,
+//! `output_config.format`, `responseSchema` — and the trait says nothing about
+//! what a `schema` string contains, so honoring it would mean inventing three
+//! incompatible contracts. The Extractor does not call it. Tracked as an open
+//! slice on the roadmap.
+//!
+//! Streaming, tool use and multi-turn conversation are likewise absent. The
+//! trait is one prompt in, one string out, and these providers implement
+//! exactly that.
+//!
+//! # Keys
+//!
+//! Every hosted provider takes its key as a constructor argument, with a
+//! `*_from_env` alternative that reads the vendor's conventional variable.
+//! None of them derive `Debug`; each writes its own that redacts the key,
+//! because provider structs end up inside error and tracing output.
 //!
 //! # Examples
 //!
@@ -25,14 +50,23 @@
 
 #![warn(missing_docs)]
 
+pub mod anthropic;
+pub mod gemini;
 pub mod ollama;
+pub mod openai_compat;
+
+mod retry;
+mod runtime;
 
 use boswell_domain::traits::LlmProvider as LlmProviderTrait;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
+pub use anthropic::AnthropicProvider;
+pub use gemini::GeminiProvider;
 pub use ollama::OllamaProvider;
+pub use openai_compat::OpenAiCompatProvider;
 
 /// Errors that can occur during LLM operations
 #[derive(Error, Debug)]
@@ -53,9 +87,73 @@ pub enum LlmError {
     #[error("Model not available: {0}")]
     ModelNotAvailable(String),
 
+    /// The provider rejected the credential
+    #[error("Authentication failed: {0}")]
+    Authentication(String),
+
+    /// The model declined to answer
+    ///
+    /// Distinct from an error: the call succeeded and the provider chose to
+    /// return nothing. Anthropic reports this as `stop_reason: "refusal"` and
+    /// Google as a block reason, both under an HTTP 200, so without this
+    /// variant a decline reads as an empty answer.
+    #[error("Model declined the request: {0}")]
+    Refusal(String),
+
     /// Generic error
     #[error("LLM error: {0}")]
     Other(String),
+}
+
+/// Read an API key from the environment.
+///
+/// # Errors
+///
+/// [`LlmError::Authentication`] if `variable` is unset, or set to a value that
+/// is empty once trimmed — an exported-but-blank variable is a likelier
+/// mistake than a deliberate empty key, and failing here beats failing at the
+/// far end with a 401.
+pub(crate) fn key_from_env(variable: &str) -> Result<String, LlmError> {
+    match std::env::var(variable) {
+        Ok(key) if !key.trim().is_empty() => Ok(key),
+        Ok(_) => Err(LlmError::Authentication(format!("{} is empty", variable))),
+        Err(_) => Err(LlmError::Authentication(format!("{} is not set", variable))),
+    }
+}
+
+/// Decide whether an HTTP failure is worth another attempt.
+///
+/// Shared by the hosted providers, which all draw the same line: a throttle or
+/// a server fault may pass, a rejected key or an unknown model will not.
+pub(crate) fn classify_http_failure(
+    status: reqwest::StatusCode,
+    body: &str,
+    model: &str,
+) -> retry::Attempt {
+    use reqwest::StatusCode;
+
+    match status {
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
+            retry::Attempt::Fatal(LlmError::Authentication(format!("HTTP {}", status)))
+        }
+        StatusCode::NOT_FOUND => {
+            retry::Attempt::Fatal(LlmError::ModelNotAvailable(model.to_string()))
+        }
+        StatusCode::TOO_MANY_REQUESTS => retry::Attempt::Retry(LlmError::RateLimitExceeded),
+        // 408 and 409 are transient by definition; the rest of 4xx is the
+        // caller's mistake and will fail identically on every attempt.
+        StatusCode::REQUEST_TIMEOUT | StatusCode::CONFLICT => retry::Attempt::Retry(
+            LlmError::Communication(format!("HTTP {}: {}", status, body)),
+        ),
+        _ if status.is_server_error() => retry::Attempt::Retry(LlmError::Communication(format!(
+            "HTTP {}: {}",
+            status, body
+        ))),
+        _ => retry::Attempt::Fatal(LlmError::Communication(format!(
+            "HTTP {}: {}",
+            status, body
+        ))),
+    }
 }
 
 /// Mock LLM provider for deterministic testing
