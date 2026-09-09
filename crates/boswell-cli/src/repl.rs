@@ -326,7 +326,7 @@ fn print_help(formatter: &Formatter) {
     println!("  query [subject]                - Query claims");
     println!("  learn <file>                   - Learn claims from JSON file");
     println!("  forget <id> [id2] [id3]        - Delete claims by ID");
-    println!("  search <query>                 - Semantic search (not yet implemented)");
+    println!("  search <query>                 - Semantic search");
     println!("  profile [list|show|switch]     - Manage profiles");
     println!("  help, ?                        - Show this help");
     println!("  exit, quit, q                  - Exit REPL");

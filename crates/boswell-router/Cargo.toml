@@ -8,9 +8,9 @@ rust-version.workspace = true
 name = "boswell-router"
 path = "src/main.rs"
 
+# The router is a standalone JWT/registry HTTP service: it holds no domain types
+# and speaks no gRPC, so it depends on neither boswell-domain nor boswell-grpc.
 [dependencies]
-boswell-domain = { workspace = true }
-boswell-grpc = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 serde = { workspace = true, features = ["derive"] }

@@ -295,7 +295,12 @@ Options:
 
 **REPL Commands:**
 
-All standard commands are available in REPL mode without the `boswell` prefix:
+The REPL implements its own command set — not every `boswell` subcommand is
+available in it. It understands `connect`, `assert`, `query`, `learn`, `forget`,
+`search`, `profile`, `help` and `exit`. The procedural-memory commands (`goal`,
+`procedure`) and `validate` are **not** available in the REPL; run them as
+`boswell goal …` etc. The REPL's parser is hand-rolled and positional, so
+extending it is its own piece of work rather than a wiring change.
 
 ```
 boswell> connect --host localhost

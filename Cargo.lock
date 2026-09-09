@@ -319,7 +319,6 @@ version = "0.1.0"
 dependencies = [
  "boswell-devauth",
  "boswell-domain",
- "boswell-llm",
  "boswell-store",
  "serde",
  "tempfile",
@@ -409,8 +408,6 @@ name = "boswell-router"
 version = "0.1.0"
 dependencies = [
  "axum",
- "boswell-domain",
- "boswell-grpc",
  "jsonwebtoken",
  "reqwest",
  "serde",
