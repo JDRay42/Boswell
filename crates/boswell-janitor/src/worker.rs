@@ -286,7 +286,11 @@ mod tests {
         assert_eq!(worker.metrics().sweep_count, 0);
     }
 
-    #[tokio::test]
+    /// `start_paused` matters here: `run_cycles` ticks a real
+    /// `tokio::time::interval`, and the minimum configurable interval is one
+    /// minute, so without it this single test slept sixty real seconds and
+    /// accounted for most of the workspace's test wall-clock.
+    #[tokio::test(start_paused = true)]
     async fn test_run_cycles() {
         let mut store = MockStore::new();
         store.claims.push(create_test_claim(Tier::Ephemeral, 20));

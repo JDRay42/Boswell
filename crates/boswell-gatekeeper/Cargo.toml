@@ -6,13 +6,14 @@ rust-version.workspace = true
 
 [dependencies]
 boswell-domain = { workspace = true }
-boswell-llm = { workspace = true }
-boswell-store = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
 tempfile = "3.8"
+# Dev-only: the Sybil scenarios drive the real store rather than a mock, which is
+# what makes them evidence (design §8.3). Nothing in `src/` touches it.
+boswell-store = { workspace = true }
 # Dev-only: the four sample identities are how the trust gradient is exercised in
 # the Sybil scenarios (design §8 #1). Never a normal dependency — no production
 # path names this crate.

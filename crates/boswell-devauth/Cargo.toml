@@ -7,10 +7,18 @@ authors.workspace = true
 license.workspace = true
 
 # DEVELOPMENT / TESTING ONLY. This crate implements a fake IdentityProvider for
-# exercising Boswell's trust gradient in a sandbox. It is deliberately NOT a
-# dependency of any production binary (e.g. boswell-server), so a production build
-# excludes it entirely (design §7.2). Its constructor also fails closed unless the
-# operator explicitly opts in and is not in a production environment.
+# exercising Boswell's trust gradient in a sandbox.
+#
+# It IS linked into production builds. `boswell-server` depends on this crate and
+# constructs the adapter in its composition root, so a release build contains it.
+# An earlier version of this comment claimed the opposite; that was untrue, and a
+# false reassurance about a security boundary is worse than none, because it stops
+# the next reader checking.
+#
+# The defense is therefore entirely at runtime, not at build time: `DevAuth::new`
+# fails closed unless the operator has explicitly opted in and has declared a
+# non-production `BOSWELL_ENV` (an undeclared one counts as production). See
+# `src/lib.rs` and design §7.2.
 
 [lib]
 path = "src/lib.rs"
