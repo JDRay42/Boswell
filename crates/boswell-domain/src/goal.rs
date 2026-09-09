@@ -286,6 +286,91 @@ pub struct GoalQuery {
     pub limit: Option<usize>,
 }
 
+/// How the navigable graph is kept whole when a node is collected (§8, open
+/// problem #5).
+///
+/// Goals, procedures and the edges between them decay on independent clocks, so
+/// collecting a node can strand the graph two ways: an edge left pointing at a
+/// row that no longer exists (a **dangling** edge — `expand` would surface a
+/// candidate that cannot be fetched), or a child left with no live parent (an
+/// **orphan** — still stored, no longer reachable by descent).
+///
+/// A dangling edge is always a bug; every policy here prevents or repairs one.
+/// What the policies disagree about is orphans, and the disagreement is a real
+/// trade-off between keeping memory navigable and letting it decay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GraphIntegrity {
+    /// **An edge pins its child.** A node that any edge points at is never
+    /// collected, however stale it is.
+    ///
+    /// The graph can never dangle or orphan. The cost is that decay stops at the
+    /// first reference: one forgotten edge keeps its whole subtree alive
+    /// indefinitely, which is in tension with Boswell's premise that memory
+    /// fades unless it earns its keep.
+    PinChildren,
+
+    /// **Collect, then re-parent.** The node goes, edges touching it go, and its
+    /// children are re-attached to the nearest live ancestor so they stay
+    /// reachable.
+    ///
+    /// Decay proceeds and nothing is orphaned, but the re-attached edges are
+    /// **fabricated**: an edge's `preconditions`, `context_tags` and
+    /// `usage_notes` were authored about one specific placement (§3.2 — "prefer
+    /// eggs here when LDL is low"), and carrying them to a grandparent asserts
+    /// something nobody said about that placement, while dropping them loses the
+    /// signal that made the child worth surfacing.
+    CascadeAndReparent,
+
+    /// **Collect, and let the children stand alone.** The node goes and every
+    /// edge touching it goes, but surviving children are left exactly as they
+    /// are — intact rows, no longer reachable from that parent.
+    ///
+    /// Nothing dangles and nothing is invented. Orphans stay reachable by
+    /// [`query_goals`](crate::traits::GoalStore::query_goals) and by direct id,
+    /// and if nothing re-attaches them they decay on their own clock like any
+    /// other unused memory. This is the default: it is the only one of the three
+    /// that neither halts decay nor authors structure on the operator's behalf.
+    #[default]
+    CascadeAndOrphan,
+}
+
+impl GraphIntegrity {
+    /// Get the policy name as a stable string (for config and logs).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            GraphIntegrity::PinChildren => "pin_children",
+            GraphIntegrity::CascadeAndReparent => "cascade_and_reparent",
+            GraphIntegrity::CascadeAndOrphan => "cascade_and_orphan",
+        }
+    }
+
+    /// Parse a policy from its string form.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "pin_children" => Some(GraphIntegrity::PinChildren),
+            "cascade_and_reparent" => Some(GraphIntegrity::CascadeAndReparent),
+            "cascade_and_orphan" => Some(GraphIntegrity::CascadeAndOrphan),
+            _ => None,
+        }
+    }
+}
+
+/// What collecting one node actually did (§8 #5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CollectOutcome {
+    /// Whether the node was removed. `false` means it was pinned.
+    pub collected: bool,
+    /// How many live edges pointed at the node. Non-zero with `collected:
+    /// false` is [`GraphIntegrity::PinChildren`] refusing.
+    pub pinned_by: usize,
+    /// Edges removed — those pointing at the node, plus its own outgoing edges.
+    pub edges_removed: usize,
+    /// Children re-attached to the nearest live ancestor.
+    pub children_reparented: usize,
+    /// Children left with no live parent.
+    pub children_orphaned: usize,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

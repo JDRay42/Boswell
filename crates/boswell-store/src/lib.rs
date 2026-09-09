@@ -241,6 +241,16 @@ impl SqliteStore {
             )?;
         }
 
+        // Migration: reverse adjacency index on goal_edges (procedural memory
+        // Phase 8, graph integrity). Collection asks "who points at this node?",
+        // which is a full scan without it.
+        if self.table_exists("goal_edges")? {
+            self.conn.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_goal_edges_child \
+                 ON goal_edges(child_kind, child_id);",
+            )?;
+        }
+
         Ok(())
     }
 

@@ -17,8 +17,9 @@ use crate::procedure_store::{from_json, like_escape, to_json, PreconditionDto};
 use crate::{SqliteStore, StoreError};
 use boswell_domain::traits::{ClaimQuery, ClaimStore, GoalStore};
 use boswell_domain::{
-    ChildKind, ChildRef, Claim, EdgeRole, ExpandResult, ExpandedCandidate, FactorReading, Goal,
-    GoalEdge, GoalId, GoalQuery, Precondition, ProcedureId, Tier, TraversalContext,
+    ChildKind, ChildRef, Claim, CollectOutcome, EdgeRole, ExpandResult, ExpandedCandidate,
+    FactorReading, Goal, GoalEdge, GoalId, GoalQuery, GraphIntegrity, Precondition, ProcedureId,
+    Tier, TraversalContext,
 };
 use rusqlite::{params, OptionalExtension};
 use std::collections::HashSet;
@@ -503,6 +504,237 @@ impl GoalStore for SqliteStore {
     }
 }
 
+// ---- Graph integrity under decay (design §8, open problem #5) ----
+
+impl SqliteStore {
+    /// Edges pointing **at** `child` — the reverse adjacency traversal never
+    /// needs but collection does.
+    fn edges_referencing(&self, child: ChildRef) -> Result<Vec<GoalId>, StoreError> {
+        let child_bytes = child.id_value().to_be_bytes().to_vec();
+        let mut stmt = self.conn.prepare(
+            "SELECT parent_goal_id FROM goal_edges WHERE child_kind = ?1 AND child_id = ?2",
+        )?;
+        let rows = stmt.query_map(params![child.kind().as_str(), &child_bytes], |row| {
+            row.get::<_, Vec<u8>>(0)
+        })?;
+        let mut parents = Vec::new();
+        for row in rows {
+            parents.push(GoalId::from_value(Self::bytes_to_u128(&row?)?));
+        }
+        Ok(parents)
+    }
+
+    /// Remove every edge pointing at `child`. Returns how many went.
+    fn remove_edges_referencing(&mut self, child: ChildRef) -> Result<usize, StoreError> {
+        let child_bytes = child.id_value().to_be_bytes().to_vec();
+        Ok(self.conn.execute(
+            "DELETE FROM goal_edges WHERE child_kind = ?1 AND child_id = ?2",
+            params![child.kind().as_str(), &child_bytes],
+        )?)
+    }
+
+    /// Collect a goal, keeping the navigable graph whole per `policy` (§8 #5).
+    ///
+    /// Nothing here decides *whether* a goal is stale — that is the Janitor's
+    /// job. This decides only what happens to the graph around it once that
+    /// call has been made.
+    ///
+    /// Returns a [`CollectOutcome`] describing what actually happened, including
+    /// the case where the policy refused to collect at all.
+    pub fn collect_goal(
+        &mut self,
+        id: GoalId,
+        policy: GraphIntegrity,
+        now: u64,
+    ) -> Result<CollectOutcome, StoreError> {
+        if self.get_goal(id)?.is_none() {
+            return Ok(CollectOutcome::default());
+        }
+
+        let referencing = self.edges_referencing(ChildRef::Goal(id))?;
+
+        // Pinning is checked before anything is touched: a refusal must leave the
+        // graph exactly as it was.
+        if policy == GraphIntegrity::PinChildren && !referencing.is_empty() {
+            return Ok(CollectOutcome {
+                collected: false,
+                pinned_by: referencing.len(),
+                ..CollectOutcome::default()
+            });
+        }
+
+        // The goal's own children, captured before its outgoing edges are cut.
+        let children = self.get_goal_edges(id)?;
+
+        let mut reparented = 0;
+        if policy == GraphIntegrity::CascadeAndReparent {
+            // "Nearest live ancestor" is any live parent of the node being
+            // collected. With several, the lowest id is chosen so the result is
+            // deterministic rather than dependent on row order.
+            let mut ancestors: Vec<GoalId> = referencing.clone();
+            ancestors.sort_by_key(|g| g.value());
+            if let Some(&ancestor) = ancestors.first() {
+                for edge in &children {
+                    // Skip a re-parent that would point the ancestor at itself.
+                    if edge.child == ChildRef::Goal(ancestor) {
+                        continue;
+                    }
+                    let moved = GoalEdge {
+                        parent: ancestor,
+                        ..edge.clone()
+                    };
+                    // A re-parent that would close a cycle is dropped rather
+                    // than forced: an unreachable child is recoverable, a cyclic
+                    // graph is not.
+                    match self.add_goal_edge(&moved, now) {
+                        Ok(()) => reparented += 1,
+                        Err(StoreError::Cycle(_)) => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+            }
+        }
+
+        let inbound = self.remove_edges_referencing(ChildRef::Goal(id))?;
+
+        // Outgoing edges go with the row via ON DELETE CASCADE, so they are
+        // counted here rather than deleted separately.
+        let outbound = children.len();
+        self.conn.execute(
+            "DELETE FROM goals WHERE id = ?1",
+            params![Self::goal_id_to_bytes(id)],
+        )?;
+
+        // A child is orphaned if nothing points at it any more.
+        let mut orphaned = 0;
+        for edge in &children {
+            if self.edges_referencing(edge.child)?.is_empty() {
+                orphaned += 1;
+            }
+        }
+
+        Ok(CollectOutcome {
+            collected: true,
+            pinned_by: referencing.len(),
+            edges_removed: inbound + outbound,
+            children_reparented: reparented,
+            children_orphaned: orphaned,
+        })
+    }
+
+    /// Collect a procedure, keeping the navigable graph whole per `policy`.
+    ///
+    /// A procedure is always a leaf, so it has no children to re-parent and
+    /// `CascadeAndReparent` and `CascadeAndOrphan` behave identically here. Its
+    /// outstanding receipts are deliberately left alone: a receipt is an
+    /// obligation someone already took on, and the report path already handles a
+    /// procedure that no longer exists.
+    pub fn collect_procedure(
+        &mut self,
+        id: ProcedureId,
+        policy: GraphIntegrity,
+    ) -> Result<CollectOutcome, StoreError> {
+        if self.get_procedure(id)?.is_none() {
+            return Ok(CollectOutcome::default());
+        }
+
+        let referencing = self.edges_referencing(ChildRef::Procedure(id))?;
+        if policy == GraphIntegrity::PinChildren && !referencing.is_empty() {
+            return Ok(CollectOutcome {
+                collected: false,
+                pinned_by: referencing.len(),
+                ..CollectOutcome::default()
+            });
+        }
+
+        let removed = self.remove_edges_referencing(ChildRef::Procedure(id))?;
+        self.conn.execute(
+            "DELETE FROM procedures WHERE id = ?1",
+            params![id.value().to_be_bytes().to_vec()],
+        )?;
+
+        Ok(CollectOutcome {
+            collected: true,
+            pinned_by: referencing.len(),
+            edges_removed: removed,
+            children_reparented: 0,
+            children_orphaned: 0,
+        })
+    }
+
+    /// Every edge whose child row no longer exists.
+    ///
+    /// A dangling edge is always a bug — `expand` would surface a candidate that
+    /// cannot be fetched, and it would look perfectly healthy because the edge
+    /// carries its own cached effectiveness and usage notes (§4.2). This is the
+    /// detector; [`prune_dangling_goal_edges`](SqliteStore::prune_dangling_goal_edges)
+    /// is the repair.
+    pub fn dangling_goal_edges(&self) -> Result<Vec<GoalEdge>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT parent_goal_id FROM goal_edges GROUP BY parent_goal_id")?;
+        let parents = stmt
+            .query_map([], |row| row.get::<_, Vec<u8>>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut dangling = Vec::new();
+        for parent in parents {
+            let parent = GoalId::from_value(Self::bytes_to_u128(&parent)?);
+            for edge in self.get_goal_edges(parent)? {
+                let alive = match edge.child {
+                    ChildRef::Goal(id) => self.get_goal(id)?.is_some(),
+                    ChildRef::Procedure(id) => self.get_procedure(id)?.is_some(),
+                };
+                if !alive {
+                    dangling.push(edge);
+                }
+            }
+        }
+        Ok(dangling)
+    }
+
+    /// Delete every edge whose child no longer exists, returning how many went.
+    ///
+    /// Collection through [`collect_goal`](SqliteStore::collect_goal) /
+    /// [`collect_procedure`](SqliteStore::collect_procedure) never creates a
+    /// dangling edge, so this is a repair pass for graphs damaged another way —
+    /// a direct `DELETE`, a restored backup, an older Boswell.
+    pub fn prune_dangling_goal_edges(&mut self) -> Result<usize, StoreError> {
+        let dangling = self.dangling_goal_edges()?;
+        let mut pruned = 0;
+        for edge in dangling {
+            let child_bytes = edge.child.id_value().to_be_bytes().to_vec();
+            pruned += self.conn.execute(
+                "DELETE FROM goal_edges \
+                 WHERE parent_goal_id = ?1 AND child_kind = ?2 AND child_id = ?3 AND role = ?4",
+                params![
+                    Self::goal_id_to_bytes(edge.parent),
+                    edge.child.kind().as_str(),
+                    &child_bytes,
+                    edge.role.as_str(),
+                ],
+            )?;
+        }
+        Ok(pruned)
+    }
+
+    /// Goals no live edge points at — reachable only by query or direct id.
+    ///
+    /// Not an error condition: a root goal is orphaned by definition, and so is
+    /// a child left standing by [`GraphIntegrity::CascadeAndOrphan`]. This is
+    /// the measurement a Janitor sweep would use to decide what has fallen out
+    /// of the navigable graph.
+    pub fn orphaned_goals(&self) -> Result<Vec<Goal>, StoreError> {
+        let mut orphans = Vec::new();
+        for goal in self.query_goals(None, None, None)? {
+            if self.edges_referencing(ChildRef::Goal(goal.id))?.is_empty() {
+                orphans.push(goal);
+            }
+        }
+        Ok(orphans)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -857,5 +1089,431 @@ mod tests {
         let hits = store.query_goals(None, Some("breakfast"), None).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].id, a.id);
+    }
+
+    // ---- Graph integrity under decay (design §8, open problem #5) ----
+
+    mod integrity {
+        use super::*;
+
+        /// `eat -> prepare-breakfast -> cook-eggs`, plus a procedure leaf under
+        /// `cook-eggs`. Returns the three goal ids and the procedure id.
+        fn chain(store: &mut SqliteStore) -> (GoalId, GoalId, GoalId, ProcedureId) {
+            let eat = goal("eat");
+            let breakfast = goal("prepare-breakfast");
+            let eggs = goal("cook-eggs");
+            let (eat_id, breakfast_id, eggs_id) = (eat.id, breakfast.id, eggs.id);
+            store.upsert_goal(&eat).unwrap();
+            store.upsert_goal(&breakfast).unwrap();
+            store.upsert_goal(&eggs).unwrap();
+
+            let omelette = ProcedureId::new();
+            store
+                .upsert_procedure(&procedure(omelette, "omelette"))
+                .unwrap();
+
+            store
+                .add_goal_edge(
+                    &edge(
+                        eat_id,
+                        ChildRef::Goal(breakfast_id),
+                        EdgeRole::Accomplish,
+                        0.8,
+                    ),
+                    NOW,
+                )
+                .unwrap();
+            store
+                .add_goal_edge(
+                    &edge(
+                        breakfast_id,
+                        ChildRef::Goal(eggs_id),
+                        EdgeRole::Accomplish,
+                        0.7,
+                    ),
+                    NOW,
+                )
+                .unwrap();
+            store
+                .add_goal_edge(
+                    &edge(
+                        eggs_id,
+                        ChildRef::Procedure(omelette),
+                        EdgeRole::Accomplish,
+                        0.9,
+                    ),
+                    NOW,
+                )
+                .unwrap();
+
+            (eat_id, breakfast_id, eggs_id, omelette)
+        }
+
+        /// The failure this whole problem is about: an edge left pointing at a
+        /// row that is gone. `expand` would surface it as a healthy-looking
+        /// candidate — the edge carries its own cached effectiveness and usage
+        /// notes (§4.2) — that cannot be fetched.
+        #[test]
+        fn a_raw_delete_dangles_the_graph_and_expand_cannot_tell() {
+            let mut store = store();
+            let (_, _, eggs, omelette) = chain(&mut store);
+
+            // Bypass the collection API entirely, the way a stray DELETE or an
+            // older Boswell would.
+            store
+                .conn
+                .execute(
+                    "DELETE FROM procedures WHERE id = ?1",
+                    params![omelette.value().to_be_bytes().to_vec()],
+                )
+                .unwrap();
+
+            let surface = store
+                .expand(eggs, &TraversalContext::default(), NOW)
+                .unwrap();
+            assert_eq!(
+                surface.candidates.len(),
+                1,
+                "expand still surfaces the dead child"
+            );
+            assert_eq!(store.dangling_goal_edges().unwrap().len(), 1);
+
+            // And the repair pass fixes it.
+            assert_eq!(store.prune_dangling_goal_edges().unwrap(), 1);
+            assert!(store.dangling_goal_edges().unwrap().is_empty());
+            let surface = store
+                .expand(eggs, &TraversalContext::default(), NOW)
+                .unwrap();
+            assert!(surface.candidates.is_empty());
+        }
+
+        /// Whatever the policy, collecting through the API never leaves a
+        /// dangling edge. This is the invariant; the policies differ only in
+        /// what they do about orphans.
+        #[test]
+        fn no_policy_ever_dangles_the_graph() {
+            for policy in [
+                GraphIntegrity::PinChildren,
+                GraphIntegrity::CascadeAndReparent,
+                GraphIntegrity::CascadeAndOrphan,
+            ] {
+                let mut store = store();
+                let (_, breakfast, _, omelette) = chain(&mut store);
+
+                store.collect_goal(breakfast, policy, NOW).unwrap();
+                store.collect_procedure(omelette, policy).unwrap();
+
+                assert!(
+                    store.dangling_goal_edges().unwrap().is_empty(),
+                    "{} left a dangling edge",
+                    policy.as_str()
+                );
+            }
+        }
+
+        /// `PinChildren` refuses to collect anything an edge points at, and the
+        /// refusal is total: the graph is left exactly as it was.
+        #[test]
+        fn pinning_refuses_and_changes_nothing() {
+            let mut store = store();
+            let (_, breakfast, eggs, _) = chain(&mut store);
+
+            let outcome = store
+                .collect_goal(breakfast, GraphIntegrity::PinChildren, NOW)
+                .unwrap();
+
+            assert!(!outcome.collected);
+            assert_eq!(outcome.pinned_by, 1);
+            assert_eq!(outcome.edges_removed, 0);
+            assert!(store.get_goal(breakfast).unwrap().is_some());
+            // Its child is still reachable from it.
+            assert_eq!(store.get_goal_edges(breakfast).unwrap().len(), 1);
+            assert!(store.get_goal(eggs).unwrap().is_some());
+        }
+
+        /// The cost of pinning: decay stops at the first reference. Nothing in
+        /// the chain below a referenced node can ever be collected, so a single
+        /// forgotten root keeps its whole subtree alive — in tension with the
+        /// premise that memory fades unless it earns its keep.
+        #[test]
+        fn pinning_makes_a_referenced_subtree_immortal() {
+            let mut store = store();
+            let (_, breakfast, eggs, omelette) = chain(&mut store);
+
+            for _ in 0..3 {
+                store
+                    .collect_goal(breakfast, GraphIntegrity::PinChildren, NOW)
+                    .unwrap();
+                store
+                    .collect_goal(eggs, GraphIntegrity::PinChildren, NOW)
+                    .unwrap();
+                store
+                    .collect_procedure(omelette, GraphIntegrity::PinChildren)
+                    .unwrap();
+            }
+
+            assert!(store.get_goal(breakfast).unwrap().is_some());
+            assert!(store.get_goal(eggs).unwrap().is_some());
+            assert!(store.get_procedure(omelette).unwrap().is_some());
+        }
+
+        /// A root nothing points at is collectable even under pinning — pinning
+        /// blocks on *references*, not on having children.
+        #[test]
+        fn pinning_still_collects_an_unreferenced_root() {
+            let mut store = store();
+            let (eat, breakfast, _, _) = chain(&mut store);
+
+            let outcome = store
+                .collect_goal(eat, GraphIntegrity::PinChildren, NOW)
+                .unwrap();
+
+            assert!(outcome.collected);
+            assert_eq!(outcome.pinned_by, 0);
+            assert!(store.get_goal(eat).unwrap().is_none());
+            // Its child survives, now orphaned.
+            assert!(store.get_goal(breakfast).unwrap().is_some());
+            assert_eq!(outcome.children_orphaned, 1);
+        }
+
+        /// `CascadeAndReparent` keeps the child reachable by re-attaching it to
+        /// the collected node's parent.
+        #[test]
+        fn reparenting_keeps_a_grandchild_reachable() {
+            let mut store = store();
+            let (eat, breakfast, eggs, _) = chain(&mut store);
+
+            let outcome = store
+                .collect_goal(breakfast, GraphIntegrity::CascadeAndReparent, NOW)
+                .unwrap();
+
+            assert!(outcome.collected);
+            assert_eq!(outcome.children_reparented, 1);
+            assert_eq!(outcome.children_orphaned, 0);
+
+            // `cook-eggs` now hangs directly under `eat`.
+            let surface = store
+                .expand(eat, &TraversalContext::default(), NOW)
+                .unwrap();
+            assert_eq!(surface.candidates.len(), 1);
+            assert_eq!(surface.candidates[0].child, ChildRef::Goal(eggs));
+        }
+
+        /// The cost of re-parenting: the edge it writes is **fabricated**. Edge
+        /// payload is placement-specific (§3.2 — "prefer eggs here when LDL is
+        /// low"), so carrying it to a grandparent asserts about that placement
+        /// something nobody ever said.
+        #[test]
+        fn reparenting_fabricates_placement_specific_context() {
+            let mut store = store();
+            let (eat, breakfast, eggs, _) = chain(&mut store);
+
+            // Give the breakfast -> eggs edge context that is only true *under
+            // breakfast*.
+            let mut contextual = edge(breakfast, ChildRef::Goal(eggs), EdgeRole::Accomplish, 0.7);
+            contextual.context_tags = vec!["meal:breakfast".into()];
+            contextual.usage_notes = "the obvious choice first thing in the morning".into();
+            store.add_goal_edge(&contextual, NOW).unwrap();
+
+            store
+                .collect_goal(breakfast, GraphIntegrity::CascadeAndReparent, NOW)
+                .unwrap();
+
+            let moved = store.get_goal_edges(eat).unwrap();
+            let moved = moved
+                .iter()
+                .find(|e| e.child == ChildRef::Goal(eggs))
+                .expect("re-parented onto eat");
+
+            // Now attached to `eat`, still claiming to be about breakfast.
+            assert_eq!(moved.context_tags, vec!["meal:breakfast".to_string()]);
+            assert_eq!(
+                moved.usage_notes,
+                "the obvious choice first thing in the morning"
+            );
+        }
+
+        /// Re-parenting cannot close a cycle, and the reason is structural
+        /// rather than lucky: the new edge `ancestor -> child` is a **shortcut**
+        /// over the path `ancestor -> node -> child` that already existed. For
+        /// it to close a cycle the graph would need `child ->* ancestor` too,
+        /// which the write-time guard already refuses.
+        ///
+        /// This test pins both halves — that such a graph cannot be built, and
+        /// that re-parenting across a diamond stays acyclic. `collect_goal`
+        /// still handles [`StoreError::Cycle`] defensively, because a graph
+        /// damaged outside the API (a raw `DELETE`, a restored backup) carries
+        /// no such guarantee.
+        #[test]
+        fn reparenting_is_a_shortcut_and_cannot_close_a_cycle() {
+            // The cycle re-parenting would need is unbuildable in the first place.
+            let mut back_edge = store();
+            let a = goal("a");
+            let b = goal("b");
+            let (a_id, b_id) = (a.id, b.id);
+            back_edge.upsert_goal(&a).unwrap();
+            back_edge.upsert_goal(&b).unwrap();
+            back_edge
+                .add_goal_edge(
+                    &edge(a_id, ChildRef::Goal(b_id), EdgeRole::Accomplish, 0.5),
+                    NOW,
+                )
+                .unwrap();
+            assert!(matches!(
+                back_edge.add_goal_edge(
+                    &edge(b_id, ChildRef::Goal(a_id), EdgeRole::Accomplish, 0.5),
+                    NOW
+                ),
+                Err(StoreError::Cycle(_))
+            ));
+
+            // A diamond: eat reaches eggs two ways. Collecting one arm
+            // re-parents onto a node that already reaches the child.
+            let mut store = store();
+            let eat = goal("eat");
+            let breakfast = goal("prepare-breakfast");
+            let dinner = goal("quick-dinner");
+            let eggs = goal("cook-eggs");
+            let (eat_id, breakfast_id, dinner_id, eggs_id) =
+                (eat.id, breakfast.id, dinner.id, eggs.id);
+            for g in [&eat, &breakfast, &dinner, &eggs] {
+                store.upsert_goal(g).unwrap();
+            }
+            for (parent, child) in [
+                (eat_id, breakfast_id),
+                (eat_id, dinner_id),
+                (breakfast_id, eggs_id),
+                (dinner_id, eggs_id),
+            ] {
+                store
+                    .add_goal_edge(
+                        &edge(parent, ChildRef::Goal(child), EdgeRole::Accomplish, 0.5),
+                        NOW,
+                    )
+                    .unwrap();
+            }
+
+            let outcome = store
+                .collect_goal(breakfast_id, GraphIntegrity::CascadeAndReparent, NOW)
+                .unwrap();
+
+            assert!(outcome.collected);
+            assert_eq!(outcome.children_reparented, 1);
+            assert!(store.dangling_goal_edges().unwrap().is_empty());
+
+            // eggs is reachable from eat both directly and via quick-dinner, and
+            // the graph is still acyclic — adding the back edge is still refused.
+            assert!(matches!(
+                store.add_goal_edge(
+                    &edge(eggs_id, ChildRef::Goal(eat_id), EdgeRole::Accomplish, 0.5),
+                    NOW
+                ),
+                Err(StoreError::Cycle(_))
+            ));
+            assert!(store.get_goal(eggs_id).unwrap().is_some());
+        }
+
+        /// `CascadeAndOrphan` lets decay proceed and invents nothing: the child
+        /// row survives untouched, it is simply no longer reachable by descent.
+        #[test]
+        fn orphaning_collects_without_inventing_structure() {
+            let mut store = store();
+            let (eat, breakfast, eggs, _) = chain(&mut store);
+
+            let outcome = store
+                .collect_goal(breakfast, GraphIntegrity::CascadeAndOrphan, NOW)
+                .unwrap();
+
+            assert!(outcome.collected);
+            assert_eq!(outcome.children_reparented, 0);
+            assert_eq!(outcome.children_orphaned, 1);
+
+            // Nothing was written onto `eat`.
+            assert!(store
+                .expand(eat, &TraversalContext::default(), NOW)
+                .unwrap()
+                .candidates
+                .is_empty());
+
+            // But `cook-eggs` itself is intact and still findable by query.
+            let eggs_row = store.get_goal(eggs).unwrap().expect("child survives");
+            assert_eq!(eggs_row.name, "cook-eggs");
+            assert!(store.orphaned_goals().unwrap().iter().any(|g| g.id == eggs));
+        }
+
+        /// Collecting a procedure removes the edges that pointed at it, so a
+        /// parent goal simply stops surfacing it.
+        #[test]
+        fn collecting_a_leaf_procedure_unhooks_it_from_its_parent() {
+            let mut store = store();
+            let (_, _, eggs, omelette) = chain(&mut store);
+
+            let outcome = store
+                .collect_procedure(omelette, GraphIntegrity::CascadeAndOrphan)
+                .unwrap();
+
+            assert!(outcome.collected);
+            assert_eq!(outcome.edges_removed, 1);
+            assert!(store
+                .expand(eggs, &TraversalContext::default(), NOW)
+                .unwrap()
+                .candidates
+                .is_empty());
+            assert!(store.dangling_goal_edges().unwrap().is_empty());
+        }
+
+        /// Collecting something that is not there is a no-op, not an error, so a
+        /// sweep can be re-run safely.
+        #[test]
+        fn collecting_a_missing_node_is_a_no_op() {
+            let mut store = store();
+            let outcome = store
+                .collect_goal(GoalId::new(), GraphIntegrity::CascadeAndOrphan, NOW)
+                .unwrap();
+            assert!(!outcome.collected);
+            assert_eq!(outcome.edges_removed, 0);
+
+            let outcome = store
+                .collect_procedure(ProcedureId::new(), GraphIntegrity::CascadeAndOrphan)
+                .unwrap();
+            assert!(!outcome.collected);
+        }
+
+        /// A procedure's outstanding receipts survive it: a receipt is an
+        /// obligation someone already took on, and the report path already
+        /// handles a procedure that has since gone.
+        #[test]
+        fn collecting_a_procedure_leaves_its_receipts_answerable() {
+            use boswell_domain::ExecutionReceipt;
+
+            let mut store = store();
+            let (_, _, _, omelette) = chain(&mut store);
+            let p = store.get_procedure(omelette).unwrap().unwrap();
+            let receipt = ExecutionReceipt::issue(&p, "agent:cook", NOW, 60_000);
+            let receipt_id = receipt.receipt_id;
+            store.issue_receipt(&receipt).unwrap();
+
+            store
+                .collect_procedure(omelette, GraphIntegrity::CascadeAndOrphan)
+                .unwrap();
+
+            assert!(
+                store.get_receipt(receipt_id).unwrap().is_some(),
+                "the obligation outlives the procedure"
+            );
+        }
+
+        #[test]
+        fn policy_names_round_trip() {
+            for p in [
+                GraphIntegrity::PinChildren,
+                GraphIntegrity::CascadeAndReparent,
+                GraphIntegrity::CascadeAndOrphan,
+            ] {
+                assert_eq!(GraphIntegrity::parse(p.as_str()), Some(p));
+            }
+            assert!(GraphIntegrity::parse("nope").is_none());
+            assert_eq!(GraphIntegrity::default(), GraphIntegrity::CascadeAndOrphan);
+        }
     }
 }

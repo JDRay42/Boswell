@@ -248,6 +248,13 @@ CREATE TABLE IF NOT EXISTS goal_edges (
 
 CREATE INDEX IF NOT EXISTS idx_goal_edges_parent ON goal_edges(parent_goal_id);
 
+-- Reverse adjacency: "which edges point AT this node?". Traversal never needs
+-- this (it always walks parent -> children), but graph integrity does: before a
+-- goal or procedure is collected we have to know who still references it
+-- (design §8, open problem #5). Without this index that question is a full scan
+-- of goal_edges on every collection.
+CREATE INDEX IF NOT EXISTS idx_goal_edges_child ON goal_edges(child_kind, child_id);
+
 -- Provenance stamps - the write-path ledger (procedural memory Phase 3, per
 -- docs/architecture/15-procedural-memory.md §5). Every stamped write, endorsement,
 -- and outcome report appends one append-only row here, so the Gatekeeper can count
