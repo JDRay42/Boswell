@@ -404,11 +404,15 @@ devAuth is a bring-up and demonstration tool for the trust model — never a sho
 5. **Graph integrity under decay.** ~~Nodes and edges decaying independently can dangle the
    navigable graph; need a rule (an edge pins its child, or GC cascades/re-parents).~~
    **Resolved — see §8.2.** Both rules were prototyped; neither was adopted, and a third was.
-6. **Cycle guards.** The DAG must be kept acyclic (a `decide` procedure that re-enters a parent
-   could loop); traversal needs guards. **Write side done:** `add_goal_edge` rejects any
-   sub-goal edge that would close a cycle. What remains is the traversal-side visited-set and
-   depth cap, which belongs to whoever recurses — the *agent* holds the cursor (§4), so the
-   store has no recursion to bound.
+6. **Cycle guards.** ~~The DAG must be kept acyclic (a `decide` procedure that re-enters a
+   parent could loop); traversal needs guards.~~ **Resolved, both halves.** On write,
+   `add_goal_edge` rejects any sub-goal edge that would close a cycle. At traversal,
+   `DescentGuard` carries the visited set and the depth/node caps. Traversal is stateless and
+   agent-driven (§4), so the store has no recursion of its own to bound — the guard lives with
+   whoever recurses, and it *guards* without ever choosing a child. Belt and braces on purpose:
+   the write guard makes a cycle unbuildable through the API, but a graph restored from backup
+   or edited directly carries no such promise, and a descent that trusted the write guard alone
+   would spin on one forever.
 
 ### 8.2 Graph integrity under decay — what the prototypes showed
 
