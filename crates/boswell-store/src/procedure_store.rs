@@ -13,10 +13,11 @@
 //! derived effectiveness.
 
 use crate::{SqliteStore, StoreError};
-use boswell_domain::traits::{ClaimQuery, ClaimStore};
+use boswell_domain::traits::{ClaimQuery, ClaimStore, ProcedureStore};
 use boswell_domain::{
-    BodyFormat, ClaimMatch, Expect, OutcomeReport, Parameter, Precondition, PreconditionCheck,
-    Procedure, ProcedureId, ProcedureQuery, ProcedureSource, ReportEffect, Tier,
+    BodyFormat, ClaimMatch, ExecutionReceipt, Expect, OutcomeReport, Parameter, Precondition,
+    PreconditionCheck, Procedure, ProcedureId, ProcedureQuery, ProcedureSource, ProvenanceStamp,
+    ReceiptReportOutcome, ReportEffect, StoredReceipt, Tier,
 };
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -530,6 +531,47 @@ pub(crate) fn like_escape(input: &str) -> String {
         out.push(ch);
     }
     out
+}
+
+/// Procedural-memory transport surface (design §3.3, §4.1).
+///
+/// Bridges the inherent `SqliteStore` procedure/receipt methods to the domain
+/// [`ProcedureStore`] trait so the gRPC service can serve them over a generic
+/// store handle.
+impl ProcedureStore for SqliteStore {
+    fn supports_procedures(&self) -> bool {
+        true
+    }
+
+    fn get_procedure(&self, id: ProcedureId) -> Result<Option<Procedure>, Self::Error> {
+        SqliteStore::get_procedure(self, id)
+    }
+
+    fn query_procedures(
+        &self,
+        query: &ProcedureQuery,
+        now: u64,
+    ) -> Result<Vec<Procedure>, Self::Error> {
+        SqliteStore::query_procedures(self, query, now)
+    }
+
+    fn issue_receipt(&mut self, receipt: &ExecutionReceipt) -> Result<(), Self::Error> {
+        SqliteStore::issue_receipt(self, receipt).map(|_| ())
+    }
+
+    fn get_receipt(&self, receipt_id: ProcedureId) -> Result<Option<StoredReceipt>, Self::Error> {
+        SqliteStore::get_receipt(self, receipt_id)
+    }
+
+    fn report_receipt(
+        &mut self,
+        receipt_id: ProcedureId,
+        report: &OutcomeReport,
+        stamp: &ProvenanceStamp,
+        now: u64,
+    ) -> Result<Option<ReceiptReportOutcome>, Self::Error> {
+        SqliteStore::report_receipt(self, receipt_id, report, stamp, now)
+    }
 }
 
 #[cfg(test)]

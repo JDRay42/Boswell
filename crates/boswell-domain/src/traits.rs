@@ -3,7 +3,10 @@
 //! These traits define the boundaries between domain logic and infrastructure.
 //! Infrastructure implementations live in other crates.
 
-use crate::{Claim, ClaimId, Relationship};
+use crate::{
+    Claim, ClaimId, ExecutionReceipt, OutcomeReport, Procedure, ProcedureId, ProcedureQuery,
+    ProvenanceStamp, ReceiptReportOutcome, Relationship, StoredReceipt,
+};
 
 /// Trait for storing and retrieving claims
 ///
@@ -68,6 +71,68 @@ pub trait ClaimStore {
     /// effective confidence for the claim should be invalidated.
     fn update_claim_tier(&mut self, _id: ClaimId, _new_tier: &str) -> Result<bool, Self::Error> {
         Ok(false)
+    }
+}
+
+/// Trait for retrieving procedures and running the effectiveness-reporting
+/// contract (design §3.3, §4.1).
+///
+/// Split from [`ClaimStore`] so the claim substrate stays independent of
+/// procedural memory, but taken as a supertrait so implementors share one error
+/// type and the transport layer can take a single store handle.
+///
+/// Every method has a default implementation that behaves as "this store holds
+/// no procedures", so claim-only and mock stores compile unchanged. Stores that
+/// do hold procedures override them and report
+/// [`supports_procedures`](ProcedureStore::supports_procedures) as `true`.
+pub trait ProcedureStore: ClaimStore {
+    /// Whether this store can serve procedures and receipts.
+    ///
+    /// Defaults to `false`; the transport layer uses this to answer
+    /// `Unimplemented` rather than silently returning empty results.
+    fn supports_procedures(&self) -> bool {
+        false
+    }
+
+    /// Fetch a procedure by id, or `None` if it does not exist.
+    fn get_procedure(&self, _id: ProcedureId) -> Result<Option<Procedure>, Self::Error> {
+        Ok(None)
+    }
+
+    /// Retrieve procedures matching `query`, ranked by effectiveness. `now` is
+    /// Unix ms, used to decay effectiveness for ranking.
+    fn query_procedures(
+        &self,
+        _query: &ProcedureQuery,
+        _now: u64,
+    ) -> Result<Vec<Procedure>, Self::Error> {
+        Ok(Vec::new())
+    }
+
+    /// Record a newly issued execution receipt as `pending`.
+    ///
+    /// Retrieving a procedure for execution carries an obligation to report the
+    /// outcome, so a store that hands out procedures must also issue receipts.
+    fn issue_receipt(&mut self, _receipt: &ExecutionReceipt) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    /// Fetch a receipt by id, or `None` if it does not exist.
+    fn get_receipt(&self, _receipt_id: ProcedureId) -> Result<Option<StoredReceipt>, Self::Error> {
+        Ok(None)
+    }
+
+    /// Apply an outcome report against a pending receipt as a gatekept,
+    /// provenance-stamped write. Returns `None` if no such receipt exists.
+    /// `now` is Unix ms.
+    fn report_receipt(
+        &mut self,
+        _receipt_id: ProcedureId,
+        _report: &OutcomeReport,
+        _stamp: &ProvenanceStamp,
+        _now: u64,
+    ) -> Result<Option<ReceiptReportOutcome>, Self::Error> {
+        Ok(None)
     }
 }
 

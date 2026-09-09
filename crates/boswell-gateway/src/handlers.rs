@@ -836,3 +836,245 @@ mod tests {
         assert_eq!(truncate("abcdef", 3), "abc…");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Procedural memory (design 15 §3.3, §4.1)
+// ---------------------------------------------------------------------------
+
+/// Query parameters for `GET /v1/procedures`.
+#[derive(Debug, Deserialize)]
+pub struct ProcedureQueryParams {
+    namespace: Option<String>,
+    goal: Option<String>,
+    intent_contains: Option<String>,
+    #[serde(default)]
+    include_superseded: bool,
+    limit: Option<u32>,
+    task_id: Option<String>,
+    session_id: Option<String>,
+}
+
+/// JSON representation of a dispensed procedure and its execution contract.
+#[derive(Debug, Serialize)]
+pub struct DispensedProcedureDto {
+    procedure: Value,
+    contract: Value,
+}
+
+fn dispensed_to_dto(d: &boswell_sdk::DispensedProcedure) -> DispensedProcedureDto {
+    let p = &d.procedure;
+    let c = &d.contract;
+
+    let preconditions: Vec<Value> = p
+        .preconditions
+        .iter()
+        .map(|pc| {
+            json!({
+                "kind": pc.kind,
+                "description": pc.description,
+                "check": {
+                    "match": {
+                        "subject": pc.check.match_pattern.subject,
+                        "predicate": pc.check.match_pattern.predicate,
+                        "object": pc.check.match_pattern.object,
+                    },
+                    "min_confidence": pc.check.min_confidence,
+                    "expect": pc.check.expect.as_str(),
+                },
+            })
+        })
+        .collect();
+
+    let parameters: Vec<Value> = p
+        .parameters
+        .iter()
+        .map(|param| {
+            json!({
+                "name": param.name,
+                "type": param.type_name,
+                "default": param.default,
+                "desc": param.desc,
+            })
+        })
+        .collect();
+
+    DispensedProcedureDto {
+        procedure: json!({
+            "id": p.id.to_string(),
+            "namespace": p.namespace,
+            "name": p.name,
+            "version": p.version,
+            "is_current": p.is_current,
+            "source": p.source.as_str(),
+            "goal": p.goal,
+            "intent": p.intent,
+            "tags": p.tags,
+            "parameters": parameters,
+            "preconditions": preconditions,
+            "required_tools": p.required_tools,
+            "postconditions": p.postconditions,
+            "usage_notes": p.usage_notes,
+            "context_tags": p.context_tags,
+            "body_format": p.body_format.as_str(),
+            "content_type": p.content_type,
+            "body": p.body,
+            "tier": p.tier.as_str(),
+            "effectiveness": {
+                "use_count": p.use_count,
+                "success_count": p.success_count,
+                "failure_count": p.failure_count,
+                "unknown_count": p.unknown_count,
+            },
+            "est_duration_sec": p.est_duration_sec,
+            "last_used_at": p.last_used_at,
+            "created_at": p.created_at,
+            "updated_at": p.updated_at,
+        }),
+        // The contract is echoed in the shape design §3.3 specifies, so a hook
+        // can read `required`/`optional` straight off the response.
+        contract: json!({
+            "receipt_id": c.receipt_id.to_string(),
+            "procedure_id": c.procedure_id.to_string(),
+            "version": c.version,
+            "issued_to": c.issued_to,
+            "task_id": c.task_id,
+            "session_id": c.session_id,
+            "issued_at": c.issued_at,
+            "expires_at": c.expires_at,
+            "report_to": c.report_to,
+            "required": ["outcome"],
+            "optional": ["failure_mode", "executor_confidence", "cost", "notes"],
+        }),
+    }
+}
+
+/// `GET /v1/procedures` — retrieve procedures for a goal/intent.
+///
+/// Requires the `read` scope: dispensing is a read of memory. The receipt each
+/// procedure carries is server-side bookkeeping, not caller-authored content —
+/// but it *is* an obligation: the caller must answer it via
+/// [`report_outcome`] before it expires, or it counts as `unknown` against the
+/// procedure (design §3.3).
+pub async fn query_procedures(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Query(params): Query<ProcedureQueryParams>,
+) -> Result<Json<Value>, ApiError> {
+    ctx.require(Scope::Read)?;
+    let namespace = ctx.read_namespace(params.namespace)?;
+
+    let spec = boswell_sdk::ProcedureQuerySpec {
+        // The gateway, not the caller, names the principal on the hook: an
+        // API key cannot issue contracts in someone else's name.
+        issued_to: ctx.key_id.clone(),
+        namespace,
+        goal: params.goal,
+        intent_contains: params.intent_contains,
+        include_superseded: params.include_superseded,
+        limit: params.limit,
+        task_id: params.task_id,
+        session_id: params.session_id,
+    };
+
+    let mut client = state.client().lock().await;
+    client.ensure_connected().await?;
+    let dispensed = client.query_procedures(spec).await?;
+
+    let procedures: Vec<DispensedProcedureDto> = dispensed.iter().map(dispensed_to_dto).collect();
+    let count = procedures.len();
+    Ok(Json(json!({ "procedures": procedures, "count": count })))
+}
+
+/// `GET /v1/procedures/:id` — fetch one procedure, issuing a contract for it.
+pub async fn get_procedure(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(id): Path<String>,
+    Query(params): Query<ProcedureQueryParams>,
+) -> Result<Json<Value>, ApiError> {
+    ctx.require(Scope::Read)?;
+
+    let mut client = state.client().lock().await;
+    client.ensure_connected().await?;
+    // The key's namespace goes down as a scope so the instance refuses an
+    // out-of-scope procedure *before* issuing a receipt for it — otherwise a
+    // cross-namespace probe would leave an unanswerable obligation whose expiry
+    // counts against someone else's procedure.
+    let dispensed = client
+        .get_procedure(
+            &id,
+            &ctx.key_id,
+            Some(ctx.namespace.clone()),
+            params.task_id,
+            params.session_id,
+        )
+        .await?;
+
+    match dispensed {
+        Some(d) => Ok(Json(json!(dispensed_to_dto(&d)))),
+        None => Err(ApiError::not_found(format!("no procedure with id {}", id))),
+    }
+}
+
+/// Body of `POST /v1/receipts/:receipt_id/report`.
+#[derive(Debug, Deserialize)]
+pub struct OutcomeReportBody {
+    /// `success` | `failure` | `abandoned`.
+    outcome: String,
+    /// `preconditions_stale` | `step_failed` | `bad_result` | `executor_error`.
+    failure_mode: Option<String>,
+    /// Names the step when `failure_mode` is `step_failed`.
+    failed_step: Option<String>,
+    executor_confidence: Option<f64>,
+    cost: Option<f64>,
+    notes: Option<String>,
+}
+
+/// `POST /v1/receipts/:receipt_id/report` — answer an execution contract.
+///
+/// This is the endpoint the capture hooks call. Requires the `write` scope:
+/// the report moves a procedure's effectiveness counters.
+pub async fn report_outcome(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(receipt_id): Path<String>,
+    Json(body): Json<OutcomeReportBody>,
+) -> Result<Json<Value>, ApiError> {
+    ctx.require(Scope::Write)?;
+
+    let spec = boswell_sdk::OutcomeReportSpec {
+        receipt_id: receipt_id.clone(),
+        outcome: body.outcome,
+        failure_mode: body.failure_mode,
+        failed_step: body.failed_step,
+        executor_confidence: body.executor_confidence,
+        cost: body.cost,
+        notes: body.notes,
+    };
+
+    let mut client = state.client().lock().await;
+    client.ensure_connected().await?;
+    let resp = client.report_outcome(spec).await?;
+
+    if !resp.accepted && !resp.already_final {
+        return Err(ApiError::not_found(format!(
+            "no outstanding receipt with id {}",
+            receipt_id
+        )));
+    }
+
+    audit(&ctx, "report_outcome", &ctx.namespace, 1);
+    Ok(Json(json!({
+        "accepted": resp.accepted,
+        "already_final": resp.already_final,
+        "applied": resp.applied,
+        "quarantined": resp.quarantined,
+        "effect": {
+            "counted_as_success": resp.counted_as_success,
+            "counted_as_failure": resp.counted_as_failure,
+            "attributed_to_executor": resp.attributed_to_executor,
+            "flagged_precondition_stale": resp.flagged_precondition_stale,
+        },
+        "message": resp.message,
+    })))
+}

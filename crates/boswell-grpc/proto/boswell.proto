@@ -31,6 +31,18 @@ service BosWellService {
     // Extract claims from unstructured text via the server-side LLM Extractor
     rpc Extract(ExtractRequest) returns (ExtractResponse);
 
+    // ---- Procedural memory (design 15, phase 7a) ----
+
+    // Retrieve procedures for a goal/intent. Each returned procedure carries an
+    // execution contract (receipt): retrieval obliges the caller to report.
+    rpc QueryProcedures(QueryProceduresRequest) returns (QueryProceduresResponse);
+
+    // Fetch one procedure by id, issuing an execution contract for it.
+    rpc GetProcedure(GetProcedureRequest) returns (GetProcedureResponse);
+
+    // Report an execution outcome against a receipt (the reporting contract).
+    rpc ReportOutcome(ReportOutcomeRequest) returns (ReportOutcomeResponse);
+
     // Health check for instance status
     rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
 }
@@ -230,6 +242,156 @@ message ExtractResponse {
     int32 failed_count = 4;
     repeated string failures = 5;        // Human-readable failure reasons
     string message = 6;
+}
+
+
+// ========== Procedural Memory (design 15) ==========
+
+// A typed parameter in a procedure's signature.
+message Parameter {
+    string name = 1;
+    string type_name = 2;
+    optional string default = 3;
+    optional string desc = 4;
+}
+
+// The (subject, predicate, object) pattern a precondition resolves against the
+// claim store — the seam from procedural memory onto claims.
+message ClaimMatch {
+    string subject = 1;
+    string predicate = 2;
+    string object = 3;
+}
+
+// The resolvable check behind a precondition.
+message PreconditionCheck {
+    ClaimMatch match_pattern = 1;
+    double min_confidence = 2;
+    string expect = 3;                   // exists | absent
+}
+
+// A hard precondition gating whether a procedure may run at all.
+message Precondition {
+    string kind = 1;
+    string description = 2;
+    PreconditionCheck check = 3;
+}
+
+// A stored how-to. Mirrors boswell_domain::Procedure losslessly; the executable
+// body is carried verbatim so the executor can run it, and the signature
+// (parameters, preconditions) travels with it so the executor can decide
+// whether it applies.
+message Procedure {
+    string id = 1;
+    string namespace = 2;
+    string name = 3;
+    uint32 version = 4;
+    optional string supersedes = 5;
+    bool is_current = 6;
+    string source = 7;                   // authored | learned | imported
+    string goal = 8;                     // goal grouping key
+    string intent = 9;
+    repeated string tags = 10;
+    repeated Parameter parameters = 11;
+    repeated Precondition preconditions = 12;
+    repeated string required_tools = 13;
+    repeated string postconditions = 14;
+    string usage_notes = 15;
+    repeated string context_tags = 16;
+    string body_format = 17;             // prose | dsl | code
+    string content_type = 18;
+    string body = 19;
+    string tier = 20;
+    uint64 use_count = 21;
+    uint64 success_count = 22;
+    uint64 failure_count = 23;
+    uint64 unknown_count = 24;
+    optional uint64 est_duration_sec = 25;
+    optional uint64 last_used_at = 26;
+    uint64 created_at = 27;
+    uint64 updated_at = 28;
+    optional uint64 stale_at = 29;
+}
+
+// The obligation-to-report contract issued with every dispensed procedure.
+message ExecutionContract {
+    string receipt_id = 1;
+    string procedure_id = 2;
+    uint32 version = 3;
+    string issued_to = 4;
+    optional string task_id = 5;
+    optional string session_id = 6;
+    uint64 issued_at = 7;
+    uint64 expires_at = 8;
+    optional string report_to = 9;
+}
+
+// A procedure paired with the receipt issued for it.
+message DispensedProcedure {
+    Procedure procedure = 1;
+    ExecutionContract contract = 2;
+}
+
+message QueryProceduresRequest {
+    optional string namespace = 1;
+    optional string goal = 2;            // exact goal grouping key
+    optional string intent_contains = 3; // case-insensitive substring of intent
+    bool include_superseded = 4;
+    optional uint32 limit = 5;
+    string issued_to = 6;                // principal the receipts are issued to
+    optional string task_id = 7;
+    optional string session_id = 8;
+    string auth_token = 9;
+}
+
+message QueryProceduresResponse {
+    repeated DispensedProcedure procedures = 1;
+    int32 count = 2;
+    string message = 3;
+}
+
+message GetProcedureRequest {
+    string id = 1;
+    string issued_to = 2;
+    optional string task_id = 3;
+    optional string session_id = 4;
+    // Namespace the caller is confined to. When set, a procedure outside it
+    // reads as not-found *before* a receipt is issued, so a cross-namespace
+    // probe cannot leave an unanswerable obligation against someone else's
+    // procedure. Empty or "*" means unrestricted.
+    optional string namespace_scope = 5;
+    string auth_token = 6;
+}
+
+message GetProcedureResponse {
+    bool found = 1;
+    DispensedProcedure procedure = 2;
+    string message = 3;
+}
+
+message ReportOutcomeRequest {
+    string receipt_id = 1;
+    string outcome = 2;                  // success | failure | abandoned
+    // Failure attribution: preconditions_stale | step_failed | bad_result |
+    // executor_error. Only meaningful when outcome = failure.
+    optional string failure_mode = 3;
+    optional string failed_step = 4;     // names the step when failure_mode = step_failed
+    optional double executor_confidence = 5;
+    optional double cost = 6;
+    optional string notes = 7;
+    string auth_token = 8;
+}
+
+message ReportOutcomeResponse {
+    bool accepted = 1;                   // a pending receipt was found and closed
+    bool already_final = 2;              // receipt was already reported/expired
+    bool applied = 3;                    // the gatekeeper applied the report
+    bool quarantined = 4;                // negative report held back (assurance too low)
+    bool counted_as_success = 5;
+    bool counted_as_failure = 6;
+    bool attributed_to_executor = 7;
+    bool flagged_precondition_stale = 8;
+    string message = 9;
 }
 
 // ========== Health Check ==========

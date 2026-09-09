@@ -479,8 +479,9 @@ pub enum FailureMode {
 /// An execution receipt: the store's obligation-to-report contract, issued when
 /// a procedure is handed out for execution (design §3.3).
 ///
-/// In Phase 1 receipts are modeled and constructable but not yet persisted or
-/// enforced; wiring to capture hooks/gateway is a later phase.
+/// Receipts are persisted by the store's receipt ledger and issued by the
+/// transport whenever a procedure is dispensed; the executor answers one via
+/// `ReportOutcome` (gateway: `POST /v1/receipts/{receipt_id}/report`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecutionReceipt {
     /// Unique receipt identifier.
@@ -616,6 +617,26 @@ pub struct ReportEffect {
     pub flagged_precondition_stale: bool,
     /// A use was recorded (`use_count` incremented, `last_used_at` updated).
     pub use_recorded: bool,
+}
+
+/// A receipt as read back from the ledger, with its lifecycle status.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredReceipt {
+    /// The receipt.
+    pub receipt: ExecutionReceipt,
+    /// Its current status.
+    pub status: ReceiptStatus,
+}
+
+/// The result of reporting against a receipt (design §3.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReceiptReportOutcome {
+    /// The gatekept report application, if it ran (`None` if the procedure no
+    /// longer exists).
+    pub applied: Option<crate::write_path::StampedReportOutcome>,
+    /// Whether the receipt was already closed (reported or expired) — in which
+    /// case nothing was applied.
+    pub already_final: bool,
 }
 
 #[cfg(test)]

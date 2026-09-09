@@ -1,7 +1,8 @@
 # Procedural & Goal Memory for Agent Teams
 
-**Status:** Design (not yet implemented). This document captures a design worked out in
-depth; it is a proposal for review, not a description of shipped code.
+**Status:** Phases 1–6 of §9 are implemented and merged, plus phase 7a (below).
+Sections describing those parts describe shipped code; §8 (open problems) and
+procedure/goal *learning* remain design.
 
 ## 1. Context & motivation
 
@@ -452,6 +453,14 @@ adversary who already controls the host.
 4. `IdentityProvider` port + assurance-gated ceilings; **devAuth** adapter.
 5. Effectiveness feedback capture (via hooks: `SubagentStop`/`Stop`/`PostToolUse`).
 6. Tackle §8 as research: attribution, Sybil-weighting, procedure learning.
+7. Transport, so the loop is reachable from outside the process:
+   - **7a (done).** Procedure retrieval + receipt reporting over gRPC, the SDK
+     and the gateway — `QueryProcedures`/`GetProcedure`/`ReportOutcome`, and
+     `GET /v1/procedures`, `GET /v1/procedures/{id}`,
+     `POST /v1/receipts/{id}/report`. Retrieval issues the execution contract;
+     hooks can now close the loop. See `docs/integrations/http-api.md`.
+   - **7b.** Goals, edges and `expand` over the same three layers, plus CLI
+     commands and the devAuth `X-Boswell-Auth` marker.
 
 ## 10. Relationship to existing components
 

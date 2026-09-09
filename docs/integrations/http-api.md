@@ -109,6 +109,9 @@ All paths are under `/v1` and speak JSON.
 | `POST /v1/recall` | read | One-call context: merge structured + semantic |
 | `POST /v1/extract` | write | Text → claims via the LLM Extractor |
 | `POST /v1/hooks/ingest` | write | Claude Code hook event → claims |
+| `GET /v1/procedures` | read | Retrieve procedures for a goal/intent (issues receipts) |
+| `GET /v1/procedures/{id}` | read | Fetch one procedure (issues a receipt) |
+| `POST /v1/receipts/{receipt_id}/report` | write | Report an execution outcome |
 
 ### Assert — `POST /v1/claims`
 
@@ -190,6 +193,84 @@ Add `?mode=llm` to route the salient text through the LLM Extractor instead; if
 extraction is unavailable it falls back to the deterministic mapping, so ingest
 keeps working. Response: `{ "mode", "ingested", … }`. The target namespace comes
 from the event's optional `namespace` field, else the key's namespace.
+
+## Procedural memory
+
+See `docs/architecture/15-procedural-memory.md`. Two ideas drive the shape of
+these endpoints:
+
+- **Retrieval creates an obligation.** Every procedure handed out comes with an
+  execution contract (a receipt). The caller must answer it before
+  `expires_at`, or the run is counted as `unknown` against the procedure —
+  "silence is not success" (§3.3). You cannot opt out by not reporting; you can
+  only report or be counted as unknown.
+- **A report is a gatekept write.** The gateway stamps the report with the
+  *key's* identity, not one supplied in the body, and this transport carries no
+  `IdentityProvider` — so a report's assurance is `none`. A negative report
+  against a `project`/`permanent`-tier procedure is therefore recorded but
+  **quarantined** rather than applied, so a single executor cannot tank a shared
+  how-to. Watch for `"quarantined": true` in the response.
+
+### Retrieve — `GET /v1/procedures`
+
+Query parameters: `goal` (exact grouping key), `namespace`, `intent_contains`,
+`include_superseded`, `limit`, `task_id`, `session_id`. The store filters out
+procedures whose preconditions do not currently hold and ranks the rest by
+effectiveness.
+
+```
+GET /v1/procedures?goal=goal:team/deploy&task_id=t-7
+```
+
+Response:
+
+```json
+{ "count": 1,
+  "procedures": [
+    { "procedure": { "id": "…", "name": "blue-green-deploy", "body": "…",
+                     "body_format": "prose", "parameters": [ … ],
+                     "preconditions": [ … ], "tier": "project",
+                     "effectiveness": { "use_count": 12, "success_count": 9,
+                                        "failure_count": 2, "unknown_count": 1 } },
+      "contract": { "receipt_id": "…", "procedure_id": "…", "version": 3,
+                    "issued_to": "<api key id>", "task_id": "t-7",
+                    "issued_at": 1700000000000, "expires_at": 1700003600000,
+                    "required": ["outcome"],
+                    "optional": ["failure_mode", "executor_confidence", "cost", "notes"] } }
+  ] }
+```
+
+`issued_to` is the authenticated key's id — a key cannot issue contracts in
+another principal's name. `GET /v1/procedures/{id}` returns the same
+`{ procedure, contract }` object for a single procedure.
+
+### Report — `POST /v1/receipts/{receipt_id}/report`
+
+The call the capture hooks make when a run finishes.
+
+```json
+{ "outcome": "failure", "failure_mode": "step_failed", "failed_step": "drain",
+  "executor_confidence": 0.4, "notes": "connection pool never drained" }
+```
+
+`outcome` is `success`, `failure`, or `abandoned`. `failure_mode` is valid only
+alongside `failure` and is one of `preconditions_stale`, `step_failed`,
+`bad_result`, or `executor_error`; `failed_step` names the step for
+`step_failed`. The attribution matters: `executor_error` blames the runner and
+leaves the procedure's counters alone, and `preconditions_stale` flags the
+precondition check rather than the body.
+
+Response:
+
+```json
+{ "accepted": true, "already_final": false, "applied": true, "quarantined": false,
+  "effect": { "counted_as_success": false, "counted_as_failure": true,
+              "attributed_to_executor": false, "flagged_precondition_stale": false },
+  "message": "Report applied" }
+```
+
+A receipt can be answered once: a second report returns
+`already_final: true` with nothing applied. An unknown receipt id is a `404`.
 
 ## Claim DTO
 

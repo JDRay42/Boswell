@@ -18,7 +18,8 @@ use crate::procedure_store::{from_json, to_json};
 use crate::{SqliteStore, StoreError};
 use boswell_domain::{
     entry_tier, Assurance, Authority, ChildRef, CorroborationFacts, DelegationChain, EvidenceType,
-    GoalEdge, Op, OutcomeReport, Procedure, ProcedureId, ProvenanceStamp, ReportEffect, Tier,
+    GoalEdge, Op, OutcomeReport, Procedure, ProcedureId, ProvenanceStamp, StampedReportOutcome,
+    StampedWriteOutcome, Tier,
 };
 use rusqlite::params;
 
@@ -61,25 +62,6 @@ pub struct StoredStamp {
     pub kind: StampKind,
     /// The stamp itself.
     pub stamp: ProvenanceStamp,
-}
-
-/// The result of a provenance-stamped procedure write.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StampedWriteOutcome {
-    /// The tier the entry actually entered at.
-    pub entry_tier: Tier,
-    /// Whether the requested tier was clamped down by a ceiling.
-    pub clamped: bool,
-}
-
-/// The result of a gatekept outcome report.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StampedReportOutcome {
-    /// The counter changes applied, if the report was applied.
-    pub effect: Option<ReportEffect>,
-    /// Whether a negative report was quarantined (recorded but not applied)
-    /// because the reporter's assurance is too low for the procedure's tier.
-    pub quarantined: bool,
 }
 
 impl SqliteStore {

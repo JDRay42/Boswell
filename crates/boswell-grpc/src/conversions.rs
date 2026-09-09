@@ -4,7 +4,12 @@
 
 use crate::proto;
 use boswell_domain::{
-    Claim, ClaimId, ConfidenceInterval as DomainConfidence, Relationship as DomainRelationship,
+    BodyFormat as DomainBodyFormat, Claim, ClaimId, ClaimMatch as DomainClaimMatch,
+    ConfidenceInterval as DomainConfidence, ExecutionReceipt as DomainReceipt,
+    Expect as DomainExpect, FailureMode as DomainFailureMode, Outcome as DomainOutcome,
+    OutcomeReport, Parameter as DomainParameter, Precondition as DomainPrecondition,
+    PreconditionCheck as DomainPreconditionCheck, Procedure as DomainProcedure, ProcedureId,
+    ProcedureSource as DomainProcedureSource, Relationship as DomainRelationship,
     RelationshipType as DomainRelationshipType, Tier as DomainTier,
 };
 
@@ -30,6 +35,22 @@ pub enum ConversionError {
     /// Missing required field
     #[error("Missing required field: {0}")]
     MissingField(&'static str),
+
+    /// Invalid procedure/receipt id
+    #[error("Invalid procedure id: {0}")]
+    InvalidProcedureId(String),
+
+    /// Unrecognised execution outcome
+    #[error("Invalid outcome (expected success|failure|abandoned): {0}")]
+    InvalidOutcome(String),
+
+    /// Unrecognised or misplaced failure attribution
+    #[error("Invalid failure mode: {0}")]
+    InvalidFailureMode(String),
+
+    /// A procedure field carried a value outside its stable string set
+    #[error("Invalid procedure {0}: {1}")]
+    InvalidProcedureField(&'static str, String),
 }
 
 /// Convert proto Tier to tier string
@@ -189,8 +210,363 @@ pub fn relationship_from_proto(
     })
 }
 
+// ========== Procedural memory (design 15) ==========
+
+/// Convert a domain [`DomainProcedure`] to its proto representation.
+pub fn procedure_to_proto(p: &DomainProcedure) -> proto::Procedure {
+    proto::Procedure {
+        id: p.id.to_string(),
+        namespace: p.namespace.clone(),
+        name: p.name.clone(),
+        version: p.version,
+        supersedes: p.supersedes.map(|s| s.to_string()),
+        is_current: p.is_current,
+        source: p.source.as_str().to_string(),
+        goal: p.goal.clone(),
+        intent: p.intent.clone(),
+        tags: p.tags.clone(),
+        parameters: p.parameters.iter().map(parameter_to_proto).collect(),
+        preconditions: p.preconditions.iter().map(precondition_to_proto).collect(),
+        required_tools: p.required_tools.clone(),
+        postconditions: p.postconditions.clone(),
+        usage_notes: p.usage_notes.clone(),
+        context_tags: p.context_tags.clone(),
+        body_format: p.body_format.as_str().to_string(),
+        content_type: p.content_type.clone(),
+        body: p.body.clone(),
+        tier: p.tier.as_str().to_string(),
+        use_count: p.use_count,
+        success_count: p.success_count,
+        failure_count: p.failure_count,
+        unknown_count: p.unknown_count,
+        est_duration_sec: p.est_duration_sec,
+        last_used_at: p.last_used_at,
+        created_at: p.created_at,
+        updated_at: p.updated_at,
+        stale_at: p.stale_at,
+    }
+}
+
+/// Convert a proto procedure back to its domain form.
+pub fn procedure_from_proto(p: &proto::Procedure) -> Result<DomainProcedure, ConversionError> {
+    Ok(DomainProcedure {
+        id: ProcedureId::from_string(&p.id).map_err(ConversionError::InvalidProcedureId)?,
+        namespace: p.namespace.clone(),
+        name: p.name.clone(),
+        version: p.version,
+        supersedes: p
+            .supersedes
+            .as_deref()
+            .map(|s| ProcedureId::from_string(s).map_err(ConversionError::InvalidProcedureId))
+            .transpose()?,
+        is_current: p.is_current,
+        source: DomainProcedureSource::parse(&p.source)
+            .ok_or_else(|| ConversionError::InvalidProcedureField("source", p.source.clone()))?,
+        goal: p.goal.clone(),
+        intent: p.intent.clone(),
+        tags: p.tags.clone(),
+        parameters: p.parameters.iter().map(parameter_from_proto).collect(),
+        preconditions: p
+            .preconditions
+            .iter()
+            .map(precondition_from_proto)
+            .collect::<Result<Vec<_>, _>>()?,
+        required_tools: p.required_tools.clone(),
+        postconditions: p.postconditions.clone(),
+        est_duration_sec: p.est_duration_sec,
+        usage_notes: p.usage_notes.clone(),
+        context_tags: p.context_tags.clone(),
+        body_format: DomainBodyFormat::parse(&p.body_format).ok_or_else(|| {
+            ConversionError::InvalidProcedureField("body_format", p.body_format.clone())
+        })?,
+        content_type: p.content_type.clone(),
+        body: p.body.clone(),
+        tier: DomainTier::parse(&p.tier)
+            .ok_or_else(|| ConversionError::InvalidProcedureField("tier", p.tier.clone()))?,
+        use_count: p.use_count,
+        success_count: p.success_count,
+        failure_count: p.failure_count,
+        unknown_count: p.unknown_count,
+        last_used_at: p.last_used_at,
+        created_at: p.created_at,
+        updated_at: p.updated_at,
+        stale_at: p.stale_at,
+    })
+}
+
+fn parameter_to_proto(p: &DomainParameter) -> proto::Parameter {
+    proto::Parameter {
+        name: p.name.clone(),
+        type_name: p.type_name.clone(),
+        default: p.default.clone(),
+        desc: p.desc.clone(),
+    }
+}
+
+fn parameter_from_proto(p: &proto::Parameter) -> DomainParameter {
+    DomainParameter {
+        name: p.name.clone(),
+        type_name: p.type_name.clone(),
+        default: p.default.clone(),
+        desc: p.desc.clone(),
+    }
+}
+
+fn precondition_to_proto(p: &DomainPrecondition) -> proto::Precondition {
+    proto::Precondition {
+        kind: p.kind.clone(),
+        description: p.description.clone(),
+        check: Some(proto::PreconditionCheck {
+            match_pattern: Some(proto::ClaimMatch {
+                subject: p.check.match_pattern.subject.clone(),
+                predicate: p.check.match_pattern.predicate.clone(),
+                object: p.check.match_pattern.object.clone(),
+            }),
+            min_confidence: p.check.min_confidence,
+            expect: p.check.expect.as_str().to_string(),
+        }),
+    }
+}
+
+fn precondition_from_proto(p: &proto::Precondition) -> Result<DomainPrecondition, ConversionError> {
+    let check = p
+        .check
+        .as_ref()
+        .ok_or(ConversionError::MissingField("precondition.check"))?;
+    let pattern = check
+        .match_pattern
+        .as_ref()
+        .ok_or(ConversionError::MissingField(
+            "precondition.check.match_pattern",
+        ))?;
+
+    Ok(DomainPrecondition {
+        kind: p.kind.clone(),
+        description: p.description.clone(),
+        check: DomainPreconditionCheck {
+            match_pattern: DomainClaimMatch {
+                subject: pattern.subject.clone(),
+                predicate: pattern.predicate.clone(),
+                object: pattern.object.clone(),
+            },
+            min_confidence: check.min_confidence,
+            expect: DomainExpect::parse(&check.expect).ok_or_else(|| {
+                ConversionError::InvalidProcedureField("expect", check.expect.clone())
+            })?,
+        },
+    })
+}
+
+/// Convert an issued [`DomainReceipt`] to its proto execution contract.
+pub fn contract_to_proto(r: &DomainReceipt) -> proto::ExecutionContract {
+    proto::ExecutionContract {
+        receipt_id: r.receipt_id.to_string(),
+        procedure_id: r.procedure_id.to_string(),
+        version: r.version,
+        issued_to: r.issued_to.clone(),
+        task_id: r.task_id.clone(),
+        session_id: r.session_id.clone(),
+        issued_at: r.issued_at,
+        expires_at: r.expires_at,
+        report_to: r.report_to.clone(),
+    }
+}
+
+/// Convert a proto execution contract back to its domain receipt.
+pub fn contract_from_proto(c: &proto::ExecutionContract) -> Result<DomainReceipt, ConversionError> {
+    Ok(DomainReceipt {
+        receipt_id: ProcedureId::from_string(&c.receipt_id)
+            .map_err(ConversionError::InvalidProcedureId)?,
+        procedure_id: ProcedureId::from_string(&c.procedure_id)
+            .map_err(ConversionError::InvalidProcedureId)?,
+        version: c.version,
+        issued_to: c.issued_to.clone(),
+        task_id: c.task_id.clone(),
+        session_id: c.session_id.clone(),
+        issued_at: c.issued_at,
+        expires_at: c.expires_at,
+        report_to: c.report_to.clone(),
+    })
+}
+
+/// Parse a [`ProcedureId`] from its UUIDv7 string form.
+pub fn procedure_id_from_proto(s: &str) -> Result<ProcedureId, ConversionError> {
+    ProcedureId::from_string(s).map_err(ConversionError::InvalidProcedureId)
+}
+
+/// Build a domain [`OutcomeReport`] from the wire fields of a report request.
+///
+/// `failure_mode` is only meaningful for a `failure` outcome; `failed_step`
+/// names the step when the mode is `step_failed`.
+pub fn outcome_report_from_proto(
+    receipt_id: ProcedureId,
+    outcome: &str,
+    failure_mode: Option<&str>,
+    failed_step: Option<&str>,
+    executor_confidence: Option<f64>,
+    cost: Option<f64>,
+    notes: Option<String>,
+) -> Result<OutcomeReport, ConversionError> {
+    let outcome = match outcome {
+        "success" => DomainOutcome::Success,
+        "failure" => DomainOutcome::Failure,
+        "abandoned" => DomainOutcome::Abandoned,
+        other => return Err(ConversionError::InvalidOutcome(other.to_string())),
+    };
+
+    let failure_mode = match failure_mode {
+        None => None,
+        Some("preconditions_stale") => Some(DomainFailureMode::PreconditionsStale),
+        Some("bad_result") => Some(DomainFailureMode::BadResult),
+        Some("executor_error") => Some(DomainFailureMode::ExecutorError),
+        Some("step_failed") => Some(DomainFailureMode::StepFailed(
+            failed_step.unwrap_or_default().to_string(),
+        )),
+        Some(other) => return Err(ConversionError::InvalidFailureMode(other.to_string())),
+    };
+
+    // A failure attribution only makes sense for a failure outcome; carrying one
+    // on a success would silently mis-attribute the report.
+    if failure_mode.is_some() && outcome != DomainOutcome::Failure {
+        return Err(ConversionError::InvalidFailureMode(
+            "failure_mode is only valid when outcome = failure".to_string(),
+        ));
+    }
+
+    Ok(OutcomeReport {
+        receipt_id,
+        outcome,
+        failure_mode,
+        executor_confidence,
+        cost,
+        notes,
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    use boswell_domain::{
+        BodyFormat, ClaimMatch as DClaimMatch, Expect, Parameter, Precondition, PreconditionCheck,
+        Procedure, ProcedureSource, Tier,
+    };
+
+    /// The wire shape claims to be lossless, so a full-fat procedure must
+    /// survive the round trip unchanged — otherwise an executor silently loses
+    /// the signature it needs to decide whether the procedure applies.
+    #[test]
+    fn procedure_survives_a_proto_round_trip() {
+        let original = Procedure {
+            id: ProcedureId::new(),
+            namespace: "person:jd".into(),
+            name: "omelette-classic".into(),
+            version: 3,
+            supersedes: Some(ProcedureId::new()),
+            is_current: true,
+            source: ProcedureSource::Learned,
+            goal: "goal:person:jd/cook-eggs".into(),
+            intent: "cook eggs into a classic omelette".into(),
+            tags: vec!["breakfast".into(), "eggs".into()],
+            parameters: vec![Parameter {
+                name: "count".into(),
+                type_name: "int".into(),
+                default: Some("2".into()),
+                desc: Some("how many eggs".into()),
+            }],
+            preconditions: vec![Precondition {
+                kind: "resource".into(),
+                description: "eggs on hand".into(),
+                check: PreconditionCheck {
+                    match_pattern: DClaimMatch {
+                        subject: "jd".into(),
+                        predicate: "has".into(),
+                        object: "eggs".into(),
+                    },
+                    min_confidence: 0.6,
+                    expect: Expect::Absent,
+                },
+            }],
+            required_tools: vec!["pan".into(), "whisk".into()],
+            postconditions: vec!["eggs are cooked".into()],
+            est_duration_sec: Some(300),
+            usage_notes: "keep the heat low".into(),
+            context_tags: vec!["kitchen".into()],
+            body_format: BodyFormat::Dsl,
+            content_type: "application/x-boswell-steps".into(),
+            body: "1. beat eggs\n2. pour".into(),
+            tier: Tier::Project,
+            use_count: 12,
+            success_count: 9,
+            failure_count: 2,
+            unknown_count: 1,
+            last_used_at: Some(1_700_000_000_000),
+            created_at: 1_600_000_000_000,
+            updated_at: 1_700_000_000_000,
+            stale_at: Some(1_800_000_000_000),
+        };
+
+        let round_tripped = procedure_from_proto(&procedure_to_proto(&original)).unwrap();
+        assert_eq!(round_tripped, original);
+    }
+
+    /// A receipt is the executor's only handle on its obligation, so its
+    /// correlation fields have to survive the wire too.
+    #[test]
+    fn execution_contract_survives_a_proto_round_trip() {
+        let original = DomainReceipt {
+            receipt_id: ProcedureId::new(),
+            procedure_id: ProcedureId::new(),
+            version: 2,
+            issued_to: "agent:cook-1".into(),
+            task_id: Some("task-7".into()),
+            session_id: Some("session-3".into()),
+            issued_at: 1_700_000_000_000,
+            expires_at: 1_700_000_600_000,
+            report_to: Some("https://example.invalid/report".into()),
+        };
+
+        let round_tripped = contract_from_proto(&contract_to_proto(&original)).unwrap();
+        assert_eq!(round_tripped, original);
+    }
+
+    /// `step_failed` carries the step name; dropping it would erase the
+    /// diagnosis the attribution exists to provide.
+    #[test]
+    fn step_failed_carries_the_step_name() {
+        let report = outcome_report_from_proto(
+            ProcedureId::new(),
+            "failure",
+            Some("step_failed"),
+            Some("whisk"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            report.failure_mode,
+            Some(DomainFailureMode::StepFailed("whisk".into()))
+        );
+        assert!(report.is_negative());
+    }
+
+    /// An unrecognised outcome must not be silently coerced into a success.
+    #[test]
+    fn an_unknown_outcome_is_rejected() {
+        let err = outcome_report_from_proto(
+            ProcedureId::new(),
+            "probably-fine",
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, ConversionError::InvalidOutcome(_)));
+    }
+
     use super::*;
 
     #[test]

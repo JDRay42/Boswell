@@ -29,5 +29,8 @@ mod client;
 mod error;
 mod session;
 
-pub use client::{BoswellClient, ExtractResult, HealthStatus, QueryFilter};
+pub use client::{
+    BoswellClient, DispensedProcedure, ExtractResult, HealthStatus, OutcomeReportSpec,
+    ProcedureQuerySpec, QueryFilter,
+};
 pub use error::SdkError;
