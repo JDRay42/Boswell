@@ -286,7 +286,7 @@ that needs a model calls one trait, and configuration decides who answers it.
   from the vendors' conventional environment variables; no provider derives `Debug`, so a
   key cannot reach a log through `{:?}`. A model that declines to answer now has its own
   error — both Anthropic and Google report a refusal as an HTTP 200, which without it reads
-  as an empty answer. *shipped* (#PR)
+  as an empty answer. *shipped* (#40)
 - **Per-subsystem provider configuration.** ADR-015's actual decision was that each
   subsystem — Extractor, Gatekeeper, Janitor, Synthesizer — maps to a provider
   independently. The trait supports that; nothing reads configuration to do it. The
