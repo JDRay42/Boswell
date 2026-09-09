@@ -317,6 +317,7 @@ dependencies = [
 name = "boswell-gatekeeper"
 version = "0.1.0"
 dependencies = [
+ "boswell-devauth",
  "boswell-domain",
  "boswell-llm",
  "boswell-store",
