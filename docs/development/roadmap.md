@@ -292,9 +292,12 @@ Every way in: gRPC, the router, the SDK, the HTTP gateway, MCP, the CLI.
   `Assert` is a second claim and a repeated `QueryProcedures` is a second receipt.
   Re-establishing an expired session is unchanged at one attempt, under every policy.
   *shipped* (#54)
-- **Un-ignore the full-stack E2E tests.** `boswell-sdk/tests/e2e_tests.rs` requires
-  manually started router and gRPC servers, so CI never exercises SDK → Router → gRPC →
-  Store end to end. *open*
+- **Un-ignore the full-stack E2E tests.** `boswell-sdk/tests/e2e_tests.rs` now stands the
+  whole stack up in-process — a gRPC instance over an in-memory store and a router that
+  has it registered, both on ephemeral ports — so CI exercises SDK → Router → gRPC →
+  Store on every run. Nothing in the file is `#[ignore]`d. What made it possible is
+  `boswell_router::start_server_with_shutdown`, mirroring the gRPC entrypoint from #50:
+  before it, `start_server` never returned. *shipped* (#62)
 - **REPL procedural-memory commands.** The REPL implements nine commands and omits `goal`,
   `procedure` and `validate`. Its parser is hand-rolled and positional, so this is its own
   piece of work rather than a wiring change — and it already omitted a shipped command

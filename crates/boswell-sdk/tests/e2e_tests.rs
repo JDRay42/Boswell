@@ -1,15 +1,157 @@
-//! End-to-End Integration Tests for Boswell SDK
+//! End-to-end integration tests for the Boswell SDK.
 //!
-//! Full E2E tests require manually starting Router and gRPC servers.
-//! These tests focus on SDK integration behavior.
+//! These run the whole path — SDK → Router → gRPC → store — with no manual
+//! setup and nothing `#[ignore]`d. [`stack::Stack`] stands a gRPC instance and a
+//! router up in-process on ephemeral ports, over an in-memory SQLite store, and
+//! stops both when it drops. Each test gets its own stack, so they neither share
+//! a store nor collide on a namespace.
 //!
-//! To run full manual E2E tests:
-//! 1. Start gRPC server: `cargo run -p boswell-grpc`
-//! 2. Start Router: `cargo run -p boswell-router --config config/router.toml`
-//! 3. Run tests: `cargo test -p boswell-sdk --test e2e_tests -- --ignored`
+//! Before this, the full-stack tests were ignored and expected servers started
+//! by hand on fixed ports, which meant CI never exercised the SDK against a real
+//! router at all.
 
 use boswell_domain::Tier;
 use boswell_sdk::{BoswellClient, QueryFilter, SdkError};
+use stack::Stack;
+
+/// A full Boswell stack, running in the test process.
+mod stack {
+    use boswell_grpc::server::{start_server_with_shutdown, ServerConfig};
+    use boswell_router::config::{InstanceConfig, RouterConfig};
+    use boswell_router::start_server_with_shutdown as start_router_with_shutdown;
+    use boswell_store::SqliteStore;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+    use tokio::sync::oneshot;
+
+    /// How long to wait for a listener to start accepting. Generous: a cold CI
+    /// runner binds slowly, and the cost of over-waiting is nothing, while the
+    /// cost of under-waiting is a flake.
+    const READY_TIMEOUT: Duration = Duration::from_secs(10);
+
+    /// Poll interval while waiting for a listener.
+    const READY_POLL: Duration = Duration::from_millis(10);
+
+    /// A gRPC instance and a router that has it registered, both running on
+    /// loopback in this process. Dropping the stack stops both.
+    pub struct Stack {
+        router_endpoint: String,
+        shutdown: Vec<oneshot::Sender<()>>,
+    }
+
+    impl Stack {
+        /// Start both servers and return once each is accepting connections.
+        ///
+        /// # Panics
+        /// Panics if either server fails to come up inside [`READY_TIMEOUT`] —
+        /// there is nothing a test can do with a half-built stack.
+        pub async fn start() -> Self {
+            let grpc_port = free_port();
+            let router_port = free_port();
+
+            let store = Arc::new(Mutex::new(
+                SqliteStore::new(":memory:", false, 0).expect("an in-memory store should open"),
+            ));
+
+            let (grpc_tx, grpc_rx) = oneshot::channel();
+            tokio::spawn(async move {
+                if let Err(e) = start_server_with_shutdown(
+                    ServerConfig::new("127.0.0.1", grpc_port),
+                    store,
+                    None,
+                    None,
+                    async move {
+                        let _ = grpc_rx.await;
+                    },
+                )
+                .await
+                {
+                    eprintln!("gRPC instance stopped with error: {e}");
+                }
+            });
+
+            let config = RouterConfig {
+                bind_address: "127.0.0.1".to_string(),
+                bind_port: router_port,
+                jwt_secret: "e2e-test-secret".to_string(),
+                token_expiry_secs: 3600,
+                instances: vec![InstanceConfig {
+                    id: "e2e".to_string(),
+                    endpoint: format!("http://127.0.0.1:{grpc_port}"),
+                    expertise: vec!["*".to_string()],
+                }],
+            };
+
+            let (router_tx, router_rx) = oneshot::channel();
+            tokio::spawn(async move {
+                if let Err(e) = start_router_with_shutdown(config, async move {
+                    let _ = router_rx.await;
+                })
+                .await
+                {
+                    eprintln!("router stopped with error: {e}");
+                }
+            });
+
+            // Wait on both, so a test that fails does so on its own assertion
+            // rather than on a connection refused by a server still binding.
+            await_listener("gRPC instance", grpc_port).await;
+            await_listener("router", router_port).await;
+
+            Self {
+                router_endpoint: format!("http://127.0.0.1:{router_port}"),
+                shutdown: vec![grpc_tx, router_tx],
+            }
+        }
+
+        /// The router URL to hand [`boswell_sdk::BoswellClient::new`].
+        pub fn router_endpoint(&self) -> &str {
+            &self.router_endpoint
+        }
+    }
+
+    impl Drop for Stack {
+        fn drop(&mut self) {
+            // `send` is synchronous, which is what makes this possible in
+            // `drop`. Both servers shut down gracefully on their own tasks; the
+            // test process does not wait for them, and does not need to.
+            for tx in self.shutdown.drain(..) {
+                let _ = tx.send(());
+            }
+        }
+    }
+
+    /// Claim an ephemeral port from the OS and release it, so a server can bind
+    /// it a moment later.
+    ///
+    /// There is a race here — the same one `boswell-grpc`'s own server tests
+    /// live with. Neither `tonic` nor the router's `start_server` takes a
+    /// pre-bound listener, so the port has to be chosen before the bind. The
+    /// window is microseconds and the ports are ephemeral.
+    fn free_port() -> u16 {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("the loopback interface should hand out an ephemeral port")
+            .local_addr()
+            .expect("a bound listener has a local address")
+            .port()
+    }
+
+    /// Block until something is accepting on `port`, or panic after
+    /// [`READY_TIMEOUT`].
+    async fn await_listener(what: &str, port: u16) {
+        let deadline = tokio::time::Instant::now() + READY_TIMEOUT;
+        while tokio::time::Instant::now() < deadline {
+            if tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .is_ok()
+            {
+                return;
+            }
+            tokio::time::sleep(READY_POLL).await;
+        }
+        panic!("{what} never started accepting on port {port}");
+    }
+}
 
 #[tokio::test]
 async fn test_sdk_not_connected_error() {
@@ -84,21 +226,16 @@ async fn test_sdk_forget_not_connected() {
 }
 
 // ============================================================================
-// Manual E2E Tests (require servers to be running)
-// Run with: cargo test -p boswell-sdk --test e2e_tests -- --ignored
+// Full-stack tests: SDK -> Router -> gRPC -> store, all in-process.
 // ============================================================================
 
 #[tokio::test]
-#[ignore] // Requires manually started servers
 async fn test_e2e_full_flow() {
-    // Expects Router on localhost:8080 and gRPC instance registered
-    let mut client = BoswellClient::new("http://localhost:8080");
+    let stack = Stack::start().await;
+    let mut client = BoswellClient::new(stack.router_endpoint());
 
     // Connect to router
-    client
-        .connect()
-        .await
-        .expect("Failed to connect - is Router running?");
+    client.connect().await.expect("Failed to connect to router");
 
     // Assert a claim
     let claim_id = client
@@ -146,9 +283,9 @@ async fn test_e2e_full_flow() {
 }
 
 #[tokio::test]
-#[ignore] // Requires manually started servers
 async fn test_e2e_batch_operations() {
-    let mut client = BoswellClient::new("http://localhost:8080");
+    let stack = Stack::start().await;
+    let mut client = BoswellClient::new(stack.router_endpoint());
     client.connect().await.expect("Failed to connect");
 
     // Assert multiple claims
@@ -192,9 +329,9 @@ async fn test_e2e_batch_operations() {
 }
 
 #[tokio::test]
-#[ignore] // Requires manually started servers
 async fn test_e2e_confidence_filtering() {
-    let mut client = BoswellClient::new("http://localhost:8080");
+    let stack = Stack::start().await;
+    let mut client = BoswellClient::new(stack.router_endpoint());
     client.connect().await.expect("Failed to connect");
 
     // Assert claims with different confidence
