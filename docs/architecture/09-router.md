@@ -2,14 +2,24 @@
 
 The Router is the session management and instance registry authority for all Boswell deployments. It is **always present**, even in single-instance configurations, where it adds minimal overhead (<1MB memory, near-zero CPU). The Router responds to session requests from authorized clients with a list of registered instances, their endpoints, capabilities, health status, and instance-specific tokens.
 
+> **Status.** Most of this document is design, not description. What exists today is a small
+> axum HTTP service: it parses a plaintext TOML file, answers `POST /session/establish` with
+> one HS256 JWT and the configured instance list, and answers `GET /health` from registry
+> state that nothing ever updates. The encrypted config, the health monitor, per-instance
+> tokens and mTLS are unbuilt, and
+> [ADR-021](../ADRs/021-gateway-is-the-security-boundary.md) has since moved authentication
+> to the HTTP gateway. Sections describing unbuilt behavior are marked below.
+> [`docs/development/roadmap.md`](../development/roadmap.md) is the source of truth for
+> status, and [`10-security.md`](10-security.md) is normative for the security model.
+
 ## Responsibility
 
 The Router is the single source of truth for:
 
 - **Instance registry:** Maintains the list of registered instances with their cryptographic fingerprints, endpoints, capabilities, and health states.
 - **Session token issuance:** Issues one token per instance in response to authenticated session requests. Each token is scoped to a specific instance.
-- **Health tracking:** Periodically checks instance health and reports current health status in session responses.
-- **Configuration management:** Stores the encrypted, portable configuration file containing all registry data.
+- **Health tracking:** Reports each instance's health status in session responses. *Designed to poll; does not yet — see [Health Monitor](#health-monitor).*
+- **Configuration management:** Holds the configuration file containing all registry data. *Plaintext TOML today; the encrypted portable form is unbuilt.*
 
 **What the Router is NOT:**
 
@@ -104,6 +114,10 @@ pub enum InstanceHealth {
 
 ### Manual Registration
 
+*Partly built.* Registration is manual, but a registered instance is a `[[instances]]` table
+of `id`, `endpoint` and `expertise` — there is no fingerprint field and no capability
+declaration.
+
 **Instance registration is manual and deliberate.** There is no automatic discovery mechanism. Adding a new instance requires:
 
 1. **Administrative action:** Editing the Router's encrypted configuration file.
@@ -115,6 +129,8 @@ This deliberate process ensures that only trusted instances join the network. Au
 
 ### Multiple Endpoints
 
+*Not built.* `InstanceConfig::endpoint` is a single string. One instance, one endpoint.
+
 An instance may have multiple endpoints registered to support different network contexts:
 - **LAN address** for when the client is on the same local network
 - **VPN address** for remote access
@@ -123,6 +139,11 @@ An instance may have multiple endpoints registered to support different network 
 The client SDK can try endpoints in order based on reachability and network context.
 
 ### Health States and Transitions
+
+*Not built.* `HealthStatus` has the three variants, and `InstanceRegistry::update_health`
+would apply a transition, but nothing calls it outside tests. Every instance is `Healthy`
+from `from_config` onward, so `GET /health` reports `healthy` whether or not any instance
+is running.
 
 ```mermaid
 stateDiagram-v2
@@ -151,6 +172,9 @@ Health state transitions are fully automatic based on health check results. No m
 
 ## Health Monitor
 
+*Not built.* There is no polling task, no health-check client and no configuration for
+either. This section describes the intended monitor, not a component that runs.
+
 The Health Monitor periodically pings each registered instance:
 
 - **Check interval:** Configurable (default: 60 seconds).
@@ -160,6 +184,12 @@ The Health Monitor periodically pings each registered instance:
 Health states are reflected in the topology returned to clients. When a client re-fetches topology (new session request), it gets current health information.
 
 ## Token Issuance and Validation
+
+*Not built as described.* The Router issues **one** token per session, not one per instance:
+`generate_token` signs `{user_id, exp, iat}` with HS256 over the shared `jwt_secret`. No
+instance validates it — ADR-021 made the gRPC instance loopback-only and authentication-free,
+so the JWT is topology-discovery bookkeeping and nothing more. See
+[ADR-019](../ADRs/019-stateless-sessions.md) and [`10-security.md`](10-security.md).
 
 The Router issues **one token per instance** in response to each SessionRequest.
 
@@ -205,6 +235,10 @@ sequenceDiagram
 - **Instances never communicate with each other:** All trust relationships are mediated through the Router's registry and mTLS verification.
 
 ## Portable Encrypted Configuration
+
+*Not built.* `RouterConfig::from_file` reads plaintext TOML. Whether an `age`-encrypted
+portable config survives ADR-021 is an open question, tracked in
+[`10-security.md`](10-security.md) and on the roadmap; it is not resolved here.
 
 The Router's configuration — the instance registry, keypairs, and settings — is stored in a single encrypted file.
 
@@ -276,21 +310,55 @@ Note that the Router trait does not include routing, classification, or query op
 
 ## Configuration
 
-| Setting | Default | Description |
+The Router reads a plaintext TOML file named by `--config`. `--config` and `--help` are the
+only flags. With neither, it warns on stderr and runs `RouterConfig::default_test_config()`
+— loopback, port 8080, a hard-coded secret, one instance at `http://localhost:50051`. That
+fallback exists for tests; it is not a deployment default.
+
+### Built: the keys `RouterConfig` parses
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `bind_address` | string | *required* | Interface to bind, e.g. `127.0.0.1`. Unvalidated — unlike the gRPC instance, the Router does not refuse a routable address. |
+| `bind_port` | integer | *required* | Port to bind, e.g. `8080`. |
+| `jwt_secret` | string | *required* | Symmetric HS256 secret for session tokens. Rejected at load if empty. |
+| `token_expiry_secs` | integer | `3600` | Lifetime of an issued session token, in seconds. |
+| `instances` | array of tables | `[]` | Registered instances. An empty array parses; `POST /session/establish` then returns 500. |
+| `instances[].id` | string | *required* | Instance identifier, e.g. `default`. |
+| `instances[].endpoint` | string | *required* | The instance's gRPC endpoint. Exactly one — see *Multiple Endpoints*. |
+| `instances[].expertise` | array of strings | `[]` | Namespaces this instance handles. Passed through to the session response; the Router never reads it. |
+
+```toml
+bind_address = "127.0.0.1"
+bind_port = 8080
+jwt_secret = "..."
+token_expiry_secs = 3600
+
+[[instances]]
+id = "default"
+endpoint = "http://localhost:50051"
+expertise = ["*"]
+```
+
+The file is read once at startup. There is no reload, no write-back, and no environment-variable
+override.
+
+### Not built: what this table used to promise
+
+These settings were specified here before the Router was written. None appears in
+`RouterConfig`, and with one exception the behavior each would configure does not exist.
+
+| Old setting | What it configured | Where it stands |
 |---|---|---|
-| `config_path` | `./router.enc` | Path to encrypted configuration file |
-| `listen_address` | `0.0.0.0:9000` | gRPC listen address |
-| `health_check_interval` | `60s` | Interval between instance health checks |
-| `health_check_timeout` | `5s` | Timeout for individual health check |
-| `failure_threshold` | `2` | Consecutive failures before marking unreachable |
-| `recovery_threshold` | `2` | Consecutive successes before marking healthy |
-| `degraded_threshold` | `80%` | Percentage of timeout that triggers degraded state (e.g., 4s response on 5s timeout) |
-| `token_ttl` | `1h` | Time-to-live for issued session tokens |
-| `signing_key_path` | (in encrypted config) | Private key for signing session tokens |
+| `config_path` (`./router.enc`) | The `age`-encrypted portable config | Unbuilt; the file is plaintext TOML. Whether encryption survives ADR-021 is undecided — see [`10-security.md`](10-security.md). |
+| `listen_address` (`0.0.0.0:9000`) | A gRPC listener on every interface | Wrong twice: the Router speaks HTTP, and ADR-021 puts it on loopback behind the gateway. `bind_address` and `bind_port` replace it. |
+| `health_check_interval`, `health_check_timeout`, `failure_threshold`, `recovery_threshold`, `degraded_threshold` | The Health Monitor | Unbuilt. Nothing polls instances, so nothing consumes an interval or a threshold. |
+| `token_ttl` (`1h`) | Session token lifetime | Built, under the name `token_expiry_secs`, same default. |
+| `signing_key_path` | A private key for signing per-instance tokens | Unbuilt. Signing is HS256 over the shared `jwt_secret`, and no instance verifies the result. |
 
 ## Deployment
 
-The Router is a single static binary with no runtime dependencies (other than the encrypted config file). It runs on any machine that has network access to at least one registered instance.
+The Router is a single static binary with no runtime dependencies other than its config file. It runs on any machine that has network access to at least one registered instance.
 
 ### Single-Instance Mode
 
@@ -321,7 +389,7 @@ Running it on your own machine (desktop, laptop) gives you direct control over t
 
 - **Memory:** <1MB for single instance, ~1MB + (100KB × number of instances)
 - **CPU:** Near-zero except during session establishment and health checks
-- **Disk:** Only the encrypted config file (~10-50KB depending on registry size)
+- **Disk:** Only the config file (~10-50KB depending on registry size)
 - **Network:** Outbound connections to instances for health checks; inbound gRPC listener for session requests
 
 The Router holds **no claim data** — only metadata about instances. Memory and CPU usage are independent of the number of claims in your system.
