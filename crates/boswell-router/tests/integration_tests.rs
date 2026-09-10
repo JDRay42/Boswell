@@ -202,3 +202,86 @@ fn test_default_token_expiry() {
     let config: RouterConfig = toml::from_str(toml).unwrap();
     assert_eq!(config.token_expiry_secs, 3600); // Default
 }
+
+// ============================================================================
+// Server lifecycle
+//
+// The regression these exist for: `start_server` used to call `axum::serve`
+// with no shutdown signal, so it never returned and the only way to stop the
+// router was to kill the process. That is what kept the SDK's full-stack tests
+// `#[ignore]`d — nothing could stand a router up and take it down again.
+// ============================================================================
+
+/// Claim an ephemeral port and release it so the router can bind it.
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("the loopback interface should hand out an ephemeral port")
+        .local_addr()
+        .expect("a bound listener has a local address")
+        .port()
+}
+
+fn test_config(port: u16) -> RouterConfig {
+    RouterConfig {
+        bind_address: "127.0.0.1".to_string(),
+        bind_port: port,
+        jwt_secret: "test-secret-key".to_string(),
+        token_expiry_secs: 3600,
+        instances: vec![InstanceConfig {
+            id: "instance1".to_string(),
+            endpoint: "http://localhost:50051".to_string(),
+            expertise: vec!["*".to_string()],
+        }],
+    }
+}
+
+/// The `timeout` is the assertion, not a performance guard: a router that
+/// ignores its shutdown signal hangs here rather than failing.
+#[tokio::test]
+async fn the_router_returns_when_the_shutdown_signal_fires_while_it_is_serving() {
+    let port = free_port();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+
+    // Signal only once the router is actually accepting, so a pass means it
+    // served *and* stopped, not that it never started.
+    tokio::spawn(async move {
+        for _ in 0..200 {
+            if tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .is_ok()
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let _ = tx.send(());
+    });
+
+    let served = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        boswell_router::start_server_with_shutdown(test_config(port), async move {
+            let _ = rx.await;
+        }),
+    )
+    .await
+    .expect("the router should stop on the signal, not run until the test times out");
+
+    served.expect("a graceful shutdown is not an error");
+}
+
+/// A signal that has already fired must still leave the router bound cleanly
+/// first — shutdown is not an error path.
+#[tokio::test]
+async fn a_shutdown_signal_that_has_already_fired_stops_the_router_cleanly() {
+    let served = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        boswell_router::start_server_with_shutdown(
+            test_config(free_port()),
+            std::future::ready(()),
+        ),
+    )
+    .await
+    .expect("an already-fired signal should stop the router at once");
+
+    served.expect("a graceful shutdown is not an error");
+}

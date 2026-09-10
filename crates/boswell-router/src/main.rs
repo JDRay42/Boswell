@@ -8,6 +8,10 @@ use std::process;
 
 #[tokio::main]
 async fn main() {
+    // The subscriber is installed here rather than in `start_server`, so that a
+    // caller embedding the router as a library keeps control of its own tracing.
+    tracing_subscriber::fmt::init();
+
     if let Err(e) = run().await {
         eprintln!("Error: {}", e);
         process::exit(1);

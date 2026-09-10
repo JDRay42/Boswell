@@ -438,6 +438,8 @@ version = "0.1.0"
 dependencies = [
  "boswell-domain",
  "boswell-grpc",
+ "boswell-router",
+ "boswell-store",
  "reqwest",
  "serde",
  "serde_json",

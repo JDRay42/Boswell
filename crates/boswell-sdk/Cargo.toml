@@ -14,8 +14,13 @@ serde_json = { workspace = true }
 reqwest = { version = "0.12", features = ["json"] }
 tonic = "0.12"
 
+# The E2E tests stand the whole stack up in-process: a gRPC instance over an
+# in-memory store, and a router that has it registered. None of this belongs in
+# the shipped SDK, which knows the router only as an HTTP endpoint.
 [dev-dependencies]
 tokio = { workspace = true }
+boswell-router = { workspace = true }
+boswell-store = { workspace = true }
 
 [lints]
 workspace = true

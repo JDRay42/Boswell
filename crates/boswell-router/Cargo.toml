@@ -12,7 +12,7 @@ path = "src/main.rs"
 # and speaks no gRPC, so it depends on neither boswell-domain nor boswell-grpc.
 [dependencies]
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
 serde = { workspace = true, features = ["derive"] }
 axum = "0.7"
 jsonwebtoken = "9.3"
@@ -22,7 +22,10 @@ tracing-subscriber = "0.3"
 
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
-tower = "0.4"
+# `util` is what provides `ServiceExt::oneshot`, which every handler test uses.
+# Undeclared, the crate builds only because something else in the workspace turns
+# the feature on — `cargo test -p boswell-router` on its own then fails.
+tower = { version = "0.4", features = ["util"] }
 serde_json = "1.0"
 
 [lints]
