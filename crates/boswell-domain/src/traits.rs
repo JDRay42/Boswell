@@ -193,6 +193,15 @@ pub struct ClaimQuery {
     /// Filter by namespace prefix
     pub namespace: Option<String>,
 
+    /// Filter by exact subject
+    pub subject: Option<String>,
+
+    /// Filter by exact predicate
+    pub predicate: Option<String>,
+
+    /// Filter by exact object
+    pub object: Option<String>,
+
     /// Filter by tier
     pub tier: Option<String>,
 

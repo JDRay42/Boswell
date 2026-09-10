@@ -283,30 +283,29 @@ impl Gatekeeper {
     where
         S::Error: std::fmt::Display,
     {
-        // Query for claims with the same subject, predicate, and object
+        // Query for claims with the same subject, predicate, and object. The
+        // triple is a SQL filter, so any row that comes back *is* a duplicate.
+        // The previous shape asked for up to 100 rows matching only namespace
+        // and tier and compared the triples in Rust, which silently missed a
+        // duplicate sitting past the hundredth row.
         let query = ClaimQuery {
             namespace: Some(claim.namespace.clone()),
+            subject: Some(claim.subject.clone()),
+            predicate: Some(claim.predicate.clone()),
+            object: Some(claim.object.clone()),
             tier: Some(claim.tier.clone()),
-            source_type: None,
-            min_confidence: None,
-            semantic_text: None,
-            limit: Some(100), // Check up to 100 existing claims
+            limit: Some(1),
+            ..ClaimQuery::default()
         };
 
         let existing_claims = store
             .query_claims(&query)
             .map_err(|e| GatekeeperError::Store(format!("Failed to query claims: {}", e)))?;
 
-        // Check for exact matches
-        for existing in existing_claims {
-            if existing.subject == claim.subject
-                && existing.predicate == claim.predicate
-                && existing.object == claim.object
-            {
-                return Ok(Some(RejectionReason::Duplicate {
-                    existing_id: existing.id,
-                }));
-            }
+        if let Some(existing) = existing_claims.into_iter().next() {
+            return Ok(Some(RejectionReason::Duplicate {
+                existing_id: existing.id,
+            }));
         }
 
         // Semantic (near-)duplicate detection, when enabled and supported.

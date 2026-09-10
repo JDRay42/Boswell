@@ -316,9 +316,15 @@ where
             .filter
             .ok_or_else(|| Status::invalid_argument("Missing filter"))?;
 
-        // Build query
+        // Build query. The (subject, predicate, object) triple goes into the store
+        // query rather than being filtered out of the results: the store applies
+        // `limit` in SQL, so filtering afterward made `limit` mean "rows scanned"
+        // and dropped matches that sat past the limit.
         let query = ClaimQuery {
             namespace: filter.namespace,
+            subject: filter.subject,
+            predicate: filter.predicate,
+            object: filter.object,
             tier: filter.tier.and_then(|t| {
                 if t != 0 {
                     tier_from_proto(Tier::try_from(t).unwrap_or(Tier::Unspecified)).ok()
@@ -328,12 +334,12 @@ where
             }),
             source_type: filter.source_type.filter(|s| !s.trim().is_empty()),
             min_confidence: filter.min_confidence.filter(|&c| c > 0.0),
-            semantic_text: None,
             limit: if req.limit > 0 {
                 Some(req.limit as usize)
             } else {
                 Some(100)
             },
+            ..ClaimQuery::default()
         };
 
         // Query claims from store
@@ -342,33 +348,10 @@ where
             .query_claims(&query)
             .map_err(|e| Status::internal(format!("Query failed: {:?}", e)))?;
 
-        // Apply additional filters (subject, predicate, object not in ClaimQuery yet)
-        let filtered_claims: Vec<Claim> = claims
-            .into_iter()
-            .filter(|c| {
-                if let Some(ref subject) = filter.subject {
-                    if &c.subject != subject {
-                        return false;
-                    }
-                }
-                if let Some(ref predicate) = filter.predicate {
-                    if &c.predicate != predicate {
-                        return false;
-                    }
-                }
-                if let Some(ref object) = filter.object {
-                    if &c.object != object {
-                        return false;
-                    }
-                }
-                true
-            })
-            .collect();
-
-        let total_count = filtered_claims.len() as i32;
+        let total_count = claims.len() as i32;
 
         // Convert to proto
-        let proto_claims = filtered_claims.into_iter().map(claim_to_proto).collect();
+        let proto_claims = claims.into_iter().map(claim_to_proto).collect();
 
         Ok(Response::new(QueryResponse {
             claims: proto_claims,
@@ -1583,6 +1566,68 @@ mod tests {
             .into_inner();
         assert_eq!(extraction.claims.len(), 1);
         assert_eq!(extraction.claims[0].subject, "Carol");
+    }
+
+    /// The hole this closes: `limit` is applied by the store, in SQL. While the
+    /// subject/predicate/object filter ran in Rust *after* the query returned,
+    /// `limit` meant "rows scanned", so a match sitting past the limit was
+    /// silently dropped and the caller saw an empty result.
+    #[tokio::test]
+    async fn test_query_by_subject_finds_matches_past_the_limit() {
+        let store = SqliteStore::new(":memory:", false, 0).unwrap();
+        let store = Arc::new(Mutex::new(store));
+        let service = BosWellServiceImpl::new(Arc::clone(&store));
+
+        // Twenty claims share a namespace; only the last one is Zoe's. ULIDs sort
+        // by creation, so Zoe lands past a limit of five.
+        {
+            let mut guard = store.lock().unwrap();
+            for i in 0..19 {
+                guard
+                    .assert_claim(Claim::new(
+                        ClaimId::new(),
+                        "test".into(),
+                        format!("Filler{:02}", i),
+                        "knows".into(),
+                        "Bob".into(),
+                        (0.7, 0.8),
+                        "task".into(),
+                        1000 + i,
+                    ))
+                    .unwrap();
+            }
+            guard
+                .assert_claim(Claim::new(
+                    ClaimId::new(),
+                    "test".into(),
+                    "Zoe".into(),
+                    "knows".into(),
+                    "Bob".into(),
+                    (0.7, 0.8),
+                    "task".into(),
+                    2000,
+                ))
+                .unwrap();
+        }
+
+        let resp = service
+            .query(Request::new(QueryRequest {
+                filter: Some(QueryFilter {
+                    namespace: Some("test".to_string()),
+                    subject: Some("Zoe".to_string()),
+                    ..Default::default()
+                }),
+                mode: QueryMode::Fast as i32,
+                limit: 5,
+                auth_token: "token".to_string(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert_eq!(resp.claims.len(), 1, "the subject filter must reach SQL");
+        assert_eq!(resp.claims[0].subject, "Zoe");
+        assert_eq!(resp.total_count, 1);
     }
 
     #[tokio::test]
