@@ -237,9 +237,15 @@ Still open, and now sharper for having a decided model to sit in:
   `sub`, the same way an `[[api_keys]]` entry supplies it for a key, so a verified subject with
   no entry is 403 rather than 401. API keys are untouched and a JWT presented to a gateway with
   no issuer configured is just a bad key. *shipped* (#68)
-- **The device-code client half.** Nothing in the repo obtains a token — an operator gets one
-  from their provider by hand. The grant runs between the client and the provider with the
-  gateway not in it, so this is a `boswell login` command, not gateway work. *open*
+- **The device-code client half.** `boswell login` runs the OAuth device authorization grant
+  (RFC 8628) against the issuer named by `--issuer`/`--client-id` or by an `[oidc]` section in
+  the CLI config. It discovers the provider's endpoints, prints a URL and a user code, polls the
+  token endpoint honoring `authorization_pending` and `slow_down`, gives up at the code's own
+  expiry, and writes the access token to `~/.boswell/token.json` at mode `0600`. Any refresh
+  token is discarded — nothing in Boswell refreshes, and JWT refresh is still an open question
+  in `10-security.md`. `boswell login --status` describes the stored token without printing it;
+  `boswell logout` deletes it. The gateway is not in the grant and the CLI does not read the
+  gateway's config, so the same issuer has to be named in both. *shipped* (#69)
 - **Attenuable tokens** (`biscuit-auth`): root token minted from a verified OIDC identity,
   attenuation for subagents, and the Datalog authorization policy. *open*
 - **Revocation list.** Offline verification means a revoked grant is invisible until something

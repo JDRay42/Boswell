@@ -71,6 +71,19 @@ identity provider it names. The gateway verifies it against that provider's JWKS
 caches, so a verified request costs no round trip. Obtaining the token is between the caller
 and the provider — the device-code grant is the intended flow — and the gateway is not in it.
 
+`boswell login` runs that grant:
+
+```bash
+boswell login --issuer https://id.example.com --client-id boswell-cli --scope read,write
+```
+
+It prints a URL and a short code, waits for the approval, and writes the resulting token to
+`~/.boswell/token.json` (mode `0600`). `boswell login --status` describes the stored token
+without printing it; `boswell logout` deletes it. The issuer and client id can live under an
+`[oidc]` section in `~/.boswell/config.toml` instead of on the command line. The CLI does not
+read the gateway's config — it is usually not on the gateway's host — so the same issuer has to
+be named in both places.
+
 Verification says who is asking, not what they may do. Authority comes from an
 `[[oidc.principals]]` entry matching the token's `sub`, carrying the same `namespace` and
 `scopes` an API key does. A token that verifies for a subject with no entry gets `403`; one

@@ -54,6 +54,15 @@ async fn run() -> boswell_cli::Result<()> {
             // Offline: no server connection required.
             commands::execute_validate(args, &formatter).await?;
         }
+        Some(Command::Login(args)) => {
+            // Talks to the identity provider, not to Boswell. Connecting first
+            // would make `login` fail on exactly the machines that need it —
+            // ones with no reachable router yet.
+            commands::execute_login(args, &config, &formatter).await?;
+        }
+        Some(Command::Logout) => {
+            commands::execute_logout(&formatter).await?;
+        }
         Some(cmd) => {
             // Commands that require a connection
             let profile = config.get_active_profile()?;

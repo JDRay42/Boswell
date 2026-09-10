@@ -65,6 +65,12 @@ pub enum Command {
     /// Manage configuration profiles
     Profile(ProfileArgs),
 
+    /// Obtain a provider token with the OAuth device grant (ADR-022)
+    Login(LoginArgs),
+
+    /// Discard the stored provider token
+    Logout,
+
     /// Navigate goal decompositions (procedural memory)
     Goal(GoalArgs),
 
@@ -246,6 +252,33 @@ pub struct SearchArgs {
     /// silently hiding every result. Matches the gateway's `min_similarity`.
     #[arg(short, long, default_value = "0.0")]
     pub threshold: f64,
+}
+
+/// Arguments for the login command.
+///
+/// No short forms anywhere: `-c`, `-p`, `-f` are all taken by global flags, and
+/// a subcommand that claims one panics at runtime rather than failing to
+/// compile (see `the_command_tree_has_no_conflicting_flags`).
+#[derive(Debug, Parser)]
+pub struct LoginArgs {
+    /// Issuer URL of the identity provider, overriding the config's [oidc]
+    /// section (e.g. https://id.example.com)
+    #[arg(long)]
+    pub issuer: Option<String>,
+
+    /// OAuth client id registered with the provider for this CLI
+    #[arg(long)]
+    pub client_id: Option<String>,
+
+    /// Scope to request, repeatable or comma-separated. Replaces the
+    /// configured scopes rather than adding to them.
+    #[arg(long, value_delimiter = ',')]
+    pub scope: Vec<String>,
+
+    /// Describe the stored token instead of obtaining a new one. Never prints
+    /// the token itself.
+    #[arg(long)]
+    pub status: bool,
 }
 
 /// Arguments for profile management.

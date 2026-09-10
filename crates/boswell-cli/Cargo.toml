@@ -25,8 +25,18 @@ colored = "2.1"
 dirs = "5.0"
 toml = "0.8"
 
+# The device-code grant (`boswell login`) talks HTTP to an identity provider.
+# Same version and feature set as every other reqwest in the workspace, so no
+# second TLS stack is pulled in.
+reqwest = { version = "0.12", features = ["json"] }
+
 [dev-dependencies]
 tempfile = "3.10"
+
+# `test-util` is not in tokio's `full`, and the device-grant polling tests need
+# a paused clock: they assert on interval back-off and an expiry deadline, and
+# without it they would sleep for real.
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true
