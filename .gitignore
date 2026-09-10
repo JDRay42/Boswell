@@ -51,3 +51,7 @@ logs/
 # Build outputs
 dist/
 build/
+
+# Backlog-loop working state: local session scaffolding, not project history.
+.claude/handoff.md
+.claude/logs/
