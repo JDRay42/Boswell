@@ -284,9 +284,15 @@ Every way in: gRPC, the router, the SDK, the HTTP gateway, MCP, the CLI.
   `GET /v1/goals[/{id}[/expand]]`. Traversal issues **no** receipt. *shipped* (#24)
 - **CLI procedural-memory commands**, and the clap flag collision that was panicking
   `query`, `learn` and `forget` on every invocation. *shipped* (#26)
-- **MCP tool surface for goals and procedures.** The MCP server exposes five claim-only
-  tools against the gateway's fifteen routes — no goal or procedure tools at all. The
-  clearest feature lag in the tree. *open*
+- **MCP tool surface for goals and procedures.** Six tools added beside the five claim
+  ones: `boswell_query_goals`, `boswell_get_goal`, `boswell_expand_goal`,
+  `boswell_query_procedures`, `boswell_get_procedure`, `boswell_report_outcome`. The
+  JSON is the gateway's field for field, so the two surfaces render the same domain
+  types the same way. `issued_to` is **not** a tool parameter — the server names the
+  principal from `BOSWELL_MCP_PRINCIPAL` (default `mcp`), the way the gateway names it
+  from the API key; the CLI's `--as` is the deliberate exception, since an operator is
+  not the same trust as a model choosing arguments. A miss is `found: false`, not a
+  JSON-RPC error. *shipped* (#67)
 - **gRPC graceful shutdown.** `server.rs` now calls `serve_with_shutdown`, waiting on
   `ctrl_c` like the Janitor and Synthesizer workers. `start_server_with_shutdown` takes
   the signal as a parameter for callers with a lifecycle of their own. *shipped* (#50)

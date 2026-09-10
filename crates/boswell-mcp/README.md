@@ -4,13 +4,28 @@ Model Context Protocol (MCP) server for Boswell cognitive memory system. Enables
 
 ## Overview
 
-The Boswell MCP server exposes five tools via the Model Context Protocol:
+The Boswell MCP server exposes eleven tools via the Model Context Protocol.
+
+Claims:
 
 1. **boswell_assert** - Assert new claims into the knowledge graph
 2. **boswell_query** - Query claims with flexible filters  
 3. **boswell_learn** - Batch insert multiple claims
 4. **boswell_forget** - Remove claims by ID
 5. **boswell_semantic_search** - Semantic search (coming soon)
+
+Procedural memory (design 15):
+
+6. **boswell_query_goals** - Find goals by namespace or intent
+7. **boswell_get_goal** - Fetch one goal
+8. **boswell_expand_goal** - One traversal hop into a goal's children
+9. **boswell_query_procedures** - Retrieve how-tos; issues execution receipts
+10. **boswell_get_procedure** - Fetch one procedure; issues a receipt
+11. **boswell_report_outcome** - Answer an outstanding execution receipt
+
+Goal traversal is free. Procedure retrieval is not: every procedure handed out
+carries an execution receipt, and an unanswered receipt counts as `unknown`
+against the procedure — silence is not success.
 
 ## Architecture
 
@@ -86,6 +101,11 @@ BOSWELL_ROUTER=http://custom-host:8080 cargo run -p boswell-mcp
 ### Environment Variables
 
 - `BOSWELL_ROUTER` - Router URL (default: `http://localhost:8080`)
+- `BOSWELL_MCP_PRINCIPAL` - The principal named on every execution receipt this
+  server takes out (default: `mcp`). Deliberately not a tool argument: a model
+  that names itself on a receipt is not accountable for answering it, so the
+  server names it the way the gateway names it from the API key. Set it to
+  something that identifies this client, e.g. `agent:claude-desktop`.
 
 ## Claude Desktop Integration
 
@@ -102,7 +122,8 @@ Add Boswell to Claude Desktop's MCP configuration:
       "command": "/path/to/boswell/target/release/boswell-mcp",
       "args": [],
       "env": {
-        "BOSWELL_ROUTER": "http://localhost:8080"
+        "BOSWELL_ROUTER": "http://localhost:8080",
+        "BOSWELL_MCP_PRINCIPAL": "agent:claude-desktop"
       }
     }
   }
@@ -241,6 +262,46 @@ Remove claims by their IDs.
 Semantic search using embeddings. Currently returns an error indicating the feature is under development. The underlying HNSW vector search exists in the store layer but is not yet exposed via the gRPC API.
 
 Use `boswell_query` for exact filter-based search in the meantime.
+
+### 6-8. boswell_query_goals, boswell_get_goal, boswell_expand_goal
+
+Traversal into the goal decomposition graph. `boswell_query_goals` is the entry
+hop — match on namespace or an intent substring. `boswell_expand_goal` is one
+step down: it returns the goal's `accomplish` children whose edge preconditions
+currently hold, ranked by effectiveness and then context match, alongside the
+`decide`-role procedures that help choose among them and the raw claim readings
+behind the filtering.
+
+Traversal is stateless: the caller holds the cursor and calls `expand` again on
+whichever child it picks. The store surfaces candidates; it does not decide.
+None of the three issues a receipt.
+
+`boswell_get_goal` and `boswell_expand_goal` report a miss as `found: false`
+rather than a JSON-RPC error — "no goal with that id" is an answer about
+memory, not a malformed call. On `expand`, `found: true` with no candidates is
+a real goal whose children were all filtered out.
+
+The JSON is the gateway's, field for field: `GET /v1/goals`,
+`GET /v1/goals/{id}`, `GET /v1/goals/{id}/expand`.
+
+### 9-11. boswell_query_procedures, boswell_get_procedure, boswell_report_outcome
+
+Retrieval and reporting (design 15 §3.3). Each retrieved procedure comes back
+with the execution receipt issued for it, in the shape the design specifies —
+including the `required` and `optional` report fields — so the caller can see
+the obligation it just took on.
+
+`issued_to` is **not** a parameter on either retrieval tool. The server names
+the principal from `BOSWELL_MCP_PRINCIPAL`, the way the gateway names it from
+the API key rather than from the request body. The CLI's `--as` flag is the
+deliberate exception; an operator at a terminal is not the same trust as a
+model choosing arguments.
+
+`boswell_report_outcome` answers a receipt. `accepted: false` with
+`already_final: false` means no outstanding receipt carried that id. A report
+can be accepted and still not move the counters: a negative report from a
+low-assurance executor against a shared procedure is recorded and
+`quarantined` rather than applied.
 
 ## Testing
 
