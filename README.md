@@ -138,21 +138,53 @@ insights as new claims linked to their sources via `derived_from` (ADR-006).
 LLM analysis runs without holding the store lock, so gRPC requests are not
 blocked during a pass.
 
-The background jobs — `[janitor]`, `[synthesizer]` and `[contradiction]` — each
-take an optional `run_between = "02:00-06:00"`, a local-time window outside which
-they do nothing. A local model is heavy enough to make a laptop unpleasant to use
-while it runs, and this is how you keep that to hours you are asleep. An end
-before the start wraps midnight. The interval still says how often a job may run;
-the window says when it is allowed to, and a job never runs more than once per
-interval no matter how long its window is open. An unparseable window stops the
-server at startup rather than failing silently at 2 a.m.
-
 To surface conflicting knowledge, enable the Contradiction Janitor under
 `[contradiction]` (`enabled = true`; also LLM-backed). It compares claims that
 share a subject, asks the LLM whether each pair is incompatible, and records a
 `Contradicts` relationship for genuine contradictions — which the confidence
 computation (ADR-007) folds in as a penalty, lowering the effective confidence
 of both claims. Pairs are rate-limited and already-related pairs are skipped.
+
+#### Keeping the background jobs to quiet hours
+
+The Synthesizer and the Contradiction Janitor both call a local model, and a
+local model is heavy enough to make a laptop unpleasant to use while it runs.
+All three background jobs therefore take an optional `run_between` window in
+local time, outside which they do nothing:
+
+```toml
+[synthesizer]
+enabled = true
+run_between = "02:00-06:00"
+
+[contradiction]
+enabled = true
+run_between = "02:00-06:00"
+```
+
+Omit it and the job runs whenever its interval comes due, which is what every
+config said before this existed. An end before the start wraps midnight, so
+`"22:00-06:00"` is the eight hours across a night rather than nothing at all.
+
+The window is a gate, not a schedule. The interval still says how often a job
+may run and the window says when it is allowed to, so a job never runs more
+than once per interval however long its window stays open. A windowed job
+checks the clock every five minutes rather than sleeping out its whole
+interval — without that, a twelve-hour interval falling at 13:00 and 01:00
+would never once land inside a four-hour night window, and the job would never
+run at all.
+
+An unparseable window stops the server at startup, naming the section:
+
+```
+[synthesizer] run_between is invalid: "2am-6am" is not a 24-hour time of the form HH:MM
+```
+
+That is deliberate. A window that never opens means the job silently never
+runs, and it fails at 2 a.m. where nobody is watching.
+
+The Janitor takes a window too, but it makes no LLM call — it is a cheap
+synchronous sweep — so there is usually no reason to restrict it.
 
 ### Running the HTTP gateway
 
