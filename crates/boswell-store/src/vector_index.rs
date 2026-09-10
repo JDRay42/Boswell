@@ -247,10 +247,7 @@ mod tests {
         let embedding1: Vec<f32> = (0..384).map(|i| (i as f32) / 384.0).collect();
         index.add(claim_id1, &embedding1).unwrap();
 
-        // Populate the index with several more distinct vectors. HNSW is an
-        // approximate index whose recall is unreliable with only a couple of
-        // elements (a top-k search may return fewer than k), so we index enough
-        // vectors for a top-2 query to be reliably filled.
+        // Populate the index with several more distinct vectors.
         for n in 1..=10 {
             let mut embedding: Vec<f32> = (0..384).map(|i| (i as f32) / 384.0).collect();
             embedding[0] = n as f32 / 10.0; // perturb so each is distinct
@@ -259,11 +256,20 @@ mod tests {
 
         assert_eq!(index.len(), 11);
 
+        // HNSW is approximate over a randomized graph: a top-k search may return
+        // fewer than k however many vectors are indexed. #16 removed exactly this
+        // assumption from `test_cosine_similarity`; it survived here as
+        // `assert_eq!(results.len(), 2)` and went on failing in CI, because
+        // indexing more vectors lowers the odds without changing the guarantee.
+        //
+        // Assert what the index does promise, and what this test is actually
+        // about: the query point is recalled and ranks first.
         let results = index.search(&embedding1, 2, 64).unwrap();
-        assert_eq!(results.len(), 2);
-
-        // The exact match ranks first with near-perfect similarity.
-        assert_eq!(results[0].0, claim_id1);
+        assert!(!results.is_empty(), "search returned nothing");
+        assert_eq!(
+            results[0].0, claim_id1,
+            "the exact match must rank first among whatever was recalled"
+        );
         assert!(results[0].1 > 0.99);
     }
 
