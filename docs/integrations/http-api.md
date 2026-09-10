@@ -460,6 +460,9 @@ Bind each API key to the narrowest namespace and scope set it needs, keep
 `rate_limit_per_minute` conservative, and rotate keys by replacing their hashes.
 Every mutation is audit-logged with the key id, namespace, operation, and count.
 
-This is a concrete first step toward Boswell's target security model
-([`docs/architecture/10-security.md`](../architecture/10-security.md)) — a single
-authenticated, TLS-fronted, namespace-scoped surface — not a replacement for it.
+This is Boswell's security boundary, not a step toward a later one
+([`docs/architecture/10-security.md`](../architecture/10-security.md),
+[ADR-021](../ADRs/021-gateway-is-the-security-boundary.md)): the gateway authenticates, and the
+gRPC instance behind it binds to loopback and does not. What changes next is how keys come to
+exist — [ADR-022](../ADRs/022-delegated-credentials.md) replaces hand-placed hashes with tokens
+that descend from a verified OIDC grant and attenuate for subagents.

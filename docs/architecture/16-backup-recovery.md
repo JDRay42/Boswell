@@ -112,8 +112,9 @@ itself stays in the operator's cron/timer.
 - **Point-in-time recovery.** WAL archiving would allow restoring to an arbitrary moment rather
   than the last nightly snapshot. Deferred; the provenance scalpel covers many of the cases PITR
   otherwise would.
-- **Encryption at rest for backups.** Aligns with the aspirational `age`-encrypted config in
-  `10-security.md`; snapshots of a memory store are sensitive and should eventually be encrypted.
+- **Encryption at rest for backups.** Snapshots of a memory store are sensitive and should
+  eventually be encrypted. Whether the `age`-encrypted Router config survives ADR-021 is itself
+  an open question (`10-security.md`, "Still open"), so this gap inherits no mechanism from it.
 - **Multi-instance / federated backups.** When federation lands, a consistent cross-instance
   snapshot is its own problem.
 

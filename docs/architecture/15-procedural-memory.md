@@ -671,5 +671,6 @@ and the open problems with what was measured against them (§8).
 - **Extractor** (`05-extractor`) is the closest analog for future procedure/goal *learning*.
 - **Gateway** (`boswell-gateway`, `docs/integrations/http-api.md`) is the bootstrap identity
   adapter and the natural surface for `expand`/write endpoints.
-- **Security** (`10-security`, ADR-017/019) — the identity port is the concrete path toward the
-  aspirational per-instance trust model, degrading gracefully when no provider is present.
+- **Security** (`10-security`, ADR-021/022) — the identity port grades a reporter's delegation
+  chain into a tier ceiling; it does not gate access, which is the gateway's job. It degrades
+  gracefully when no provider is present.
