@@ -284,6 +284,7 @@ dependencies = [
  "clap",
  "colored",
  "dirs",
+ "reqwest",
  "rustyline",
  "serde",
  "serde_json",

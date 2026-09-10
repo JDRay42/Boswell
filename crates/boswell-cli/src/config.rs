@@ -20,6 +20,37 @@ pub struct Config {
     /// Global settings
     #[serde(default)]
     pub settings: Settings,
+
+    /// Identity provider used by `boswell login` (ADR-022).
+    ///
+    /// Absent by default, and absent from a written config until someone fills
+    /// it in: a CLI with no `[oidc]` section behaves exactly as it did before
+    /// `login` existed, and `boswell login --issuer ... --client-id ...` works
+    /// without one.
+    ///
+    /// It is deliberately *not* read from the gateway's config. The device
+    /// grant runs between this CLI and the provider with the gateway not in it,
+    /// and the CLI is usually not on the gateway's host, so there is nothing to
+    /// read. The two must name the same issuer; nothing enforces that, and a
+    /// mismatch shows up as a 401 on the first request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oidc: Option<LoginConfig>,
+}
+
+/// Identity-provider settings for `boswell login`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoginConfig {
+    /// Issuer URL. A trailing slash is ignored, as at the gateway.
+    pub issuer: String,
+
+    /// The OAuth client id registered with the provider for this CLI. Public
+    /// clients have no secret, which is the whole reason the device grant
+    /// exists — do not add one here.
+    pub client_id: String,
+
+    /// Scopes to request. Empty asks for the provider's default.
+    #[serde(default)]
+    pub scopes: Vec<String>,
 }
 
 /// Connection profile.
@@ -92,6 +123,16 @@ impl Config {
     /// Get the configuration file path.
     pub fn path() -> Result<PathBuf> {
         Ok(Self::config_dir()?.join("config.toml"))
+    }
+
+    /// Where `boswell login` stores the token it obtains.
+    ///
+    /// A separate file from `config.toml` on purpose: the config is a thing an
+    /// operator edits, shares and checks into dotfiles, and the token is a
+    /// bearer credential written `0600`. Putting the second inside the first
+    /// invites the two habits to collide.
+    pub fn token_path() -> Result<PathBuf> {
+        Ok(Self::config_dir()?.join("token.json"))
     }
 
     /// Load configuration from file or create default.
@@ -176,6 +217,7 @@ impl Default for Config {
             active_profile: "default".to_string(),
             profiles,
             settings: Settings::default(),
+            oidc: None,
         }
     }
 }

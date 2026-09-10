@@ -28,6 +28,10 @@ pub enum CliError {
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 
+    /// HTTP error talking to an identity provider
+    #[error("HTTP error: {0}")]
+    Http(#[from] reqwest::Error),
+
     /// TOML parsing error
     #[error("TOML parsing error: {0}")]
     Toml(#[from] toml::de::Error),

@@ -199,8 +199,16 @@ Boswell ships **no identity provider**. [Pocket ID](https://pocket-id.org) is a 
 choice; running and governing it stays the operator's job. The gateway verifies against cached
 JWKS so no request costs a round trip to the provider.
 
-**Built as of #68**, with one piece missing: nothing in the repo *runs* the device-code grant.
-An operator obtains a token from their provider by hand until a `boswell login` exists.
+**Built as of #68 and #69.** #68 gave the gateway verification; #69 gave the CLI the grant, as
+`boswell login`. The two halves are deliberately independent: the grant runs between the CLI and
+the provider, and the gateway learns nothing from a login it does not learn again from the first
+request carrying the token. Nothing checks that the CLI and the gateway name the same issuer — a
+mismatch surfaces as a `401` on that first request.
+
+`boswell login` stores the access token at `~/.boswell/token.json`, mode `0600`. It discards any
+refresh token the provider issues: nothing in Boswell refreshes, so storing one would leave a
+long-lived credential on disk serving a code path that does not exist. Refresh is still open
+below.
 
 ### Below the line — attenuable tokens carry delegation
 
