@@ -124,10 +124,28 @@ What a write is founded on — observation, inference, second-hand report, or to
 assurance, it caps how high the write may climb.
 _Avoid_: source, basis, provenance (which is the stamp, not this field)
 
+**Principal**:
+Whoever an action is ultimately attributable to. The implementer is the root principal; agents
+and subagents act on their behalf and are principals in their own right, each one further from
+the root.
+_Avoid_: user, account, identity, caller
+
 **Delegation chain**:
 The on-behalf-of path from the root principal down to the one that acted. Its *root* is the unit
 of independence.
 _Avoid_: lineage, call stack, provenance chain
+
+**Grant**:
+The implementer's one-time go-ahead, standing for months, from which every credential an agent
+holds descends. Distinct from the short-lived thing an agent carries: revoking the grant is how
+you cut off everything below it.
+_Avoid_: login, session, consent, authorization (which is Authority)
+
+**Attenuation**:
+Narrowing a credential when passing it down — fewer namespaces, fewer operations, a lower tier
+ceiling, less time. It only ever subtracts, it needs nobody's permission, and the holder of the
+narrowed credential cannot widen it back.
+_Avoid_: scoping, restriction, downgrade, sub-token
 
 **Endorsement**:
 A higher-authority principal's sign-off on someone else's entry, letting it climb a tier it

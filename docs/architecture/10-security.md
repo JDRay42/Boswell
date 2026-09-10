@@ -1,5 +1,13 @@
 # Boswell — Security Model
 
+> **Superseded in part, and not yet rewritten.** This document specifies mTLS on every
+> connection, Router-issued per-instance tokens, and an `age`-encrypted Router config. None of
+> it is built, and [ADR-021](../ADRs/021-gateway-is-the-security-boundary.md) and
+> [ADR-022](../ADRs/022-delegated-credentials.md) decided against the mTLS mechanism: the HTTP
+> gateway is the security boundary, and delegation is carried by attenuable tokens rather than
+> by client certificates. Read what follows as the earlier design, not as the current one. The
+> rewrite is tracked on [the roadmap](../development/roadmap.md).
+
 Security operates at two levels in Boswell: the **Router** handles all session establishment and token issuance, and each **instance** validates tokens and enforces authorization on operations. This separation ensures consistent authentication logic across all deployments, whether single-instance or multi-instance. Every inbound connection to every instance requires mutual authentication. There are no unauthenticated access modes, no "localhost bypass," and no deployment configuration that weakens this requirement.
 
 ## Principles
