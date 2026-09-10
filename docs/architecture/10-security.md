@@ -254,9 +254,9 @@ These are undecided, not merely unbuilt. Nobody should assume an answer.
 - **JWT refresh at the router.** Tokens carry an expiry and there is no refresh path; the SDK
   papers over it by reconnecting once. Smaller than it looks now that the JWT is topology only.
 - **Router configuration encryption.** `boswell-router` reads plaintext TOML.
-  [`09-router.md`](09-router.md) still calls for a portable `age`-encrypted config, and
-  [`16-backup-recovery.md`](16-backup-recovery.md) hangs backup-at-rest encryption off the same
-  idea. Whether that survives ADR-021 has not been decided.
+  [`09-router.md`](09-router.md) files the portable `age`-encrypted config as open rather than
+  planned, and [`16-backup-recovery.md`](16-backup-recovery.md) hangs backup-at-rest encryption
+  off the same idea. Whether that survives ADR-021 has not been decided.
 
 ## Not covered
 

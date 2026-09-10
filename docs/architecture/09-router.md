@@ -1,321 +1,162 @@
 # Boswell — Router
 
-The Router is the session management and instance registry authority for all Boswell deployments. It is **always present**, even in single-instance configurations, where it adds minimal overhead (<1MB memory, near-zero CPU). The Router responds to session requests from authorized clients with a list of registered instances, their endpoints, capabilities, health status, and instance-specific tokens.
+`boswell-router` answers one question: *where are the instances?* A client asks once, receives
+a list of endpoints and a signed token, and thereafter talks to an instance directly. The
+router is not a proxy, holds no claim data, and is not in the hot path. This is
+[ADR-019](../ADRs/019-stateless-sessions.md) — the session is a topology-discovery handshake,
+not a connection.
 
-> **Status.** Most of this document is design, not description. What exists today is a small
-> axum HTTP service: it parses a plaintext TOML file, answers `POST /session/establish` with
-> one HS256 JWT and the configured instance list, and answers `GET /health` from registry
-> state that nothing ever updates. The encrypted config, the health monitor, per-instance
-> tokens and mTLS are unbuilt, and
-> [ADR-021](../ADRs/021-gateway-is-the-security-boundary.md) has since moved authentication
-> to the HTTP gateway. Sections describing unbuilt behavior are marked below.
-> [`docs/development/roadmap.md`](../development/roadmap.md) is the source of truth for
-> status, and [`10-security.md`](10-security.md) is normative for the security model.
+It is also **not a security boundary**. It used to be specified as one: mTLS on the way in,
+one signed token per instance on the way out, cryptographic fingerprints in the registry.
+[ADR-021](../ADRs/021-gateway-is-the-security-boundary.md) moved all of that to the HTTP
+gateway and put the router on loopback behind it. What survives is topology discovery, which
+is what the router is for. See [`10-security.md`](10-security.md), which is normative for the
+security model.
 
-## Responsibility
+This document separates four things:
 
-The Router is the single source of truth for:
+| | |
+|---|---|
+| **Built** | In the code today, with tests. Trust it. |
+| **Decided** | Settled in an ADR, not implemented. Do not deploy as if it exists. |
+| **Superseded** | Specified here once, then deliberately abandoned. Not coming. |
+| **Open** | Genuinely undecided, or unbuilt with nobody having decided to build it. |
 
-- **Instance registry:** Maintains the list of registered instances with their cryptographic fingerprints, endpoints, capabilities, and health states.
-- **Session token issuance:** Issues one token per instance in response to authenticated session requests. Each token is scoped to a specific instance.
-- **Health tracking:** Reports each instance's health status in session responses. *Designed to poll; does not yet — see [Health Monitor](#health-monitor).*
-- **Configuration management:** Holds the configuration file containing all registry data. *Plaintext TOML today; the encrypted portable form is unbuilt.*
+[`docs/development/roadmap.md`](../development/roadmap.md) is the source of truth for status;
+where this document and the roadmap disagree, the roadmap wins.
 
-**What the Router is NOT:**
-
-- **Not a proxy.** After session establishment, clients route all operations directly to instances. The Router is not in the hot path.
-- **Not automatic discovery.** Instance registration is manual and deliberate. Adding a new instance requires explicit administrative action.
-- **Not a centralized data store.** The Router holds no claim data — only metadata about instances.
-
-## Architecture
-
-### Session Establishment Flow
+## Where the router sits
 
 ```mermaid
-sequenceDiagram
-    participant Client as Client SDK / MCP Server
-    participant Router
-    participant InstanceA as Instance A
-    participant InstanceB as Instance B
-
-    Note over Router: Encrypted config loaded in memory<br/>(instance registry, keypairs)
-
-    Client->>Router: SessionRequest<br/>(mTLS authentication)
-    Router->>Router: Verify client identity
-    Router->>Router: Generate tokens:<br/>- token_A for Instance A<br/>- token_B for Instance B
-    
-    Router-->>Client: SessionResponse {<br/>  instances: [<br/>    {id: "A", endpoint: "host:9001", capabilities: [...], token: "token_A", health: "healthy"},<br/>    {id: "B", endpoint: "host:9002", capabilities: [...], token: "token_B", health: "degraded"}<br/>  ]<br/>}
-    
-    Note over Client: Client now has direct access info<br/>for all registered instances
-
-    Client->>InstanceA: Assert(claim, token_A)
-    InstanceA->>InstanceA: Validate token_A
-    InstanceA-->>Client: Success
-
-    Client->>InstanceB: Query(params, token_B)
-    InstanceB->>InstanceB: Validate token_B
-    InstanceB-->>Client: Results
-```
-
-### Health Monitoring Flow
-
-```mermaid
-sequenceDiagram
-    participant Router
-    participant InstanceA as Instance A
-    participant InstanceB as Instance B
-    participant InstanceC as Instance C
-
-    loop Every 60s (configurable)
-        Router->>InstanceA: Health check (gRPC)
-        InstanceA-->>Router: OK (healthy)
-        
-        Router->>InstanceB: Health check (gRPC)
-        InstanceB-->>Router: Slow response (degraded)
-        
-        Router->>InstanceC: Health check (gRPC)
-        Note over Router,InstanceC: Timeout / Connection refused
-        Router->>Router: Mark C as unreachable
+graph LR
+    subgraph Host["Boswell host"]
+        GW["boswell-gateway<br/>the security boundary"]
+        subgraph Loop["127.0.0.1 — inside the boundary"]
+            R["boswell-router<br/>POST /session/establish<br/>GET /health"]
+            I["boswell-grpc instance<br/>no authentication, by design"]
+        end
     end
-    
-    Note over Router: Health states included in<br/>next SessionResponse
+
+    SDK["Client SDK"]
+    SDK -->|"1. POST /session/establish"| R
+    R -->|"2. token + instances[]"| SDK
+    SDK -->|"3. every RPC, directly"| I
+    GW --> I
 ```
 
-## Not in the Hot Path
+Step 3 is the point. Assert, Query, Learn, Extract, Challenge, Promote, Forget — all of it goes
+straight from client to instance with no router involvement. The router is contacted again only
+when the client re-fetches topology.
 
-The Router is **not a proxy for routine operations**. After the session handshake, clients route operations directly to instances using the instance-specific tokens and endpoint information they received. The Router is only contacted for:
+Note what the diagram does not show: the gateway does not call the router, and the router does
+not call the instance. They are three processes that share a host and a config convention, not
+a call graph.
 
-1. **Session establishment:** Initial authentication and token issuance for all registered instances.
-2. **Token refresh:** When tokens expire (default: 1 hour), clients request a new SessionResponse to get fresh tokens.
-3. **Registry updates:** When the client needs to check for new instances or updated health states.
+## Built today
 
-Everything else — Assert, Query, Learn, Extract, Challenge, Promote, Forget — goes directly from client to instance with no Router involvement.
+### Two HTTP routes, no authentication on either
 
-## Instance Registry
+`boswell-router` is an axum HTTP service. `create_router` in
+[`handlers.rs`](../../crates/boswell-router/src/handlers.rs) registers exactly two routes:
 
-The registry is the Router's core data structure. It tracks all registered instances.
+| Route | Body | Response |
+|---|---|---|
+| `POST /session/establish` | `{"user_id": "..."}`, optional, defaults to `"default-user"` | `{token, mode, instances[]}` |
+| `GET /health` | — | `{status, instance_count, healthy_instances}` |
 
-```rust
-pub struct InstanceEntry {
-    pub instance_id: String,
-    pub endpoint: String,               // gRPC endpoint (host:port)
-    pub fingerprint: Vec<u8>,           // Public key fingerprint for mTLS verification
-    pub capabilities: Vec<String>,      // Supported operations (e.g., ["assert", "query", "learn"])
-    pub health: InstanceHealth,         // Current health state
-    pub last_health_check: DateTime,
-}
+Neither requires a credential. `POST /session/establish` mints a token for whatever `user_id`
+the caller sends, or for `"default-user"` if the caller sends none. That is consistent with
+ADR-021 — the router lives inside the boundary, and anything that can reach its port is already
+inside — but it means the router must not be exposed. See
+[The bind is not enforced](#the-bind-is-not-enforced).
 
-pub enum InstanceHealth {
-    Healthy,      // Responding normally
-    Degraded,     // Responding slowly or with partial errors
-    Unreachable,  // Not responding to health checks
-}
-```
+`start_server` in [`lib.rs`](../../crates/boswell-router/src/lib.rs) binds `config.bind_addr()`
+and calls `axum::serve`. It takes a config and does not return; there is no shutdown handle, so
+nothing can start a router in-process and stop it again. That is why the SDK's full-stack
+end-to-end tests are `#[ignore]`d and need servers started by hand.
 
-### Manual Registration
+### Session establishment is a topology handshake
 
-*Partly built.* Registration is manual, but a registered instance is a `[[instances]]` table
-of `id`, `endpoint` and `expertise` — there is no fingerprint field and no capability
-declaration.
+`establish_session` does three things: mint a token, read the whole registry, and return both.
 
-**Instance registration is manual and deliberate.** There is no automatic discovery mechanism. Adding a new instance requires:
-
-1. **Administrative action:** Editing the Router's encrypted configuration file.
-2. **Cryptographic identity:** The instance's public key fingerprint must be added to the registry.
-3. **Endpoint configuration:** One or more network endpoints (LAN IP, VPN address, etc.).
-4. **Capability declaration:** The set of operations this instance supports.
-
-This deliberate process ensures that only trusted instances join the network. Automatic discovery would create security and trust management challenges.
-
-### Multiple Endpoints
-
-*Not built.* `InstanceConfig::endpoint` is a single string. One instance, one endpoint.
-
-An instance may have multiple endpoints registered to support different network contexts:
-- **LAN address** for when the client is on the same local network
-- **VPN address** for remote access
-- **Public endpoint** (if appropriate for the deployment)
-
-The client SDK can try endpoints in order based on reachability and network context.
-
-### Health States and Transitions
-
-*Not built.* `HealthStatus` has the three variants, and `InstanceRegistry::update_health`
-would apply a transition, but nothing calls it outside tests. Every instance is `Healthy`
-from `from_config` onward, so `GET /health` reports `healthy` whether or not any instance
-is running.
-
-```mermaid
-stateDiagram-v2
-    [*] --> Healthy: Instance registered
-    Healthy --> Degraded: Slow response or partial failure
-    Healthy --> Unreachable: 2 consecutive health check failures
-    Degraded --> Healthy: 2 consecutive successful checks
-    Degraded --> Unreachable: 2 consecutive health check failures
-    Unreachable --> Healthy: 2 consecutive successful checks
-    note right of Unreachable: Instance remains in registry<br/>Clients may retry
-```
-
-| State | Meaning | Included in SessionResponse | Client Behavior |
-|---|---|---|---|
-| Healthy | Responding normally within timeout | Yes | Route operations normally |
-| Degraded | Responding slowly or with partial errors | Yes | Route with caution; expect higher latency |
-| Unreachable | Not responding to health checks | Yes | Client should handle gracefully (retry, skip, notify user) |
-
-**Transition rules:**
-
-- **Consecutive check requirement:** Two consecutive failures before marking `Unreachable`, two consecutive successes before marking `Healthy`. This prevents flapping on transient network issues.
-- **Degraded detection:** Single slow response (>80% of timeout) or partial gRPC error triggers `Degraded` state.
-- **All states are reported:** Even `Unreachable` instances remain in the registry and are included in SessionResponse. Clients decide how to handle unreachable instances.
-
-Health state transitions are fully automatic based on health check results. No manual intervention is required unless an administrator wants to remove an instance from the registry entirely.
-
-## Health Monitor
-
-*Not built.* There is no polling task, no health-check client and no configuration for
-either. This section describes the intended monitor, not a component that runs.
-
-The Health Monitor periodically pings each registered instance:
-
-- **Check interval:** Configurable (default: 60 seconds).
-- **Check method:** Lightweight gRPC health check (standard `grpc.health.v1.Health` service).
-- **Transition logic:** Two consecutive failures → `Unreachable`. Recovery requires two consecutive successes → back to `Healthy`. This prevents flapping on transient network issues.
-
-Health states are reflected in the topology returned to clients. When a client re-fetches topology (new session request), it gets current health information.
-
-## Token Issuance and Validation
-
-*Not built as described.* The Router issues **one** token per session, not one per instance:
-`generate_token` signs `{user_id, exp, iat}` with HS256 over the shared `jwt_secret`. No
-instance validates it — ADR-021 made the gRPC instance loopback-only and authentication-free,
-so the JWT is topology-discovery bookkeeping and nothing more. See
-[ADR-019](../ADRs/019-stateless-sessions.md) and [`10-security.md`](10-security.md).
-
-The Router issues **one token per instance** in response to each SessionRequest.
-
-### Token Structure
-
-Each token is:
-- **Instance-specific:** Scoped to a single instance_id and cannot be used with other instances
-- **Short-lived:** Default expiration is 1 hour (configurable)
-- **Signed by Router:** Instances validate tokens against the Router's signing key
-
-### Token Lifecycle Flow
-
-```mermaid
-sequenceDiagram
-    participant Client
-    participant Router
-    participant Instance
-
-    Client->>Router: SessionRequest (mTLS)
-    Router->>Router: Generate token_A for Instance A
-    Router-->>Client: SessionResponse {instances: [{..., token: "token_A"}]}
-    
-    Note over Client: Store token_A
-    
-    Client->>Instance: Assert(claim, token_A)
-    Instance->>Instance: Validate token_A signature<br/>Check expiration
-    Instance-->>Client: Success
-    
-    Note over Client: ~1 hour later, token expires
-    
-    Client->>Instance: Query(params, token_A)
-    Instance->>Instance: Token expired
-    Instance-->>Client: UNAUTHENTICATED error
-    
-    Client->>Router: SessionRequest (refresh)
-    Router-->>Client: SessionResponse {new tokens}
-```
-
-### Security Properties
-
-- **Token compromise is instance-scoped:** If one token leaks, only that single instance is affected. The client must re-authenticate to get fresh tokens.
-- **No shared secrets between instances:** Each instance validates tokens independently using the Router's public key.
-- **Instances never communicate with each other:** All trust relationships are mediated through the Router's registry and mTLS verification.
-
-## Portable Encrypted Configuration
-
-*Not built.* `RouterConfig::from_file` reads plaintext TOML. Whether an `age`-encrypted
-portable config survives ADR-021 is an open question, tracked in
-[`10-security.md`](10-security.md) and on the roadmap; it is not resolved here.
-
-The Router's configuration — the instance registry, keypairs, and settings — is stored in a single encrypted file.
-
-**Format:**
-- **Inner layer:** TOML (human-readable when decrypted, easy to inspect and hand-edit).
-- **Outer layer:** Encrypted with `age` (modern, Rust-native, passphrase-based encryption).
-
-**Startup Flow:**
-
-```mermaid
-sequenceDiagram
-    participant Admin
-    participant Router
-    participant Filesystem
-
-    Admin->>Router: boswell-router --config ./router.enc
-    Router->>Filesystem: Read router.enc
-    Router->>Admin: Prompt for passphrase
-    Admin->>Router: Enter passphrase
-    Router->>Router: Decrypt in memory<br/>(never writes plaintext to disk)
-    Router->>Router: Parse TOML registry
-    Router->>Router: Load instance entries
-    Note over Router: Router starts serving<br/>SessionRequests
-```
-
-**Properties:**
-
-- **Never decrypted on disk:** Decryption happens in memory at startup. The plaintext never touches the filesystem.
-- **Modifications are re-encrypted:** If the admin modifies the registry (adds/removes instances), the Router re-encrypts before writing.
-- **Versioned config:** Contains a sequence number to detect which copy is most recent when copies exist in multiple locations.
-- **Manual sync:** No automatic synchronization. The admin deliberately copies the config between storage locations (iCloud, USB drive, etc.) to prevent propagation of a compromised config.
-
-**Disaster recovery:** With the passphrase and the encrypted config file, you can reconstruct your entire instance network from any machine running the Router binary. The actual knowledge lives on the instances; the Router config just contains the registry metadata.
-
-## Trait Interface
-
-```rust
-pub trait Router {
-    /// Authenticate a client and issue instance-specific session tokens
-    fn create_session(&self, identity: &ClientIdentity) -> Result<SessionResponse, RouterError>;
-    
-    /// Return current instance registry with health states and endpoints
-    fn get_registry(&self) -> Result<Vec<InstanceInfo>, RouterError>;
-    
-    /// Manually register a new instance (admin operation)
-    fn register_instance(&self, entry: InstanceEntry) -> Result<(), RouterError>;
-    
-    /// Remove an instance from the registry (admin operation)
-    fn remove_instance(&self, instance_id: &str) -> Result<(), RouterError>;
-    
-    /// Update an instance's endpoints or capabilities (admin operation)
-    fn update_instance(&self, instance_id: &str, updates: InstanceUpdates) -> Result<(), RouterError>;
-}
-
-pub struct SessionResponse {
-    pub instances: Vec<InstanceInfo>,
-}
-
-pub struct InstanceInfo {
-    pub instance_id: String,
-    pub endpoint: String,
-    pub capabilities: Vec<String>,
-    pub token: String,            // Instance-specific session token
-    pub health: InstanceHealth,
+```json
+{
+  "token": "eyJ...",
+  "mode": "instance",
+  "instances": [
+    {"id": "default", "endpoint": "http://localhost:50051", "expertise": ["*"], "health": "healthy"}
+  ]
 }
 ```
 
-Note that the Router trait does not include routing, classification, or query operations. Those are handled by the client SDK and instances directly.
+`mode` is `"instance"` when exactly one instance is registered and `"router"` otherwise
+(`create_session_response` in [`session.rs`](../../crates/boswell-router/src/session.rs)). It
+reads backwards on first encounter — a *router* deployment is the multi-instance one — but it
+is ADR-019's naming and the SDK does not read the field.
 
-## Configuration
+An empty registry parses at load and then fails at request time: `establish_session` returns
+HTTP 500 `{"error": "No instances registered"}`.
+
+### One session token, HS256, read by nobody
+
+`SessionManager::new` builds an encoding and a decoding key from the same `jwt_secret` string,
+so the token is symmetric. `generate_token` signs `{user_id, exp, iat}` with the default HS256
+header. There is **one token per session**, not one per instance, and it carries no instance
+scope.
+
+No instance validates it. `validate_token` exists on `SessionManager` and is exercised only by
+the router's own tests. Per ADR-021 the gRPC instance authenticates nothing at all, so the
+token is topology-discovery bookkeeping. Holding one grants nothing.
+
+Rotate `jwt_secret` anyway and never ship the placeholder. The risk is not that a forged token
+opens a door; it is that a forged *session response* points a client at an endpoint of the
+forger's choosing.
+
+There is no refresh path. The token carries an expiry and the SDK reconnects when it needs a
+new one. This is on [`10-security.md`](10-security.md)'s open list, and it is smaller than it
+looks now that the token is topology only.
+
+### The registry is the config file, read once
+
+`InstanceRegistry::from_config` turns the `[[instances]]` tables into `RegisteredInstance`
+values and stamps every one of them `Healthy`. That is the entire registration path.
+
+`register`, `update_health` and `has_healthy_instances` exist on `InstanceRegistry` and are
+correct. No route calls them and nothing outside the crate's tests calls them either. There is
+no admin API: adding an instance means editing the TOML and restarting.
+
+A registered instance is `id`, `endpoint`, `expertise`, and a health state. There is no
+fingerprint field and no capability list — see [Superseded](#superseded).
+
+### Health is reported, not measured
+
+`GET /health` aggregates registry state:
+
+| Condition | `status` |
+|---|---|
+| No instance is `Healthy` | `unhealthy` |
+| Some but not all instances are `Healthy` | `degraded` |
+| Every instance is `Healthy` | `healthy` |
+
+Since `from_config` stamps everything `Healthy` and nothing ever calls `update_health`, the
+answer is always `healthy` — whether or not a single instance is running. **`GET /health` is a
+liveness check for the router and nothing more.** Treating it as a check on the instances
+behind it will mislead you. `HealthStatus` has three variants, `Healthy`, `Degraded` and
+`Unhealthy`; only the first is ever constructed outside tests.
+
+The same value flows into each `instances[]` entry of the session response, so a client sees
+`"health": "healthy"` for a dead instance and connects to it. The SDK handles this the only way
+it can — it picks the first instance reported healthy, connects lazily, and lets the first RPC
+fail with `Unavailable` into its retry path.
+
+### Configuration
 
 The Router reads a plaintext TOML file named by `--config`. `--config` and `--help` are the
 only flags. With neither, it warns on stderr and runs `RouterConfig::default_test_config()`
 — loopback, port 8080, a hard-coded secret, one instance at `http://localhost:50051`. That
 fallback exists for tests; it is not a deployment default.
 
-### Built: the keys `RouterConfig` parses
+#### The keys `RouterConfig` parses
 
 | Key | Type | Default | Description |
 |---|---|---|---|
@@ -325,7 +166,7 @@ fallback exists for tests; it is not a deployment default.
 | `token_expiry_secs` | integer | `3600` | Lifetime of an issued session token, in seconds. |
 | `instances` | array of tables | `[]` | Registered instances. An empty array parses; `POST /session/establish` then returns 500. |
 | `instances[].id` | string | *required* | Instance identifier, e.g. `default`. |
-| `instances[].endpoint` | string | *required* | The instance's gRPC endpoint. Exactly one — see *Multiple Endpoints*. |
+| `instances[].endpoint` | string | *required* | The instance's gRPC endpoint. Exactly one — see [Multiple endpoints per instance](#multiple-endpoints-per-instance). |
 | `instances[].expertise` | array of strings | `[]` | Namespaces this instance handles. Passed through to the session response; the Router never reads it. |
 
 ```toml
@@ -343,7 +184,7 @@ expertise = ["*"]
 The file is read once at startup. There is no reload, no write-back, and no environment-variable
 override.
 
-### Not built: what this table used to promise
+#### What this table used to promise
 
 These settings were specified here before the Router was written. None appears in
 `RouterConfig`, and with one exception the behavior each would configure does not exist.
@@ -356,40 +197,130 @@ These settings were specified here before the Router was written. None appears i
 | `token_ttl` (`1h`) | Session token lifetime | Built, under the name `token_expiry_secs`, same default. |
 | `signing_key_path` | A private key for signing per-instance tokens | Unbuilt. Signing is HS256 over the shared `jwt_secret`, and no instance verifies the result. |
 
+## Decided, not built
+
+### Client-side routing by expertise
+
+ADR-019 puts routing in the SDK: match a routing hint or namespace prefix against each
+instance's expertise profile, and fall back to the router only for ambiguous cases and
+federated queries. The wire format carries everything this needs — `expertise` on every
+instance, `mode` on the response.
+
+The SDK does not use any of it. `BoswellClient::connect` picks the **first instance reported
+healthy**, or the first instance if none is, and connects to that one for the life of the
+client. `InstanceInfo::id`, `InstanceInfo::expertise` and `SessionResponse::mode` are all
+carried and all marked `#[allow(dead_code)]` — deliberately, as wire format the SDK does not
+yet read.
+
+With one instance registered, which is every deployment today, first-healthy and
+route-by-expertise are the same behavior. The gap only opens when a second instance exists.
+
+### Federated query fallback
+
+The other half of ADR-019: the router as a fallback path for queries the client cannot route
+itself. There is no such route. `POST /session/establish` and `GET /health` are the whole
+surface, and neither the router nor the SDK has a notion of a query it could not place.
+
+## Superseded
+
+These were specified in this document, in detail, and then abandoned on purpose. They are not
+backlog items. Nothing is waiting on them.
+
+- **mTLS session establishment.** The client was to authenticate to the router with a client
+  certificate. ADR-021 made the gateway the only authenticating component and put the router
+  on loopback behind it. `POST /session/establish` requires no credential of any kind, and the
+  reason it does not is a decision, not an omission. ADR-022's rejection of manual per-client
+  certificate registration applies with equal force here: an agent cannot issue a certificate
+  to a subagent without the operator becoming a certificate authority.
+- **One token per instance, validated by the instance.** The router was to mint a separately
+  scoped token per registered instance, signed with a private key the instances verified. The
+  gRPC instance now authenticates nothing — the `auth_token` field is gone from all fourteen
+  request messages that carried it (#58), and its numbers are `reserved` so they cannot be
+  reused. One symmetric session token remains, and no instance reads it.
+- **Cryptographic fingerprints in the registry.** `InstanceEntry` was to carry a public-key
+  fingerprint for mTLS verification. With no mTLS there is nothing to verify against, so
+  `[[instances]]` has no fingerprint field. Instance trust is filesystem trust: whoever can
+  edit the router's config decides what the router points at.
+- **Capability declaration per instance.** Registration was to include the set of operations an
+  instance supports. Every instance implements the whole fifteen-RPC service, so the field
+  would encode nothing. `expertise` — which namespaces, not which operations — is what the
+  config actually carries.
+
+## Open
+
+### Health monitoring
+
+There is no polling task, no health-check client, and no configuration for either. Building it
+means a periodic sweep calling each instance's `grpc.health.v1.Health` service and driving
+`InstanceRegistry::update_health` from the result, which is the one piece already in place.
+
+The transition rules this document used to state — two consecutive failures to `Unhealthy`, two
+consecutive successes back to `Healthy`, a slow response to `Degraded` — are a reasonable
+design and were never implemented, so nothing constrains them. They are recorded here as a
+starting point, not as behavior.
+
+`Unhealthy` is deliberately not removal: an instance that stops answering stays in the registry
+and stays in the session response, and the client decides what to do about it. That part of the
+design survives, because it is what the SDK already assumes.
+
+### Multiple endpoints per instance
+
+`InstanceConfig::endpoint` is one string. The design called for several per instance — LAN
+address, VPN address, public endpoint — with the client trying them in order by reachability.
+Nothing about the current shape blocks it; nobody has needed it.
+
+### Portable encrypted configuration
+
+`RouterConfig::from_file` reads plaintext TOML. The design called for a single `age`-encrypted
+file, decrypted in memory at startup, never written to disk in the clear, carrying a sequence
+number so the newest copy is identifiable — with disaster recovery being "copy the file and
+know the passphrase".
+
+Whether that survives ADR-021 is **undecided and is a human's call**, not a slice to pick up.
+The registry no longer holds keypairs or fingerprints, so the highest-value thing in the file
+is now `jwt_secret`, and the token it signs is not a capability. Against that,
+[`16-backup-recovery.md`](16-backup-recovery.md) hangs backup-at-rest encryption off the same
+idea. [`10-security.md`](10-security.md) tracks this on its "Still open" list; do not resolve
+it by writing a confident sentence here.
+
+### The bind is not enforced
+
+`RouterConfig` accepts `bind_address = "0.0.0.0"` and `start_server` binds it without
+complaint. ADR-021 places the router on loopback behind the gateway, and
+[`10-security.md`](10-security.md)'s deployment-postures table assumes it is there — but
+nothing in the code makes it so.
+
+The gRPC instance refuses exactly this: `ServerConfig` resolves its address through
+`to_socket_addrs()` and refuses to start unless every resolved address is loopback. Whether the
+router should mirror that refusal is a decision nobody has made. Until it is made, an exposed
+router is an unauthenticated endpoint that mints session tokens and reveals every instance
+endpoint to anyone who asks.
+
 ## Deployment
 
-The Router is a single static binary with no runtime dependencies other than its config file. It runs on any machine that has network access to at least one registered instance.
+The router is a single static binary whose only runtime dependency is its config file. Run it
+on the same host as the instances it lists, on loopback, alongside the gateway.
 
-### Single-Instance Mode
+**Single-instance mode is the deployment.** The router is present even with one instance, so
+the client has one code path regardless — establish a session, receive an array of one, connect
+to it. Overhead is a process, a TCP listener, and a `Vec` of instance entries.
 
-**The Router is present even in single-instance deployments.** This ensures consistent session management and security patterns across all deployment models.
+The previous version of this section gave memory and CPU figures — "<1MB", "~100KB per
+instance", "health checks every 60 seconds per instance". None was measured, and the last one
+describes a component that does not exist. No figures are given here in their place. What is
+safe to say is structural: the router holds **no claim data**, its memory is a function of the
+number of registered instances rather than the number of claims, and between session
+establishments it does no work at all.
 
-- **Minimal overhead:** <1MB memory footprint, near-zero CPU usage
-- **Simple registry:** Contains only one instance entry
-- **Consistent API:** Clients use the same SessionRequest/SessionResponse flow regardless of deployment size
+## Related
 
-### Multi-Instance Mode
-
-The Router scales efficiently to multiple instances:
-
-- **Memory usage:** Approximately 100KB per registered instance (mostly for health state and endpoint tracking)
-- **CPU usage:** Health checks every 60 seconds per instance (lightweight gRPC ping)
-- **Network usage:** Minimal — only health checks and session establishment
-
-### Recommended Deployment
-
-**Run the Router on your primary trusted machine** (not a remote server). The Router holds:
-- The instance registry and cryptographic identities
-- The token-issuing signing key
-- The encrypted configuration (highest-value target in the system)
-
-Running it on your own machine (desktop, laptop) gives you direct control over the most security-sensitive component.
-
-### Resource Requirements
-
-- **Memory:** <1MB for single instance, ~1MB + (100KB × number of instances)
-- **CPU:** Near-zero except during session establishment and health checks
-- **Disk:** Only the config file (~10-50KB depending on registry size)
-- **Network:** Outbound connections to instances for health checks; inbound gRPC listener for session requests
-
-The Router holds **no claim data** — only metadata about instances. Memory and CPU usage are independent of the number of claims in your system.
+- [ADR-019](../ADRs/019-stateless-sessions.md) — sessions are topology discovery; the client
+  routes.
+- [ADR-021](../ADRs/021-gateway-is-the-security-boundary.md) — why the router authenticates
+  nothing; supersedes ADR-017.
+- [ADR-022](../ADRs/022-delegated-credentials.md) — where delegated authority comes from
+  instead.
+- [`10-security.md`](10-security.md) — normative for the security model, including the open
+  questions this document defers to.
+- [`03-api-surface.md`](03-api-surface.md) — the gRPC service the router points clients at.
+- [`docs/development/roadmap.md`](../development/roadmap.md) — what is actually built.
