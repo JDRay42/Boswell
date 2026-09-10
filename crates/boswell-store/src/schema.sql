@@ -40,6 +40,9 @@ CREATE INDEX IF NOT EXISTS idx_claims_namespace ON claims(namespace);
 CREATE INDEX IF NOT EXISTS idx_claims_tier ON claims(tier);
 CREATE INDEX IF NOT EXISTS idx_claims_created_at ON claims(created_at);
 CREATE INDEX IF NOT EXISTS idx_claims_content_hash ON claims(content_hash);
+-- Procedure preconditions resolve an exact (subject, predicate, object) triple;
+-- the composite also serves a subject-only or (subject, predicate) prefix query.
+CREATE INDEX IF NOT EXISTS idx_claims_triple ON claims(subject, predicate, object);
 -- Note: idx_claims_source_type is created by run_migrations() in lib.rs, after
 -- ensuring the source_type column exists on databases created before it was added.
 

@@ -100,8 +100,15 @@ reasoning; this section holds the state.
   back to case-insensitive substring matching. Marked in place at
   `boswell-store/src/procedure_store.rs:295`, `goal_store.rs:114`, and `schema.sql:185`.
   *open*
-- **Push the triple match into SQL** rather than filtering in Rust.
-  `boswell-store/src/procedure_store.rs:351`. *open*
+- **Push the triple match into SQL** rather than filtering in Rust. `ClaimQuery` grew
+  exact `subject`/`predicate`/`object` filters, backed by `idx_claims_triple`. All three
+  in-Rust filters moved to SQL: a procedure precondition is now one `LIMIT 1` query
+  instead of loading every claim above the confidence floor; the Gatekeeper's duplicate
+  check no longer misses a duplicate past its hundredth row; and `Query` over the wire no
+  longer applies `limit` *before* the triple filter, which had made `limit` mean "rows
+  scanned" and dropped matches that sat past it. `Goal::expand` still evaluates edge
+  preconditions in-process, on purpose: it fetches one context slice per hop, and
+  per-precondition queries would trade one query for N. *shipped (#52)*
 - **Promotion timing (§8 #4).** Promotion belongs in a Janitor-style background sweep, so
   a just-earned fact lags until the sweep runs. §8.1 already picked the shape: configurable
   interval, with a synchronous fast-track for authority endorsements. Engineering, not

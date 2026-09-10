@@ -470,6 +470,24 @@ impl ClaimStore for SqliteStore {
             params.push(Box::new(format!("{}%", namespace)));
         }
 
+        // Exact, case-sensitive triple match. The columns carry no COLLATE, so
+        // SQLite's `=` compares bytes — the same semantics as Rust's `==` on the
+        // strings this replaced.
+        if let Some(subject) = &query.subject {
+            sql.push_str(" AND subject = ?");
+            params.push(Box::new(subject.clone()));
+        }
+
+        if let Some(predicate) = &query.predicate {
+            sql.push_str(" AND predicate = ?");
+            params.push(Box::new(predicate.clone()));
+        }
+
+        if let Some(object) = &query.object {
+            sql.push_str(" AND object = ?");
+            params.push(Box::new(object.clone()));
+        }
+
         if let Some(tier) = &query.tier {
             sql.push_str(" AND tier = ?");
             params.push(Box::new(tier.clone()));

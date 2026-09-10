@@ -346,19 +346,21 @@ impl SqliteStore {
 
     /// Resolve a single precondition against the claim store.
     fn precondition_holds(&self, pc: &Precondition) -> Result<bool, StoreError> {
-        // Push the confidence floor down to SQL; the (subject, predicate, object)
-        // match is done in-process because ClaimQuery has no such fields today.
-        // TODO(procedural-memory): push the triple match into SQL once ClaimQuery
-        // grows subject/predicate/object filters (ADR-020 backlog).
+        // The whole check is one indexed SQL query: the confidence floor and the
+        // (subject, predicate, object) triple are both filters, and existence is
+        // all the caller needs, so `LIMIT 1` stops the scan at the first hit.
+        // No namespace filter — a precondition resolves across every namespace,
+        // as it did when the triple was matched in-process.
+        let m = &pc.check.match_pattern;
         let cq = ClaimQuery {
+            subject: Some(m.subject.clone()),
+            predicate: Some(m.predicate.clone()),
+            object: Some(m.object.clone()),
             min_confidence: Some(pc.check.min_confidence),
+            limit: Some(1),
             ..ClaimQuery::default()
         };
-        let claims = self.query_claims(&cq)?;
-        let m = &pc.check.match_pattern;
-        let matched = claims
-            .iter()
-            .any(|c| c.subject == m.subject && c.predicate == m.predicate && c.object == m.object);
+        let matched = !self.query_claims(&cq)?.is_empty();
         Ok(match pc.check.expect {
             Expect::Exists => matched,
             Expect::Absent => !matched,
@@ -744,6 +746,90 @@ mod tests {
         assert_eq!(ranked.len(), 2);
         assert_eq!(ranked[0].name, "eggs-quick-scramble");
         assert_eq!(ranked[1].name, "omelette-classic");
+    }
+
+    #[test]
+    fn precondition_requires_every_leg_of_the_triple_to_match() {
+        let mut store = store();
+        let goal = "goal:person:jd/cook-eggs";
+
+        // Each claim shares two legs of the target triple and differs in the
+        // third. None of them should satisfy the precondition.
+        assert_claim(
+            &mut store,
+            "person:jd",
+            "attr:in-pantry",
+            "ingredient:flour",
+        );
+        assert_claim(
+            &mut store,
+            "person:jd",
+            "attr:allergic-to",
+            "ingredient:eggs",
+        );
+        assert_claim(&mut store, "person:ab", "attr:in-pantry", "ingredient:eggs");
+
+        let mut needs_eggs = mk(goal, "needs-eggs");
+        needs_eggs.preconditions = vec![precondition(
+            "person:jd",
+            "attr:in-pantry",
+            "ingredient:eggs",
+            Expect::Exists,
+        )];
+        store.upsert_procedure(&needs_eggs).unwrap();
+
+        let query = ProcedureQuery {
+            goal: Some(goal.into()),
+            ..Default::default()
+        };
+        assert!(
+            store.query_procedures(&query, NOW).unwrap().is_empty(),
+            "two matching legs out of three must not satisfy the precondition"
+        );
+
+        // Add the exact triple and the same procedure surfaces.
+        assert_claim(&mut store, "person:jd", "attr:in-pantry", "ingredient:eggs");
+        let surfaced = store.query_procedures(&query, NOW).unwrap();
+        assert_eq!(surfaced.len(), 1);
+        assert_eq!(surfaced[0].name, "needs-eggs");
+    }
+
+    #[test]
+    fn precondition_ignores_claims_below_the_confidence_floor() {
+        let mut store = store();
+        let goal = "goal:person:jd/cook-eggs";
+
+        // The triple matches exactly, but the lower bound sits under the 0.6
+        // floor `precondition()` sets, so the claim must not count.
+        let weak = Claim::new(
+            ClaimId::new(),
+            "person:jd".into(),
+            "person:jd".into(),
+            "attr:in-pantry".into(),
+            "ingredient:eggs".into(),
+            (0.4, 0.9),
+            "project".into(),
+            NOW,
+        );
+        store.assert_claim(weak).unwrap();
+
+        let mut needs_eggs = mk(goal, "needs-eggs");
+        needs_eggs.preconditions = vec![precondition(
+            "person:jd",
+            "attr:in-pantry",
+            "ingredient:eggs",
+            Expect::Exists,
+        )];
+        store.upsert_procedure(&needs_eggs).unwrap();
+
+        let query = ProcedureQuery {
+            goal: Some(goal.into()),
+            ..Default::default()
+        };
+        assert!(
+            store.query_procedures(&query, NOW).unwrap().is_empty(),
+            "a claim below the confidence floor must not satisfy Exists"
+        );
     }
 
     #[test]

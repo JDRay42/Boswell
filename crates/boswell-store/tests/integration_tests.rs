@@ -112,6 +112,79 @@ fn test_query_claims_by_namespace() {
 }
 
 #[test]
+fn test_query_claims_by_triple() {
+    let mut store = SqliteStore::new(":memory:", false, 0).unwrap();
+
+    // Three claims sharing a subject, differing in predicate and object, so a
+    // filter on one leg cannot be mistaken for a filter on another.
+    let triples = [
+        ("person:jd", "attr:in-pantry", "ingredient:eggs"),
+        ("person:jd", "attr:in-pantry", "ingredient:flour"),
+        ("person:jd", "attr:allergic-to", "ingredient:eggs"),
+    ];
+
+    for (i, (subject, predicate, object)) in triples.iter().enumerate() {
+        let claim = Claim {
+            id: ClaimId::new(),
+            namespace: "test".to_string(),
+            subject: subject.to_string(),
+            predicate: predicate.to_string(),
+            object: object.to_string(),
+            source_type: "assertion".to_string(),
+            confidence: (0.5, 0.6),
+            tier: "project".to_string(),
+            created_at: 1000 + i as u64,
+            stale_at: None,
+        };
+        store.assert_claim(claim).unwrap();
+    }
+
+    // All three legs: exactly one row.
+    let exact = ClaimQuery {
+        subject: Some("person:jd".to_string()),
+        predicate: Some("attr:in-pantry".to_string()),
+        object: Some("ingredient:eggs".to_string()),
+        ..Default::default()
+    };
+    let results = store.query_claims(&exact).unwrap();
+    assert_eq!(results.len(), 1, "the full triple should match one claim");
+    assert_eq!(results[0].predicate, "attr:in-pantry");
+    assert_eq!(results[0].object, "ingredient:eggs");
+
+    // One leg: the filters are independent, not a single composite.
+    let by_object = ClaimQuery {
+        object: Some("ingredient:eggs".to_string()),
+        ..Default::default()
+    };
+    assert_eq!(store.query_claims(&by_object).unwrap().len(), 2);
+
+    let by_predicate = ClaimQuery {
+        predicate: Some("attr:allergic-to".to_string()),
+        ..Default::default()
+    };
+    assert_eq!(store.query_claims(&by_predicate).unwrap().len(), 1);
+
+    // Exact, not prefix, and case-sensitive — unlike the namespace filter.
+    let prefix = ClaimQuery {
+        subject: Some("person".to_string()),
+        ..Default::default()
+    };
+    assert!(
+        store.query_claims(&prefix).unwrap().is_empty(),
+        "subject is an exact match, not a prefix"
+    );
+
+    let wrong_case = ClaimQuery {
+        subject: Some("Person:JD".to_string()),
+        ..Default::default()
+    };
+    assert!(
+        store.query_claims(&wrong_case).unwrap().is_empty(),
+        "subject matching is case-sensitive"
+    );
+}
+
+#[test]
 fn test_query_claims_by_tier() {
     let mut store = SqliteStore::new(":memory:", false, 0).unwrap();
 
