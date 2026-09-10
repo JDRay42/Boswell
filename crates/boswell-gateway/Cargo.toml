@@ -23,6 +23,9 @@ axum = "0.7"
 tower = "0.4"
 tower-http = { version = "0.6", features = ["limit", "timeout", "trace"] }
 sha2 = "0.10"
+# OIDC verification (ADR-022): JWT checking, and fetching the provider's JWKS.
+jsonwebtoken = "9.3"
+reqwest = { version = "0.12", features = ["json"] }
 
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }

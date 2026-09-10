@@ -104,6 +104,23 @@ to reach gRPC to use Boswell.
 The gateway defaults to binding `127.0.0.1:8081`. Exposing it is the operator's deliberate act,
 and is where TLS enters — see [TLS](#tls-is-somebody-elses-job).
 
+### The gateway verifies OIDC tokens
+
+Optional, and off unless the config carries an `[oidc]` section. The gateway accepts a JWT from
+an issuer the operator names, verified against that provider's JWKS, which it caches for
+`jwks_refresh_secs` and refetches when a token names a key id it has not seen. Nothing is
+fetched on the request path in the steady state, and a provider that is down does not take the
+gateway's authentication with it.
+
+Verification establishes **who**, not what. Authority comes from an `[[oidc.principals]]` entry
+matching the token's `sub` — the same namespace and scopes an `[[api_keys]]` entry carries. A
+token that verifies for a subject listed nowhere is authenticated and unauthorized: `403`, not
+`401`. Boswell still ships no identity provider, and the device-code grant runs between the
+caller and the provider with the gateway not in it (#68).
+
+This is the top half of ADR-022 only. Nothing below is built: tokens are not attenuable, there
+is no delegation chain, and there is no revocation list.
+
 ### The instance authenticates nothing, on purpose
 
 The gRPC instance has no credential parameter on any RPC. The `auth_token` field is gone from
@@ -168,8 +185,9 @@ settings are waiting for.
 
 ## Decided, not built
 
-[ADR-022](../ADRs/022-delegated-credentials.md) splits the problem at the human boundary. None
-of the following exists in code; do not deploy as if it does.
+[ADR-022](../ADRs/022-delegated-credentials.md) splits the problem at the human boundary. The
+gateway's half of the top layer is built (see [above](#the-gateway-verifies-oidc-tokens));
+everything below the line is not. Do not deploy as if it is.
 
 ### Above the line — OIDC establishes the person
 
@@ -180,6 +198,9 @@ go-ahead and lasts months. Boswell never handles a password and never manages hu
 Boswell ships **no identity provider**. [Pocket ID](https://pocket-id.org) is a reasonable local
 choice; running and governing it stays the operator's job. The gateway verifies against cached
 JWKS so no request costs a round trip to the provider.
+
+**Built as of #68**, with one piece missing: nothing in the repo *runs* the device-code grant.
+An operator obtains a token from their provider by hand until a `boswell login` exists.
 
 ### Below the line — attenuable tokens carry delegation
 

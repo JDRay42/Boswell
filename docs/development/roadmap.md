@@ -228,8 +228,18 @@ Still open, and now sharper for having a decided model to sit in:
   `enable_tls` refuses to serve plaintext. The router still mints its session JWT for topology
   discovery (ADR-019); it was never read by an instance and is not an authorization credential.
   *shipped* (#58)
-- **OIDC verification at the gateway** — device-code grant, JWKS cached and checked locally so
-  no request costs a round trip to the provider (ADR-022). *open*
+- **OIDC verification at the gateway** (ADR-022). A `[oidc]` section names an issuer the
+  operator already runs; a caller presents that provider's JWT as its bearer token and the
+  gateway verifies it against JWKS it has cached, so no request costs a round trip. Keys are
+  refetched when the set goes stale or a token names a key id the gateway has not seen, rate
+  limited so unknown-kid tokens cannot be pointed at the provider as an amplifier. Verification
+  establishes *who*: authority comes from a `[[oidc.principals]]` entry matching the token's
+  `sub`, the same way an `[[api_keys]]` entry supplies it for a key, so a verified subject with
+  no entry is 403 rather than 401. API keys are untouched and a JWT presented to a gateway with
+  no issuer configured is just a bad key. *shipped* (#68)
+- **The device-code client half.** Nothing in the repo obtains a token — an operator gets one
+  from their provider by hand. The grant runs between the client and the provider with the
+  gateway not in it, so this is a `boswell login` command, not gateway work. *open*
 - **Attenuable tokens** (`biscuit-auth`): root token minted from a verified OIDC identity,
   attenuation for subagents, and the Datalog authorization policy. *open*
 - **Revocation list.** Offline verification means a revoked grant is invisible until something

@@ -7,14 +7,19 @@
 //! lifecycle under `/v1` so external (e.g. cloud) agents can use Boswell over
 //! HTTPS via a reverse proxy or tunnel, while the gRPC instance stays private.
 //!
-//! Auth is static bearer API keys, each mapped to a namespace and scopes; keys
-//! are stored as SHA-256 hashes in the gateway config.
+//! Auth is bearer tokens on the `/v1` surface. A token is either a static API
+//! key, stored as a SHA-256 hash in the gateway config and mapped to a
+//! namespace and scopes, or — where an `[oidc]` section names an identity
+//! provider — a JWT from that provider, verified against locally cached JWKS.
+//! Both paths end in the same [`AuthContext`](auth::AuthContext); see
+//! [`oidc`] for what verification does and does not grant.
 
 pub mod auth;
 pub mod config;
 pub mod error;
 pub mod handlers;
 pub mod metrics;
+pub mod oidc;
 pub mod state;
 
 use std::time::Duration;
@@ -161,9 +166,17 @@ pub async fn run(config: GatewayConfig) -> Result<(), GatewayError> {
     let addr = config.bind_addr();
 
     tracing::info!(
-        "boswell-gateway listening on {} ({} API key(s) loaded)",
+        "boswell-gateway listening on {} ({} API key(s) loaded, {})",
         addr,
-        config.api_keys.len()
+        config.api_keys.len(),
+        match &config.oidc {
+            Some(oidc) => format!(
+                "OIDC issuer {} with {} principal(s)",
+                oidc.issuer,
+                oidc.principals.len()
+            ),
+            None => "no OIDC issuer".to_string(),
+        }
     );
 
     let listener = tokio::net::TcpListener::bind(&addr)

@@ -11,6 +11,7 @@ use tokio::sync::Mutex as TokioMutex;
 
 use crate::auth::{AuthContext, Scope};
 use crate::config::GatewayConfig;
+use crate::oidc::OidcVerifier;
 
 /// Cloneable handle to gateway state (cheap `Arc` clone).
 #[derive(Clone)]
@@ -24,6 +25,9 @@ struct Inner {
     client: TokioMutex<BoswellClient>,
     /// key_hash → authorization context template.
     keys: HashMap<String, AuthContext>,
+    /// OIDC verifier, present only when the config declares an `[oidc]`
+    /// section. `None` means bearer tokens are API keys and nothing else.
+    oidc: Option<OidcVerifier>,
     /// key_id → token bucket.
     buckets: StdMutex<HashMap<String, Bucket>>,
     /// Requests per minute per key; 0 disables limiting.
@@ -67,11 +71,13 @@ impl AppState {
         }
 
         let client = BoswellClient::new(&config.router_endpoint);
+        let oidc = config.oidc.as_ref().map(OidcVerifier::new);
 
         Self {
             inner: Arc::new(Inner {
                 client: TokioMutex::new(client),
                 keys,
+                oidc,
                 buckets: StdMutex::new(HashMap::new()),
                 rate_limit_per_minute: config.rate_limit_per_minute,
                 dev_auth: AtomicBool::new(false),
@@ -104,6 +110,12 @@ impl AppState {
                  served here may be trusted for long-term memory"
             );
         }
+    }
+
+    /// The OIDC verifier, if this gateway is configured to accept tokens from
+    /// an identity provider.
+    pub fn oidc(&self) -> Option<&OidcVerifier> {
+        self.inner.oidc.as_ref()
     }
 
     /// Look up an [`AuthContext`] by the SHA-256 hash of the presented key.
