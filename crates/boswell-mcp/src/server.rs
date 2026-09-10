@@ -16,7 +16,19 @@ use crate::tools;
 pub struct McpServer {
     client: BoswellClient,
     runtime: Runtime,
+    /// The principal named on every execution receipt this server takes out.
+    ///
+    /// Server-side, never a tool argument: a caller that names itself on a
+    /// receipt is not accountable for answering it (design 15 §3.3).
+    principal: String,
 }
+
+/// The principal used when none is configured.
+///
+/// A receipt with nobody accountable for reporting is not a contract, so this
+/// is a real name rather than an empty string — but it is a weak one, and
+/// `BOSWELL_MCP_PRINCIPAL` exists to replace it.
+pub const DEFAULT_PRINCIPAL: &str = "mcp";
 
 impl McpServer {
     /// Create a new MCP server
@@ -33,7 +45,25 @@ impl McpServer {
 
         let client = BoswellClient::new(&router_url);
 
-        Ok(Self { client, runtime })
+        Ok(Self {
+            client,
+            runtime,
+            principal: DEFAULT_PRINCIPAL.to_string(),
+        })
+    }
+
+    /// Name the principal this server issues execution receipts to.
+    ///
+    /// An empty name is refused: it would put the receipt on nobody.
+    pub fn with_principal(mut self, principal: impl Into<String>) -> Result<Self, McpError> {
+        let principal = principal.into();
+        if principal.trim().is_empty() {
+            return Err(McpError::InvalidRequest(
+                "principal must not be empty".to_string(),
+            ));
+        }
+        self.principal = principal;
+        Ok(self)
     }
 
     /// Connect to Boswell router
@@ -125,6 +155,12 @@ impl McpServer {
             self.tool_definition_learn(),
             self.tool_definition_forget(),
             self.tool_definition_search(),
+            self.tool_definition_query_goals(),
+            self.tool_definition_get_goal(),
+            self.tool_definition_expand_goal(),
+            self.tool_definition_query_procedures(),
+            self.tool_definition_get_procedure(),
+            self.tool_definition_report_outcome(),
         ];
 
         let response = ToolListResponse { tools };
@@ -154,6 +190,12 @@ impl McpServer {
             "boswell_learn" => self.call_learn_tool(tool_params),
             "boswell_forget" => self.call_forget_tool(tool_params),
             "boswell_semantic_search" => self.call_search_tool(tool_params),
+            "boswell_query_goals" => self.call_query_goals_tool(tool_params),
+            "boswell_get_goal" => self.call_get_goal_tool(tool_params),
+            "boswell_expand_goal" => self.call_expand_goal_tool(tool_params),
+            "boswell_query_procedures" => self.call_query_procedures_tool(tool_params),
+            "boswell_get_procedure" => self.call_get_procedure_tool(tool_params),
+            "boswell_report_outcome" => self.call_report_outcome_tool(tool_params),
             _ => {
                 let error = JsonRpcError::new(id, -32601, format!("Tool not found: {}", tool_name));
                 return serde_json::to_value(error).unwrap();
@@ -214,6 +256,66 @@ impl McpServer {
         let result = self
             .runtime
             .block_on(tools::handle_search(&mut self.client, params))?;
+        Ok(serde_json::to_value(result)?)
+    }
+
+    /// Call query_goals tool
+    fn call_query_goals_tool(&mut self, params: Value) -> Result<Value, McpError> {
+        let params: tools::QueryGoalsParams = serde_json::from_value(params)?;
+        let result = self
+            .runtime
+            .block_on(tools::handle_query_goals(&mut self.client, params))?;
+        Ok(serde_json::to_value(result)?)
+    }
+
+    /// Call get_goal tool
+    fn call_get_goal_tool(&mut self, params: Value) -> Result<Value, McpError> {
+        let params: tools::GetGoalParams = serde_json::from_value(params)?;
+        let result = self
+            .runtime
+            .block_on(tools::handle_get_goal(&mut self.client, params))?;
+        Ok(serde_json::to_value(result)?)
+    }
+
+    /// Call expand_goal tool
+    fn call_expand_goal_tool(&mut self, params: Value) -> Result<Value, McpError> {
+        let params: tools::ExpandGoalParams = serde_json::from_value(params)?;
+        let result = self
+            .runtime
+            .block_on(tools::handle_expand_goal(&mut self.client, params))?;
+        Ok(serde_json::to_value(result)?)
+    }
+
+    /// Call query_procedures tool
+    fn call_query_procedures_tool(&mut self, params: Value) -> Result<Value, McpError> {
+        let params: tools::QueryProceduresParams = serde_json::from_value(params)?;
+        let principal = self.principal.clone();
+        let result = self.runtime.block_on(tools::handle_query_procedures(
+            &mut self.client,
+            params,
+            &principal,
+        ))?;
+        Ok(serde_json::to_value(result)?)
+    }
+
+    /// Call get_procedure tool
+    fn call_get_procedure_tool(&mut self, params: Value) -> Result<Value, McpError> {
+        let params: tools::GetProcedureParams = serde_json::from_value(params)?;
+        let principal = self.principal.clone();
+        let result = self.runtime.block_on(tools::handle_get_procedure(
+            &mut self.client,
+            params,
+            &principal,
+        ))?;
+        Ok(serde_json::to_value(result)?)
+    }
+
+    /// Call report_outcome tool
+    fn call_report_outcome_tool(&mut self, params: Value) -> Result<Value, McpError> {
+        let params: tools::ReportOutcomeParams = serde_json::from_value(params)?;
+        let result = self
+            .runtime
+            .block_on(tools::handle_report_outcome(&mut self.client, params))?;
         Ok(serde_json::to_value(result)?)
     }
 
@@ -328,6 +430,144 @@ impl McpServer {
             }),
         }
     }
+
+    // ---- Procedural memory (design 15 §3.2, §3.3, §4.1) ----
+    //
+    // The descriptions carry the obligation, not just the capability: a model
+    // reading `tools/list` has to learn that retrieving a procedure creates a
+    // receipt it owes a report on, because nothing else on this surface will
+    // tell it.
+
+    fn tool_definition_query_goals(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "boswell_query_goals".to_string(),
+            description: "Find goals by namespace or intent — the entry hop into a decomposition. \
+                          Traversal is free: no execution receipt is issued and nothing is owed."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "namespace": {"type": "string", "description": "Filter by namespace prefix"},
+                    "intent_contains": {"type": "string", "description": "Case-insensitive substring of the goal's intent"},
+                    "limit": {"type": "integer", "description": "Maximum number of results"}
+                }
+            }),
+        }
+    }
+
+    fn tool_definition_get_goal(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "boswell_get_goal".to_string(),
+            description: "Fetch one goal by id. Returns found=false when no such goal exists in \
+                          scope. Issues no receipt."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "Goal id"},
+                    "namespace_scope": {"type": "string", "description": "Confine the lookup to a namespace prefix"}
+                },
+                "required": ["id"]
+            }),
+        }
+    }
+
+    fn tool_definition_expand_goal(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "boswell_expand_goal".to_string(),
+            description: "Expand one goal into its ranked candidate children — a single traversal \
+                          hop. Returns candidates whose preconditions currently hold, the \
+                          decide-role procedures that help choose among them, and the claim \
+                          readings behind the filtering. The store surfaces; you decide, and you \
+                          hold the cursor: call this again on whichever child you pick."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "goal_id": {"type": "string", "description": "The goal to expand"},
+                    "context_tags": {
+                        "type": "array",
+                        "description": "Situational tags matched against edge tags, e.g. [\"time:quick\"]",
+                        "items": {"type": "string"}
+                    },
+                    "namespace_scope": {"type": "string", "description": "Confine the lookup to a namespace prefix"}
+                },
+                "required": ["goal_id"]
+            }),
+        }
+    }
+
+    fn tool_definition_query_procedures(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "boswell_query_procedures".to_string(),
+            description: "Retrieve stored how-tos for a goal or intent. Every procedure returned \
+                          carries an execution receipt: report the outcome with \
+                          boswell_report_outcome before the receipt expires, or the run counts as \
+                          unknown against the procedure. Do not retrieve procedures you do not \
+                          intend to use."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "namespace": {"type": "string", "description": "Filter by namespace prefix"},
+                    "goal": {"type": "string", "description": "Filter to a single goal grouping key"},
+                    "intent_contains": {"type": "string", "description": "Case-insensitive substring of the procedure's intent"},
+                    "include_superseded": {"type": "boolean", "description": "Include non-current versions", "default": false},
+                    "limit": {"type": "integer", "description": "Maximum number of results"},
+                    "task_id": {"type": "string", "description": "Correlation id stamped onto the issued receipts"},
+                    "session_id": {"type": "string", "description": "Correlation id stamped onto the issued receipts"}
+                }
+            }),
+        }
+    }
+
+    fn tool_definition_get_procedure(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "boswell_get_procedure".to_string(),
+            description: "Fetch one procedure by id, issuing an execution receipt for it. Returns \
+                          found=false when no such procedure exists in scope — and an \
+                          out-of-scope lookup leaves no receipt behind. As with \
+                          boswell_query_procedures, a returned procedure must be reported on."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "Procedure id"},
+                    "namespace_scope": {"type": "string", "description": "Confine the lookup to a namespace prefix"},
+                    "task_id": {"type": "string", "description": "Correlation id stamped onto the issued receipt"},
+                    "session_id": {"type": "string", "description": "Correlation id stamped onto the issued receipt"}
+                },
+                "required": ["id"]
+            }),
+        }
+    }
+
+    fn tool_definition_report_outcome(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "boswell_report_outcome".to_string(),
+            description: "Answer an outstanding execution receipt. This is how a procedure's \
+                          effectiveness is learned; silence is not success, so report failures \
+                          and abandonments too."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "receipt_id": {"type": "string", "description": "The receipt this report answers"},
+                    "outcome": {"type": "string", "enum": ["success", "failure", "abandoned"], "description": "What happened"},
+                    "failure_mode": {
+                        "type": "string",
+                        "enum": ["preconditions_stale", "step_failed", "bad_result", "executor_error"],
+                        "description": "Failure attribution; only valid when outcome is failure"
+                    },
+                    "failed_step": {"type": "string", "description": "The step that failed, when failure_mode is step_failed"},
+                    "executor_confidence": {"type": "number", "description": "Your self-assessed confidence (0.0-1.0)", "minimum": 0.0, "maximum": 1.0},
+                    "cost": {"type": "number", "description": "Reported cost; units are executor-defined"},
+                    "notes": {"type": "string", "description": "Free-form notes"}
+                },
+                "required": ["receipt_id", "outcome"]
+            }),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -363,24 +603,117 @@ mod tests {
         assert_eq!(result["capabilities"]["tools"]["supported"], true);
     }
 
-    #[test]
-    fn test_tools_list_advertises_the_five_tools() {
-        let mut server = test_server();
+    fn advertised_tools(server: &mut McpServer) -> Vec<Value> {
         let resp = server.handle_request(request("tools/list", json!({})));
-        let tools = resp["result"]["tools"]
+        resp["result"]["tools"]
             .as_array()
-            .expect("tools should be an array");
-        assert_eq!(tools.len(), 5);
+            .expect("tools should be an array")
+            .clone()
+    }
 
+    #[test]
+    fn test_tools_list_advertises_every_tool() {
+        let mut server = test_server();
+        let tools = advertised_tools(&mut server);
         let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+
         for expected in [
             "boswell_assert",
             "boswell_query",
             "boswell_learn",
             "boswell_forget",
             "boswell_semantic_search",
+            "boswell_query_goals",
+            "boswell_get_goal",
+            "boswell_expand_goal",
+            "boswell_query_procedures",
+            "boswell_get_procedure",
+            "boswell_report_outcome",
         ] {
             assert!(names.contains(&expected), "missing tool: {}", expected);
+        }
+        assert_eq!(tools.len(), 11, "advertised: {:?}", names);
+    }
+
+    #[test]
+    fn test_every_advertised_tool_is_dispatchable() {
+        // A tool in `tools/list` that `tools/call` does not route is a surface
+        // that lies. Each call below reaches its handler with empty arguments,
+        // so it fails on parameters or on the absent connection — never with
+        // "Tool not found".
+        let mut server = test_server();
+        let names: Vec<String> = advertised_tools(&mut server)
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_string())
+            .collect();
+
+        for name in names {
+            let resp = server.handle_request(request(
+                "tools/call",
+                json!({ "name": name, "arguments": {} }),
+            ));
+            let message = resp["error"]["message"].as_str().unwrap_or_default();
+            assert!(
+                !message.contains("Tool not found"),
+                "{} is advertised but not routed",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn test_procedure_tools_do_not_take_a_principal() {
+        // `issued_to` is the server's to name (design 15 §3.3). If it ever
+        // appears in an advertised schema, a model can put someone else on the
+        // hook for a receipt it took out.
+        let mut server = test_server();
+        for tool in advertised_tools(&mut server) {
+            let properties = &tool["inputSchema"]["properties"];
+            assert!(
+                properties.get("issued_to").is_none(),
+                "{} advertises issued_to",
+                tool["name"]
+            );
+        }
+    }
+
+    #[test]
+    fn test_retrieval_tools_advertise_the_reporting_obligation() {
+        // The receipt is the whole point of procedure retrieval, and
+        // `tools/list` is the only place a model learns about it.
+        let mut server = test_server();
+        let tools = advertised_tools(&mut server);
+        let described = |name: &str| -> String {
+            tools
+                .iter()
+                .find(|t| t["name"] == name)
+                .expect("tool should be advertised")["description"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+
+        assert!(described("boswell_query_procedures").contains("receipt"));
+        assert!(described("boswell_get_procedure").contains("receipt"));
+        assert!(described("boswell_query_goals").contains("no execution receipt"));
+    }
+
+    #[test]
+    fn test_principal_defaults_and_can_be_named() {
+        let server = test_server();
+        assert_eq!(server.principal, DEFAULT_PRINCIPAL);
+
+        let named = server.with_principal("agent:jd").unwrap();
+        assert_eq!(named.principal, "agent:jd");
+    }
+
+    #[test]
+    fn test_empty_principal_is_refused() {
+        // A receipt issued to nobody is not a contract.
+        match test_server().with_principal("   ") {
+            Err(McpError::InvalidRequest(_)) => {}
+            Err(e) => panic!("wrong error: {}", e),
+            Ok(_) => panic!("an empty principal should be refused"),
         }
     }
 
