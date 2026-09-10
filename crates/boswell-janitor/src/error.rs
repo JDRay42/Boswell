@@ -9,6 +9,13 @@ pub enum JanitorError {
     #[error("Storage error: {0}")]
     Store(String),
 
+    /// A provenance-stamped operation was refused because the principal's
+    /// authority does not permit it — the endorse op or the namespace is out of
+    /// scope (design §5, §6). Kept distinct from [`JanitorError::Store`] so a
+    /// caller can answer "you may not" rather than "the store broke".
+    #[error("Unauthorized: {0}")]
+    Unauthorized(String),
+
     /// Configuration error
     #[error("Configuration error: {0}")]
     Config(String),

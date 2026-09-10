@@ -403,8 +403,22 @@ devAuth is a bring-up and demonstration tool for the trust model — never a sho
 3. **Authoring & learning.** How Goals/Procedures get *into* memory and refine — hand-authored
    is fine to start, but "learned from experience" implies a procedure/goal extractor
    (inducing control flow and decomposition), meaningfully harder than claim extraction.
-4. **Promotion timing.** Promotion belongs in a background sweep (Janitor-style), so a
-   just-earned team fact lags until the sweep. Tunable, not free.
+4. **Promotion timing.** ~~Promotion belongs in a background sweep (Janitor-style), so a
+   just-earned team fact lags until the sweep. Tunable, not free.~~ **Resolved, in the shape
+   §8.1 picked.** The sweep is `Janitor::sweep_procedures`, running on the instance's
+   `janitor.sweep_interval_minutes` (default 60) and skippable by a run window. The
+   fast-track is `Janitor::endorse_and_promote`: it records the endorsement stamp and
+   re-evaluates *that one procedure* synchronously, so an authority endorsement's climb lands
+   with the endorsement rather than up to an interval later. Both paths funnel through one
+   private `evaluate_procedure`, so they cannot reach different verdicts — the fast-track
+   changes *when* an entry is judged, never *how*. Falls still take priority, so endorsing a
+   failing procedure demotes it.
+
+   The remaining lag is the general case and is deliberate: corroboration and effectiveness
+   are properties of accumulated evidence, and nothing signals the moment they cross a
+   threshold. An operator who wants that lag shorter shortens the interval. Note also that
+   nothing on the wire calls the fast-track yet, because there is no endorsement transport —
+   authoring is *deferred* on the roadmap, and it is the caller that arrives with it.
 5. **Graph integrity under decay.** ~~Nodes and edges decaying independently can dangle the
    navigable graph; need a rule (an edge pins its child, or GC cascades/re-parents).~~
    **Resolved — see §8.2.** Both rules were prototyped; neither was adopted, and a third was.

@@ -109,10 +109,15 @@ reasoning; this section holds the state.
   scanned" and dropped matches that sat past it. `Goal::expand` still evaluates edge
   preconditions in-process, on purpose: it fetches one context slice per hop, and
   per-precondition queries would trade one query for N. *shipped (#52)*
-- **Promotion timing (§8 #4).** Promotion belongs in a Janitor-style background sweep, so
-  a just-earned fact lags until the sweep runs. §8.1 already picked the shape: configurable
-  interval, with a synchronous fast-track for authority endorsements. Engineering, not
-  research. *open*
+- **Promotion timing (§8 #4).** The background sweep and its configurable interval landed
+  with the Janitor (#13); what was missing was §8.1's other half, the synchronous fast-track,
+  so an endorsed entry waited up to `janitor.sweep_interval_minutes` (default 60) to climb.
+  `Janitor::endorse_and_promote` records the endorsement and re-evaluates that one procedure
+  in the same call. Sweep and fast-track share one `evaluate_procedure`, so the fast-track
+  changes when an entry is judged, not how — falls still take priority, `dry_run` still
+  suppresses the Janitor's own mutation, and an unauthorized endorser is refused before
+  anything is written. **Nothing on the wire calls it yet**: there is no endorsement
+  transport, and authoring is *deferred* below. *shipped* (#63)
 - **Goal and procedure authoring over the wire.** Absent on purpose. Authoring is a §5
   gatekept, provenance-stamped *write*, not a read, and shipping it as a read-shaped
   endpoint would put the write path behind the wrong gate. Unblocked by the security
