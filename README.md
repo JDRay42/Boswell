@@ -138,6 +138,15 @@ insights as new claims linked to their sources via `derived_from` (ADR-006).
 LLM analysis runs without holding the store lock, so gRPC requests are not
 blocked during a pass.
 
+The background jobs — `[janitor]`, `[synthesizer]` and `[contradiction]` — each
+take an optional `run_between = "02:00-06:00"`, a local-time window outside which
+they do nothing. A local model is heavy enough to make a laptop unpleasant to use
+while it runs, and this is how you keep that to hours you are asleep. An end
+before the start wraps midnight. The interval still says how often a job may run;
+the window says when it is allowed to, and a job never runs more than once per
+interval no matter how long its window is open. An unparseable window stops the
+server at startup rather than failing silently at 2 a.m.
+
 To surface conflicting knowledge, enable the Contradiction Janitor under
 `[contradiction]` (`enabled = true`; also LLM-backed). It compares claims that
 share a subject, asks the LLM whether each pair is incompatible, and records a

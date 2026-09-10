@@ -24,6 +24,7 @@ serde = { workspace = true, features = ["derive"] }
 toml = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+chrono = { workspace = true }
 
 [dev-dependencies]
 boswell-domain = { workspace = true }

@@ -17,6 +17,19 @@ pub enum ConfigError {
     /// The config file was not valid TOML for this schema.
     #[error("Failed to parse config TOML: {0}")]
     TomlParse(#[from] toml::de::Error),
+
+    /// A `run_between` window could not be understood.
+    ///
+    /// Refusing to start beats accepting it: a window that never opens means a
+    /// background job silently never runs, and it fails at 2 a.m. where nobody
+    /// is watching.
+    #[error("[{section}] run_between is invalid: {reason}")]
+    InvalidRunWindow {
+        /// The config section carrying the bad window.
+        section: &'static str,
+        /// What was wrong with it.
+        reason: String,
+    },
 }
 
 /// Top-level instance server configuration.
@@ -112,6 +125,12 @@ pub struct JanitorSettings {
     pub sweep_interval_minutes: u64,
     /// Dry-run: log intended deletions/demotions without applying them.
     pub dry_run: bool,
+    /// Local-time window this job is allowed to run in, as `"HH:MM-HH:MM"`.
+    ///
+    /// Absent means any time. A window whose end precedes its start wraps
+    /// midnight. The job's interval still governs how often it runs; the
+    /// window governs when it may.
+    pub run_between: Option<String>,
 }
 
 impl Default for JanitorSettings {
@@ -120,6 +139,7 @@ impl Default for JanitorSettings {
             enabled: false, // opt-in
             sweep_interval_minutes: 60,
             dry_run: false,
+            run_between: None,
         }
     }
 }
@@ -152,6 +172,12 @@ pub struct SynthesizerSettings {
     pub min_tier: String,
     /// Dry-run: analyze and log insights without writing them to the store.
     pub dry_run: bool,
+    /// Local-time window this job is allowed to run in, as `"HH:MM-HH:MM"`.
+    ///
+    /// Absent means any time. A window whose end precedes its start wraps
+    /// midnight. The job's interval still governs how often it runs; the
+    /// window governs when it may.
+    pub run_between: Option<String>,
 }
 
 impl Default for SynthesizerSettings {
@@ -163,6 +189,7 @@ impl Default for SynthesizerSettings {
             interval_hours: 6,
             min_tier: "task".to_string(),
             dry_run: false,
+            run_between: None,
         }
     }
 }
@@ -198,6 +225,12 @@ pub struct ContradictionSettings {
     pub min_tier: String,
     /// Dry-run: detect and log contradictions without recording them.
     pub dry_run: bool,
+    /// Local-time window this job is allowed to run in, as `"HH:MM-HH:MM"`.
+    ///
+    /// Absent means any time. A window whose end precedes its start wraps
+    /// midnight. The job's interval still governs how often it runs; the
+    /// window governs when it may.
+    pub run_between: Option<String>,
 }
 
 impl Default for ContradictionSettings {
@@ -209,6 +242,7 @@ impl Default for ContradictionSettings {
             interval_hours: 12,
             min_tier: "task".to_string(),
             dry_run: false,
+            run_between: None,
         }
     }
 }
@@ -289,7 +323,51 @@ impl InstanceConfig {
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
         let contents = std::fs::read_to_string(path)?;
         let config: InstanceConfig = toml::from_str(&contents)?;
+        config.validate()?;
         Ok(config)
+    }
+
+    /// Check the fields TOML parsing cannot check for itself.
+    ///
+    /// Only `run_between` needs this today. It is a string to serde and a time
+    /// window to the scheduler, and the gap between those two is where a typo
+    /// lives.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        for (section, spec) in [
+            ("janitor", self.janitor.run_between.as_deref()),
+            ("synthesizer", self.synthesizer.run_between.as_deref()),
+            ("contradiction", self.contradiction.run_between.as_deref()),
+        ] {
+            if let Some(spec) = spec {
+                crate::schedule::RunWindow::parse(spec)
+                    .map_err(|reason| ConfigError::InvalidRunWindow { section, reason })?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The parsed `run_between` window for a section, if it has one.
+    ///
+    /// Only called after [`Self::validate`] has passed, so an unparseable
+    /// window here is a bug rather than bad input; it degrades to "no window"
+    /// rather than panicking in a background task.
+    fn window(spec: Option<&str>) -> Option<crate::schedule::RunWindow> {
+        spec.and_then(|spec| crate::schedule::RunWindow::parse(spec).ok())
+    }
+
+    /// The Janitor's run window, if configured.
+    pub fn janitor_window(&self) -> Option<crate::schedule::RunWindow> {
+        Self::window(self.janitor.run_between.as_deref())
+    }
+
+    /// The Synthesizer's run window, if configured.
+    pub fn synthesizer_window(&self) -> Option<crate::schedule::RunWindow> {
+        Self::window(self.synthesizer.run_between.as_deref())
+    }
+
+    /// The Contradiction scan's run window, if configured.
+    pub fn contradiction_window(&self) -> Option<crate::schedule::RunWindow> {
+        Self::window(self.contradiction.run_between.as_deref())
     }
 
     /// A commented starter configuration, written by `boswell-server init`.
@@ -329,6 +407,10 @@ enabled = false
 sweep_interval_minutes = 60
 # Dry-run logs what would be deleted/demoted without changing anything.
 dry_run = false
+# Only run inside this local-time window. Commented out means any time. An end
+# before the start wraps midnight ("22:00-06:00"). The interval above still says
+# how often; this says when it is allowed to.
+# run_between = "02:00-06:00"
 
 [synthesizer]
 # Run scheduled LLM-backed synthesis passes that discover higher-order insights
@@ -341,6 +423,9 @@ interval_hours = 6
 min_tier = "task"
 # Dry-run analyzes and logs insights without writing them to the store.
 dry_run = false
+# Only run inside this local-time window — the LLM work is heavy, and this keeps
+# it off the machine while you are using it.
+# run_between = "02:00-06:00"
 
 [contradiction]
 # Run scheduled LLM-backed contradiction detection: compares same-subject claims
@@ -353,6 +438,8 @@ interval_hours = 12
 min_tier = "task"
 # Dry-run detects and logs contradictions without recording them.
 dry_run = false
+# Only run inside this local-time window.
+# run_between = "02:00-06:00"
 
 [extraction]
 # Server-side LLM extraction that turns text into claims, backing the gRPC
@@ -368,6 +455,59 @@ max_text_length = 50000
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_bad_run_window_stops_the_server_and_names_the_section() {
+        let config: InstanceConfig = toml::from_str(
+            r#"
+            [synthesizer]
+            run_between = "2am-6am"
+            "#,
+        )
+        .unwrap();
+
+        match config.validate() {
+            Err(ConfigError::InvalidRunWindow { section, reason }) => {
+                assert_eq!(section, "synthesizer");
+                assert!(reason.contains("HH:MM"), "got: {reason}");
+            }
+            other => panic!("expected an InvalidRunWindow error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_good_run_window_validates_and_parses_back() {
+        let config: InstanceConfig = toml::from_str(
+            r#"
+            [contradiction]
+            run_between = "22:00-06:00"
+            "#,
+        )
+        .unwrap();
+
+        assert!(config.validate().is_ok());
+        assert_eq!(
+            config.contradiction_window(),
+            Some(crate::schedule::RunWindow::parse("22:00-06:00").unwrap())
+        );
+    }
+
+    #[test]
+    fn no_run_window_is_the_default_and_valid() {
+        let config = InstanceConfig::default();
+
+        assert!(config.validate().is_ok());
+        assert_eq!(config.janitor_window(), None);
+        assert_eq!(config.synthesizer_window(), None);
+        assert_eq!(config.contradiction_window(), None);
+    }
+
+    #[test]
+    fn the_starter_config_this_server_emits_is_one_it_accepts() {
+        let config: InstanceConfig =
+            toml::from_str(InstanceConfig::starter_toml()).expect("the starter config must parse");
+        assert!(config.validate().is_ok());
+    }
 
     #[test]
     fn test_defaults() {

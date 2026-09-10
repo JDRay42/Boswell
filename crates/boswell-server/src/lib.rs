@@ -20,6 +20,7 @@
 
 pub mod config;
 pub mod extraction;
+pub mod schedule;
 
 use std::sync::{Arc, Mutex};
 
@@ -276,16 +277,28 @@ fn build_dev_identity() -> Option<Arc<dyn IdentityProvider + Send + Sync>> {
     }
 }
 
+/// Render a job's window for its startup log line, so the operator can see at
+/// a glance whether the thing they configured actually took.
+fn describe_window(spec: Option<&str>) -> String {
+    match spec {
+        Some(spec) => format!(", only between {spec} local time"),
+        None => String::new(),
+    }
+}
+
 /// Spawn the background Janitor sweep loop against the shared store.
 fn spawn_janitor(config: &InstanceConfig, store: Arc<Mutex<SqliteStore>>) {
+    use crate::schedule::Schedule;
     use tokio::time::{interval, Duration};
 
     let janitor_config = config.janitor.to_janitor_config();
     let period = Duration::from_secs(config.janitor.sweep_interval_minutes.max(1) * 60);
+    let mut schedule = Schedule::new(period, config.janitor_window());
 
     tracing::info!(
-        "Janitor enabled: sweeping every {} min (dry_run: {})",
+        "Janitor enabled: sweeping every {} min{} (dry_run: {})",
         config.janitor.sweep_interval_minutes,
+        describe_window(config.janitor.run_between.as_deref()),
         config.janitor.dry_run
     );
 
@@ -294,9 +307,12 @@ fn spawn_janitor(config: &InstanceConfig, store: Arc<Mutex<SqliteStore>>) {
 
     tokio::spawn(async move {
         let mut janitor = boswell_janitor::Janitor::new(janitor_config);
-        let mut ticker = interval(period);
+        let mut ticker = interval(schedule.poll_period());
         loop {
             ticker.tick().await;
+            if !schedule.should_run() {
+                continue;
+            }
             // Hold the lock only for the synchronous sweep (no await inside).
             let (claim_outcome, procedure_outcome, receipt_outcome) = {
                 let mut guard = store.lock().unwrap();
@@ -344,6 +360,7 @@ fn spawn_janitor(config: &InstanceConfig, store: Arc<Mutex<SqliteStore>>) {
 /// which holds the store lock only for the synchronous planning and persistence
 /// phases — gRPC requests are not blocked during LLM analysis.
 fn spawn_synthesizer(config: &InstanceConfig, store: Arc<Mutex<SqliteStore>>) {
+    use crate::schedule::Schedule;
     use boswell_synthesizer::{SynthesisScope, Synthesizer};
     use tokio::time::{interval, Duration};
 
@@ -354,19 +371,24 @@ fn spawn_synthesizer(config: &InstanceConfig, store: Arc<Mutex<SqliteStore>>) {
     let min_tier = synth_config.min_tier.clone();
     let max_clusters = synth_config.max_clusters_per_pass;
     let period = Duration::from_secs(settings.interval_hours.max(1) * 3600);
+    let mut schedule = Schedule::new(period, config.synthesizer_window());
 
     tracing::info!(
-        "Synthesizer enabled: model='{}', every {}h (dry_run: {})",
+        "Synthesizer enabled: model='{}', every {}h{} (dry_run: {})",
         model,
         settings.interval_hours,
+        describe_window(settings.run_between.as_deref()),
         settings.dry_run
     );
 
     tokio::spawn(async move {
         let synthesizer = Synthesizer::new(llm, synth_config).with_model_name(model);
-        let mut ticker = interval(period);
+        let mut ticker = interval(schedule.poll_period());
         loop {
             ticker.tick().await;
+            if !schedule.should_run() {
+                continue;
+            }
             let scope = SynthesisScope::all(min_tier.clone(), max_clusters);
             match synthesizer.run_pass_shared(Arc::clone(&store), scope).await {
                 Ok(r) => tracing::info!(
@@ -387,6 +409,7 @@ fn spawn_synthesizer(config: &InstanceConfig, store: Arc<Mutex<SqliteStore>>) {
 /// [`ContradictionJanitor::scan_pass_shared`], holding the store lock only for
 /// the synchronous planning and recording phases.
 fn spawn_contradiction(config: &InstanceConfig, store: Arc<Mutex<SqliteStore>>) {
+    use crate::schedule::Schedule;
     use boswell_janitor::ContradictionJanitor;
     use tokio::time::{interval, Duration};
 
@@ -394,19 +417,24 @@ fn spawn_contradiction(config: &InstanceConfig, store: Arc<Mutex<SqliteStore>>) 
     let llm = boswell_llm::OllamaProvider::new(&settings.endpoint, &settings.model);
     let cfg = settings.to_contradiction_config();
     let period = Duration::from_secs(settings.interval_hours.max(1) * 3600);
+    let mut schedule = Schedule::new(period, config.contradiction_window());
 
     tracing::info!(
-        "Contradiction janitor enabled: model='{}', every {}h (dry_run: {})",
+        "Contradiction janitor enabled: model='{}', every {}h{} (dry_run: {})",
         settings.model,
         settings.interval_hours,
+        describe_window(settings.run_between.as_deref()),
         settings.dry_run
     );
 
     tokio::spawn(async move {
         let janitor = ContradictionJanitor::new(llm, cfg);
-        let mut ticker = interval(period);
+        let mut ticker = interval(schedule.poll_period());
         loop {
             ticker.tick().await;
+            if !schedule.should_run() {
+                continue;
+            }
             match janitor.scan_pass_shared(Arc::clone(&store)).await {
                 Ok(r) => tracing::info!(
                     "Contradiction scan: {} examined, {} pairs, {} contradictions",
