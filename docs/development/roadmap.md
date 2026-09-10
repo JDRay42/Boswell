@@ -287,9 +287,10 @@ The passes that run without being asked.
 
 Named as a workstream because it has never had one, and that is why none of it exists.
 
-- **Tracing in the gRPC service layer.** `service.rs` contains zero `tracing::` calls.
-  `tracing-subscriber` is initialised in `boswell-server`; the service emits nothing into
-  it. *open*
+- **Tracing in the gRPC service layer.** Every RPC opens a `debug` span named for its
+  handler and closes with one event. State changes are `info`, reads and rejections
+  `debug`, store failures `error` — the only place a `Status::internal`'s cause survives.
+  Remembered content is never a field, and a test asserts it. *shipped* (#57)
 - **Metrics export.** The Janitor tracks its own counters. Nothing is exported, and there
   is no Prometheus dependency or `/metrics` endpoint anywhere in the workspace. *open*
 - **Benchmarks.** There is no `benches/` directory and no `criterion` dependency. Nothing

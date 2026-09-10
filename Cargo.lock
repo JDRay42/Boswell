@@ -369,6 +369,8 @@ dependencies = [
  "tokio",
  "tonic",
  "tonic-build",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
