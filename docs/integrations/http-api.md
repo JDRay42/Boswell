@@ -438,7 +438,7 @@ which is off by default. Enable it in the instance config and pull the model:
 # config/instance.toml
 [extraction]
 enabled = true
-model = "qwen2.5:7b"
+model = "granite4.2:8b"
 endpoint = "http://localhost:11434"
 max_text_length = 50000
 ```

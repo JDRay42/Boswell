@@ -301,6 +301,9 @@ that needs a model calls one trait, and configuration decides who answers it.
   `responseSchema`, Ollama's JSON mode — and the trait says nothing about what a `schema`
   string contains, so honoring it means first deciding that contract. The Extractor parses
   free text today and does not call it. *open*
+- **Name a chat model that exists.** Every default, sample and doc pointed at
+  `qwen2.5:7b`, and the shipped `config/instance.toml` had drifted from the sample the
+  server itself emits — it was missing `[extraction]` entirely. *shipped* (#42)
 - **Cost and token accounting.** Every hosted response carries usage counts and every one
   of them is discarded. Nothing in Boswell can answer what an extraction run cost. *open*
 - **Streaming, tool use and multi-turn conversation.** Absent on purpose. The trait is one

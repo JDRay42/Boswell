@@ -608,7 +608,7 @@ mod real_llm_tests {
     ///
     ///   cargo test -p boswell-janitor real_llm_contradiction -- --ignored --nocapture
     #[tokio::test]
-    #[ignore = "requires a local Ollama with qwen2.5:7b"]
+    #[ignore = "requires a local Ollama with granite4.2:8b"]
     async fn test_real_llm_contradiction() {
         let mut store = SqliteStore::new(":memory:", false, 0).unwrap();
         // Two mutually exclusive claims about the same subject/property.
@@ -632,7 +632,7 @@ mod real_llm_tests {
             "count:2100000",
         );
 
-        let llm = OllamaProvider::new("http://localhost:11434", "qwen2.5:7b");
+        let llm = OllamaProvider::new("http://localhost:11434", "granite4.2:8b");
         let janitor = ContradictionJanitor::new(llm, ContradictionConfig::default());
         let report = janitor.scan_pass(&mut store).await.unwrap();
 

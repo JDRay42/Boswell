@@ -369,7 +369,7 @@ async fn test_since_filter_excludes_old_claims() {
 /// Ignored by default; run with:
 ///   cargo test -p boswell-synthesizer real_llm_synthesis -- --ignored --nocapture
 #[tokio::test]
-#[ignore = "requires a local Ollama with qwen2.5:7b"]
+#[ignore = "requires a local Ollama with granite4.2:8b"]
 async fn test_real_llm_synthesis() {
     use boswell_llm::OllamaProvider;
 
@@ -400,9 +400,9 @@ async fn test_real_llm_synthesis() {
         (0.9, 0.95),
     );
 
-    let llm = OllamaProvider::new("http://localhost:11434", "qwen2.5:7b");
+    let llm = OllamaProvider::new("http://localhost:11434", "granite4.2:8b");
     let synthesizer =
-        Synthesizer::new(llm, SynthesizerConfig::default()).with_model_name("qwen2.5:7b");
+        Synthesizer::new(llm, SynthesizerConfig::default()).with_model_name("granite4.2:8b");
 
     let scope = SynthesisScope::all("task", 50);
     let report = synthesizer.run_pass(&mut store, scope).await.unwrap();
