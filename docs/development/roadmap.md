@@ -345,10 +345,24 @@ Named as a workstream because it has never had one, and that is why none of it e
   `/metrics` carries `boswell_claims{tier}`: a gauge, not a counter, and a fact about the
   store rather than the Janitor, so it is reported whether or not a sweep loop is running.
   *shipped* (#65)
-- **Benchmarks.** There is no `benches/` directory and no `criterion` dependency. Nothing
-  in the repository measures anything — including the "100+ assertions/sec, queries <100ms
-  p95" target the February plan asserted and no one ever checked. Either measure it or stop
-  claiming it. *open*
+- **Benchmarks.** `crates/boswell-store/benches/claim_store.rs`, under criterion, measures
+  the two paths the February plan put a number on. The number holds with room: asserting
+  claims into a file-backed database runs at **~3,200/sec** median and **~1,280/sec** at
+  p95 against a target of 100, and the slowest query measured — a filter matching a quarter
+  of a 10,000-claim corpus — is **1.3 ms** at p95 against a target of 100 ms. A point read
+  is 3.6 µs and flat from 1,000 claims to 10,000. The suite also prices #65's decision:
+  `count_claims` over 10,000 claims takes 61 µs where the query-then-length it replaced
+  takes 3.8 ms. CI compiles the target and runs each benchmark once, but never times it —
+  a shared runner's wall-clock is noise, and a timed benchmark that gates a merge is a
+  flaky test. *shipped* (#66)
+- **The store never enables WAL mode**, which the benchmark above is what surfaced.
+  `SqliteStore` sets no `journal_mode` or `synchronous` pragma, so every assert writes a
+  rollback journal and fsyncs; [01-architecture.md](../architecture/01-architecture.md)
+  names "SQLite (WAL mode)" as the storage decision and
+  [16-backup-recovery.md](../architecture/16-backup-recovery.md) tells an operator to
+  checkpoint the WAL as part of a snapshot. The code is the odd one out. Turning WAL on is
+  a one-line pragma and a real operational change — two extra files beside the database,
+  different snapshot semantics — so it is filed rather than done. *open*
 - **Test wall-clock.** `test_run_cycles` slept sixty real seconds against a live
   `tokio::time::interval` — most of the workspace total. Now runs on a paused clock.
   *shipped* (#36)
@@ -842,8 +856,10 @@ Both contributors collaborate once their streams complete:
 - [ ] CLI can bootstrap instance, assert claims, query, and inspect
 - [ ] Backup/restore preserves all data including vector index
 - [ ] Reindex operation successfully rebuilds HNSW index
-- [ ] Performance benchmarks meet targets from [01-architecture.md](../architecture/01-architecture.md)
-- [ ] System handles 1000+ claims without degradation
+- [x] Performance benchmarks meet targets from [01-architecture.md](../architecture/01-architecture.md) (#66)
+- [x] System handles 1000+ claims without degradation (#66 — measured to 10,000; point
+      reads are flat across that range and filtered queries scale with the size of the
+      result, not of the corpus)
 - [x] Metrics exported and viewable in Prometheus (#64)
 
 ---
@@ -937,7 +953,8 @@ All contributors must adhere to:
 - Evaluates promotion requests via gatekeeper
 - Synthesizes emergent insights in background
 - Exposes all functionality via MCP and CLI
-- Processes 100+ assertions/sec, queries <100ms p95
+- Processes 100+ assertions/sec, queries <100ms p95 *(measured in #66; met with roughly
+  30x and 80x headroom respectively)*
 
 ### Backlog / Future Work
 

@@ -31,5 +31,17 @@ ureq = { version = "2", features = ["json"] }
 [dev-dependencies]
 tempfile = "3.10"
 
+# Benchmark harness. Default features pull in rayon and plotters for HTML
+# reports; CI compiles every bench target on each run (`clippy --all-targets`),
+# so only `cargo_bench_support` — the part that makes `cargo bench` work at all
+# — is enabled.
+criterion = { version = "0.5", default-features = false, features = [
+    "cargo_bench_support",
+] }
+
+[[bench]]
+name = "claim_store"
+harness = false
+
 [lints]
 workspace = true
