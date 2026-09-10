@@ -84,7 +84,7 @@ impl Default for ExtractionSettings {
     fn default() -> Self {
         Self {
             enabled: false, // opt-in (LLM cost)
-            model: "qwen2.5:7b".to_string(),
+            model: "granite4.2:8b".to_string(),
             endpoint: "http://localhost:11434".to_string(),
             max_text_length: 50_000,
         }
@@ -158,7 +158,7 @@ impl Default for SynthesizerSettings {
     fn default() -> Self {
         Self {
             enabled: false, // opt-in (LLM cost)
-            model: "qwen2.5:7b".to_string(),
+            model: "granite4.2:8b".to_string(),
             endpoint: "http://localhost:11434".to_string(),
             interval_hours: 6,
             min_tier: "task".to_string(),
@@ -204,7 +204,7 @@ impl Default for ContradictionSettings {
     fn default() -> Self {
         Self {
             enabled: false, // opt-in (LLM cost)
-            model: "qwen2.5:7b".to_string(),
+            model: "granite4.2:8b".to_string(),
             endpoint: "http://localhost:11434".to_string(),
             interval_hours: 12,
             min_tier: "task".to_string(),
@@ -333,9 +333,9 @@ dry_run = false
 [synthesizer]
 # Run scheduled LLM-backed synthesis passes that discover higher-order insights
 # across the claim graph. Off by default (LLM cost). Requires the chat model:
-#   ollama pull qwen2.5:7b
+#   ollama pull granite4.2:8b
 enabled = false
-model = "qwen2.5:7b"
+model = "granite4.2:8b"
 endpoint = "http://localhost:11434"
 interval_hours = 6
 min_tier = "task"
@@ -347,7 +347,7 @@ dry_run = false
 # and records a Contradicts relationship for incompatible pairs (which lowers the
 # effective confidence of both). Off by default (LLM cost).
 enabled = false
-model = "qwen2.5:7b"
+model = "granite4.2:8b"
 endpoint = "http://localhost:11434"
 interval_hours = 12
 min_tier = "task"
@@ -358,9 +358,9 @@ dry_run = false
 # Server-side LLM extraction that turns text into claims, backing the gRPC
 # Extract RPC and the gateway's /v1/extract and LLM-mode /v1/hooks/ingest.
 # Off by default (LLM cost). Requires the chat model:
-#   ollama pull qwen2.5:7b
+#   ollama pull granite4.2:8b
 enabled = false
-model = "qwen2.5:7b"
+model = "granite4.2:8b"
 endpoint = "http://localhost:11434"
 max_text_length = 50000
 "#;

@@ -132,7 +132,7 @@ what makes "silence is not success" true rather than aspirational (see
 
 To generate emergent insights, enable the background Synthesizer under
 `[synthesizer]` (`enabled = true`; requires an Ollama chat model, e.g.
-`ollama pull qwen2.5:7b`). On a schedule it clusters related claims, asks the LLM
+`ollama pull granite4.2:8b`). On a schedule it clusters related claims, asks the LLM
 whether each cluster implies a higher-order insight, and stores accepted
 insights as new claims linked to their sources via `derived_from` (ADR-006).
 LLM analysis runs without holding the store lock, so gRPC requests are not
