@@ -29,6 +29,11 @@ Notes:
   locally with `cargo test -- --ignored` when relevant.
 - Building the gRPC crate needs the protobuf compiler (`brew install protobuf`
   or `apt-get install protobuf-compiler`).
+- Benchmarks live in `crates/boswell-store/benches/` and run under
+  [criterion](https://docs.rs/criterion). `cargo test --workspace` executes each
+  one once to prove it still works; it does not time them. Get the numbers with
+  `cargo bench -p boswell-store`, and compare them only against another run on
+  the same machine — CI's wall-clock is shared and means nothing.
 
 ## Documentation rules
 
