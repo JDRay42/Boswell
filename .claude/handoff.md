@@ -1,7 +1,7 @@
 ---
 status: continue
-item: Tier validation on the gRPC assert path — shipped in #48
-updated: 2026-09-10T19:40:00Z
+item: gRPC graceful shutdown — shipped in #50
+updated: 2026-09-10T21:05:00Z
 ---
 
 # Handoff
@@ -12,65 +12,75 @@ intent, dead ends, and the next move.
 
 ## Current item
 
-None in flight. The last session took *Tier validation on the gRPC assert path* from
-Claims core and shipped it as PR #48, branch `feat/grpc-tier-validation`, commit c96ea46.
-The roadmap slice is marked *shipped (#48)*.
+None in flight. The last session took *gRPC graceful shutdown* from Transport and shipped
+it as PR #50, branch `feat/grpc-graceful-shutdown`, commit 134bda6. The roadmap slice is
+marked *shipped (#50)*.
 
-#48 has landed. CI was green and it merged as 0a1254d; the branch is deleted and spent.
-Nothing is waiting on you from it.
+**Check #50 before anything else.** It was opened with CI running and this file was
+written before the result was known. If it merged, the branch is spent and you start
+fresh. If CI is red, fixing it is your item — do not start a new slice on top of it.
 
 ## State
 
-`main` at 0a1254d, clean, nothing in flight. The next session starts fresh on a slice of
-its own choosing.
+Branch `feat/grpc-graceful-shutdown` at 134bda6, one commit ahead of `main` (ed44f99).
+Tree clean. All three CI commands passed locally before the push.
 
-## What #48 actually did
+## What #50 actually did
 
-- `boswell-grpc` now depends on `boswell-gatekeeper`, which it never did before. That
-  dependency is the whole point of the slice: the tier/confidence floor lives in one place.
-- `Gatekeeper::check_tier_confidence` is public. It is the one rule of `validate` a
-  transport can apply alone, because it needs no store. It honors
-  `validate_tier_appropriateness`, and `validate` now routes through it rather than
-  duplicating the flag check.
-- Enforced on `Assert` **and** `Learn`. The roadmap slice named only Assert; Learn is the
-  same hole in batch form and was closed with it. One claim below its floor is rejected,
-  its neighbours are not.
-- `RejectionReason` derives `thiserror::Error`, so it has a `Display` and the transport
-  reports the Gatekeeper's wording rather than its own.
-- `BosWellServiceImpl::with_validation_config` turns the floor off.
+- `server.rs` calls `serve_with_shutdown`, not `.serve(addr)`. The old call never
+  returned, so an instance could only be stopped by killing the process.
+- `start_server_with_shutdown` is the new full-parameter entrypoint and takes the signal
+  as an argument; the three existing entrypoints delegate to it with `ctrl_c`. **No
+  existing signature changed**, so no caller moved — `boswell-server/src/lib.rs:237` still
+  calls `start_server_with_identity` and now gets `ctrl_c` for free.
+- A failure to install the signal handler resolves the future (server stops) and reports
+  on stderr. Propagating would refuse to start; pending forever would ignore the one
+  signal an operator reaches for.
+- `tokio`'s `signal` feature is declared in `boswell-grpc`'s manifest, and `net`/`time` in
+  its dev-dependencies.
 
 ## Tried and rejected
 
-- **Running the full `Gatekeeper::validate` on the Assert path.** Two rules make it wrong
-  there, and both would have surfaced as test failures rather than as design arguments if
-  it had shipped. `validate_duplicates` does an exact subject/predicate/object query and
-  rejects a match — but `SqliteStore::assert_claim` treats a repeat as *corroboration*, so
-  running it would reject precisely the writes the corroboration design exists to reward.
-  `validate_entity_format` demands `namespace:value` on subject, predicate and object; the
-  wire has always accepted bare subjects (`"Alice"`), so enabling it silently breaks every
-  existing caller. Tightening either is a separate, breaking decision.
-- **Formatting the rejection message inside `boswell-grpc`.** `check_tier_confidence`
-  returns `Option<RejectionReason>`, and matching one variant out of five needs a catch-all
-  arm that can never fire. Deriving `Display` on the enum was smaller and put the wording
-  where the rule is.
+- **Spawning the server on a `tokio::task` in the tests.** `start_server_*` returns
+  `Result<(), Box<dyn std::error::Error>>`, and `Box<dyn Error>` is not `Send`, so the
+  `JoinHandle` will not compile. Wrapping the call in an async block that maps the error
+  to `String` does fix it, but the shape that survived is simpler: await the *server* on
+  the test task and spawn the *trigger*.
+- **Binding the test server to port 0 and asking it what it got.**
+  `serve_with_shutdown` takes a `SocketAddr` and returns nothing until it stops, so there
+  is no way to read back the ephemeral port. Hence the `free_port()` helper, which binds
+  `127.0.0.1:0`, reads `local_addr().port()`, and drops the listener. That races with
+  another process taking the port in the gap; a hard-coded port races every other run of
+  the suite, which is worse.
+- **Firing the shutdown signal after a fixed `sleep`.** A pass would not prove the server
+  ever bound. The test dials the port in a retry loop and signals on the first successful
+  connection instead, so a pass means bound → served → stopped.
 
 ## Next step
 
 Pick a fresh slice from `docs/development/roadmap.md`. Assessed but not taken, in rough
 order of ratio:
 
-- **gRPC graceful shutdown** (Transport). `crates/boswell-grpc/src/server.rs` calls
-  `.serve(addr)`; it wants `serve_with_shutdown`. The Janitor and Synthesizer already
-  handle `ctrl_c` correctly and are the model to copy. Smallest real item in the tree.
 - **Push the triple match into SQL** (Procedural memory), marked in place at
-  `crates/boswell-store/src/procedure_store.rs:351`. Self-contained.
+  `crates/boswell-store/src/procedure_store.rs:351`. Self-contained; the smallest item
+  now that shutdown is closed.
+- **SDK retry with exponential backoff** (Transport). Today it reconnects once on
+  `Unauthenticated` and gives up. Not researched.
 - **Delete the `auth_token` plumbing and enforce the loopback bind** (ADR-021). Decided,
   not researched — fourteen `is_empty()` call sites in `boswell-grpc`, plus the router's
   unread JWT and the SDK carrying it. Bigger than one session may hold; it spans grpc,
-  router, sdk and server config. Note the `auth_token.is_empty()` checks are still in the
-  code #48 touched, deliberately untouched — that deletion is its own slice.
+  router, sdk and server config. The `auth_token.is_empty()` checks were deliberately left
+  untouched by both #48 and #50; that deletion is its own slice.
+- **Un-ignore the full-stack E2E tests** (Transport). `boswell-sdk/tests/e2e_tests.rs`
+  needs manually started router and gRPC servers. #50 makes this *more* tractable than it
+  was — `start_server_with_shutdown` is exactly the handle a test harness needs to stand a
+  server up and tear it down — but the router still has no equivalent.
 - **MCP tool surface for goals and procedures** (Transport). The largest feature lag: five
   claim-only tools against fifteen gateway routes. Not sized.
+
+## Open questions
+
+None. Nothing here needs a decision before work can start.
 
 ## Environment notes
 
@@ -95,10 +105,12 @@ order of ratio:
 - The measured context number runs a few thousand above what `/context` reports, because
   it counts the raw cached input the API bills for. Treat it as the conservative figure;
   it is the one to compare against the budget.
-
-## Open questions
-
-None. Nothing here needs a decision before work can start.
+- Tests that stand a server up belong in `server.rs`'s `mod tests`, not in a `tests/`
+  directory — `boswell-grpc` has no integration-test directory and did not grow one for
+  #50. `free_port()` and `in_memory_store()` live there and are worth reusing.
+- The workspace pins `tokio = { features = ["full"] }`, so a per-crate `features = [...]`
+  list adds nothing that is not already resolved. Declare features anyway; the list is
+  documentation of what the crate actually uses, not a build constraint.
 
 ## Do not re-investigate
 
@@ -126,3 +138,12 @@ None. Nothing here needs a decision before work can start.
 - `confidence_from_proto` in `crates/boswell-grpc/src/conversions.rs` already rejects
   out-of-range and inverted confidence bounds, so the Gatekeeper's
   `validate_confidence_bounds` would be redundant on the wire path.
+- `serve_with_shutdown` is wired and tested. Shutdown is graceful in tonic's sense: the
+  listener closes, in-flight requests finish, then the future returns. There is no
+  deadline on a hung handler — that is documented, deliberate, and a caller's job via
+  `tokio::time::timeout`.
+- `boswell-server` has no signal handling of its own to conflict with the server's
+  `ctrl_c`; `main.rs` just awaits `run(config)`.
+- Roadmap line ~626, "Graceful shutdown handling", is the *Janitor's* framework item under
+  the phase plan. It is not the transport slice #50 closed; do not re-open it on that
+  basis.
