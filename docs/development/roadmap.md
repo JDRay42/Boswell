@@ -234,12 +234,19 @@ Still open, and now sharper for having a decided model to sit in:
   were corrected in the same PR: `claude-code-hooks.md` §8, the closing note in
   `http-api.md`, the backup-encryption item in `16-backup-recovery.md`, and the relationship
   line in `15-procedural-memory.md`. *shipped* (#59)
-- **Correct the config table in [`09-router.md`](../architecture/09-router.md).** It is from the
-  same superseded design as the old `10-security.md`: `config_path: ./router.enc`,
-  `listen_address: 0.0.0.0:9000`, and a `signing_key_path` "in encrypted config". None of it
-  describes the router that was built — which reads plaintext TOML and belongs on loopback
-  behind the gateway. Split out of #59 rather than folded in, because it needs the code checked
-  field by field rather than a rewrite. *open*
+- **Correct the config table in [`09-router.md`](../architecture/09-router.md).** It was from
+  the same superseded design as the old `10-security.md`: `config_path: ./router.enc`,
+  `listen_address: 0.0.0.0:9000`, and a `signing_key_path` "in encrypted config". The section
+  now has two tables — the keys `RouterConfig` actually parses, and what the old table
+  promised with each item's real status. Whether the `age`-encrypted config survives ADR-021
+  was left open, not resolved. *shipped* (#60)
+- **Finish `09-router.md`.** #60 corrected the config table and marked six sections as
+  unbuilt, but the body still describes a router that does not exist: mTLS session
+  establishment, per-instance tokens validated at the instance, cryptographic fingerprints in
+  the registry, multiple endpoints per instance, and a health monitor. What runs is an axum
+  HTTP service with `POST /session/establish` and `GET /health`. The markers make the document
+  honest; they do not make it a description. A rewrite in the shape of `10-security.md` —
+  built, decided, open — is the remaining work. *open*
 
 ## Transport and interfaces
 
