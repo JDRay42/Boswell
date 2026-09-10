@@ -1,7 +1,12 @@
 //! gRPC server configuration and lifecycle management
 //!
 //! Handles server initialization, binding and shutdown. Note what it does *not*
-//! do: there is no TLS termination here (see [`ServerConfig::enable_tls`]).
+//! do: there is no TLS termination here (see [`ServerConfig::enable_tls`]), and
+//! no authentication of any kind. Per [ADR-021] the gRPC instance sits *inside*
+//! the security boundary that the HTTP gateway draws, so it binds to loopback by
+//! construction — a routable bind address is a startup error, not a warning.
+//!
+//! [ADR-021]: ../../../docs/ADRs/021-gateway-is-the-security-boundary.md
 //!
 //! Shutdown is graceful. The entrypoints below wait on `ctrl_c` and hand that to
 //! tonic's `serve_with_shutdown`, which stops accepting new connections and lets
@@ -11,6 +16,7 @@
 use boswell_domain::traits::{ClaimStore, GoalStore, ProcedureStore};
 use boswell_domain::IdentityProvider;
 use std::future::Future;
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::{Arc, Mutex};
 use tonic::transport::Server;
 
@@ -20,6 +26,11 @@ use crate::service::{BosWellServiceImpl, ServerExtractor};
 /// Why the server refuses to start when `enable_tls` is set.
 const TLS_NOT_IMPLEMENTED: &str = "enable_tls is set, but this server does not implement TLS. \
 Terminate TLS at a reverse proxy or tunnel in front of the instance, and unset enable_tls.";
+
+/// Why the server refuses to start on an address that is not loopback.
+const NON_LOOPBACK_BIND: &str = "this server binds to loopback only. The instance sits inside \
+the security boundary and does not authenticate; the HTTP gateway is the component that faces \
+a network (ADR-021). Bind 127.0.0.1 or ::1 and put the gateway in front of it.";
 
 /// Server configuration
 #[derive(Debug, Clone)]
@@ -83,25 +94,69 @@ impl ServerConfig {
         self
     }
 
-    /// Get the full server address
+    /// Get the full server address.
+    ///
+    /// A bare IPv6 literal is bracketed, because `::1:50051` parses as neither
+    /// an address nor a host and port. Anything already bracketed, and every
+    /// IPv4 address or hostname, is formatted unchanged.
     pub fn full_address(&self) -> String {
-        format!("{}:{}", self.addr, self.port)
+        if self.addr.contains(':') && !self.addr.starts_with('[') {
+            format!("[{}]:{}", self.addr, self.port)
+        } else {
+            format!("{}:{}", self.addr, self.port)
+        }
     }
 
     /// Refuse configurations the server cannot honour.
     ///
-    /// Today that is exactly one: [`Self::enable_tls`]. The check lives here,
-    /// separate from binding, so it can be exercised without standing a server
-    /// up — and so it runs *before* the socket is opened.
+    /// Two rules: [`Self::enable_tls`] is not implemented, and the bind address
+    /// must be loopback. Both live here, separate from binding, so they can be
+    /// exercised without standing a server up — and so they run *before* the
+    /// socket is opened.
     ///
     /// # Errors
-    /// Returns an error if `enable_tls` is set, since TLS is not implemented
-    /// at this layer.
+    /// Returns an error if `enable_tls` is set, since TLS is not implemented at
+    /// this layer, or if [`Self::addr`] does not resolve to loopback.
     pub fn ensure_startable(&self) -> Result<(), Box<dyn std::error::Error>> {
         if self.enable_tls {
             return Err(TLS_NOT_IMPLEMENTED.into());
         }
+        self.loopback_address()?;
         Ok(())
+    }
+
+    /// Resolve [`Self::full_address`] to the socket the server will bind, and
+    /// refuse it if it is not loopback.
+    ///
+    /// Loopback is a rule of construction, not a recommendation (ADR-021). The
+    /// instance performs no authentication of its own, so anything that can
+    /// reach its port has full write access to every tier; the README used to
+    /// *ask* operators to keep it on `127.0.0.1`, which is a different thing
+    /// from the server declining to be anywhere else.
+    ///
+    /// Resolution happens here rather than at the bind so the check and the bind
+    /// can never disagree about which address is meant. Every resolved address
+    /// must be loopback — a name that answers with one loopback address and one
+    /// routable one is refused rather than bound to whichever came first.
+    ///
+    /// # Errors
+    /// Returns an error if the address does not resolve, resolves to nothing, or
+    /// resolves to any address that is not loopback.
+    fn loopback_address(&self) -> Result<SocketAddr, Box<dyn std::error::Error>> {
+        let full = self.full_address();
+        let resolved: Vec<SocketAddr> = full.to_socket_addrs()?.collect();
+
+        let first = *resolved
+            .first()
+            .ok_or_else(|| format!("{full} resolved to no address"))?;
+
+        if let Some(routable) = resolved.iter().find(|a| !a.ip().is_loopback()) {
+            return Err(
+                format!("{NON_LOOPBACK_BIND} Got {full}, which resolves to {routable}.").into(),
+            );
+        }
+
+        Ok(first)
     }
 }
 
@@ -187,10 +242,11 @@ where
     S::Error: std::fmt::Debug,
 {
     // Refuse before binding: an operator who set `enable_tls` must not end up
-    // serving plaintext under the impression they are serving TLS.
+    // serving plaintext under the impression they are serving TLS, and an
+    // instance that authenticates nothing must not end up on a routable address.
     config.ensure_startable()?;
 
-    let addr = config.full_address().parse()?;
+    let addr = config.loopback_address()?;
 
     let mut service = BosWellServiceImpl::new(store);
     if let Some(extractor) = extractor {
@@ -319,20 +375,55 @@ mod tests {
 
     /// The TLS refusal runs before the socket is opened, so it must reach the
     /// caller as an error rather than being overtaken by the shutdown signal.
+    ///
+    /// The `timeout` is the failure mode, not a performance guard: the signal is
+    /// `pending()`, so a regression that lets the server bind would hang here
+    /// forever instead of failing.
     #[tokio::test]
     async fn a_tls_config_is_refused_even_with_a_shutdown_signal_in_hand() {
-        let err = start_server_with_shutdown(
-            ServerConfig::new("127.0.0.1", free_port()).with_tls("cert.pem", "key.pem"),
-            in_memory_store(),
-            None,
-            None,
-            std::future::pending(),
+        let err = tokio::time::timeout(
+            Duration::from_secs(5),
+            start_server_with_shutdown(
+                ServerConfig::new("127.0.0.1", free_port()).with_tls("cert.pem", "key.pem"),
+                in_memory_store(),
+                None,
+                None,
+                std::future::pending(),
+            ),
         )
         .await
+        .expect("the refusal must come back, not leave the server serving")
         .expect_err("a TLS-requesting config must be refused, not served in the clear");
 
         assert!(
             err.to_string().contains("does not implement TLS"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// The loopback rule must bite at the real entrypoint, not only on the
+    /// config method: a routable address has to fail *before* the socket opens.
+    ///
+    /// Same `timeout` reasoning as the TLS test above — without it, a regression
+    /// binds `0.0.0.0` and waits on a signal that never fires.
+    #[tokio::test]
+    async fn a_routable_config_is_refused_before_the_socket_opens() {
+        let err = tokio::time::timeout(
+            Duration::from_secs(5),
+            start_server_with_shutdown(
+                ServerConfig::new("0.0.0.0", free_port()),
+                in_memory_store(),
+                None,
+                None,
+                std::future::pending(),
+            ),
+        )
+        .await
+        .expect("the refusal must come back, not leave the server bound to 0.0.0.0")
+        .expect_err("a routable bind address must not reach the listener");
+
+        assert!(
+            err.to_string().contains("binds to loopback only"),
             "unexpected error: {err}"
         );
     }
@@ -347,7 +438,7 @@ mod tests {
 
     #[test]
     fn test_config_with_tls() {
-        let config = ServerConfig::new("0.0.0.0", 50052).with_tls("cert.pem", "key.pem");
+        let config = ServerConfig::new("127.0.0.1", 50052).with_tls("cert.pem", "key.pem");
 
         assert!(config.enable_tls);
         assert_eq!(config.tls_cert_path, Some("cert.pem".to_string()));
@@ -380,5 +471,43 @@ mod tests {
     fn test_full_address() {
         let config = ServerConfig::new("localhost", 8080);
         assert_eq!(config.full_address(), "localhost:8080");
+    }
+
+    #[test]
+    fn an_ipv6_literal_is_bracketed_so_it_resolves() {
+        let config = ServerConfig::new("::1", 8080);
+        assert_eq!(config.full_address(), "[::1]:8080");
+        config
+            .ensure_startable()
+            .expect("the IPv6 loopback address is loopback");
+    }
+
+    /// The rule ADR-021 turned from a README request into a startup error.
+    #[test]
+    fn a_routable_bind_address_refuses_to_start() {
+        for addr in ["0.0.0.0", "192.168.1.10", "::"] {
+            let err = ServerConfig::new(addr, 50051)
+                .ensure_startable()
+                .expect_err("a routable bind address must be refused");
+            assert!(
+                err.to_string().contains("binds to loopback only"),
+                "unexpected error for {addr}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn localhost_starts_because_it_resolves_to_loopback() {
+        ServerConfig::new("localhost", 50051)
+            .ensure_startable()
+            .expect("localhost resolves to loopback");
+    }
+
+    #[test]
+    fn the_resolved_bind_address_is_the_one_that_passed_the_check() {
+        let resolved = ServerConfig::new("127.0.0.1", 50051)
+            .loopback_address()
+            .expect("127.0.0.1 is loopback");
+        assert_eq!(resolved.to_string(), "127.0.0.1:50051");
     }
 }

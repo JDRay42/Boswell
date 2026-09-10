@@ -209,9 +209,13 @@ Still open, and now sharper for having a decided model to sit in:
 
 ### Security implementation, following the session
 
-- **Delete the `auth_token` plumbing and enforce the loopback bind** (ADR-021). Fourteen
-  `is_empty()` call sites in `boswell-grpc`, plus the router's unread JWT and the SDK's carrying
-  of it. *open*
+- **Delete the `auth_token` plumbing and enforce the loopback bind** (ADR-021). The field is
+  gone from all fourteen request messages — `reserved`, so the numbers are not reused — along
+  with its fourteen `is_empty()` checks and the SDK's carrying of it. `ServerConfig` now
+  resolves its bind address and refuses anything that is not loopback, the same way
+  `enable_tls` refuses to serve plaintext. The router still mints its session JWT for topology
+  discovery (ADR-019); it was never read by an instance and is not an authorization credential.
+  *shipped* (#58)
 - **OIDC verification at the gateway** — device-code grant, JWKS cached and checked locally so
   no request costs a round trip to the provider (ADR-022). *open*
 - **Attenuable tokens** (`biscuit-auth`): root token minted from a verified OIDC identity,

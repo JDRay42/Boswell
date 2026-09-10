@@ -331,18 +331,21 @@ for the following.
   so give it a locally-trusted certificate (`mkcert`) rather than plain HTTP. **Boswell ships no
   adapter for it.** Wiring one is yours to write against the `IdentityProvider` port, and until
   you do, writes are stamped `Assurance::None` exactly as described above.
-- **The gRPC instance does not authenticate. Keep it on `127.0.0.1`.** This is a hard
-  requirement, not a preference. The instance checks only that a request carries a non-empty
-  `auth_token`; it does not verify the router's signature, so any process that can reach the
-  port can write to any tier. The router issues a properly signed JWT and the SDK carries it,
-  but nothing on the instance side reads it yet — tracked in the
-  [roadmap](docs/development/roadmap.md) under *Identity, trust and security*. Reach memory
+- **The gRPC instance does not authenticate, and it now refuses to bind anywhere but
+  loopback.** Per [ADR-021](docs/ADRs/021-gateway-is-the-security-boundary.md) the instance sits
+  *inside* the boundary the gateway draws, so a routable `bind_address` is a startup error
+  rather than a documented risk. It used to check that a request carried a non-empty
+  `auth_token` and nothing more, which accepted the string `"x"` — the appearance of
+  authentication, and worse than none. That field and its checks are gone. Anything that can
+  reach the instance's loopback port still has full write access to every tier. Reach memory
   from remote agents only through [`boswell-gateway`](docs/integrations/http-api.md), which
   **does** authenticate: SHA-256-hashed bearer API keys, per-key scopes and rate limits, and
   namespace isolation. Put TLS in front of the gateway with a reverse proxy or tunnel — the
   gateway does not terminate it, and neither does the instance (setting `enable_tls` on the
   instance refuses to start rather than pretending). Rotate gateway API keys and the router
-  `jwt_secret`; never ship the placeholder secrets. See the
+  `jwt_secret`; never ship the placeholder secrets. The router still mints a signed session JWT
+  for topology discovery ([ADR-019](docs/ADRs/019-stateless-sessions.md)); no instance
+  reads it, and it is not an authorization credential. See the
   [security model](docs/architecture/10-security.md) and the
   [hooks integration guide](docs/integrations/claude-code-hooks.md).
 - **Back up your memory, and test the restore.** Memory is durable state. Run regular (e.g.

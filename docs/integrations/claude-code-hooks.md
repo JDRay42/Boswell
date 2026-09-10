@@ -86,9 +86,9 @@ a cloud session, or a teammate's machine — must reach a hosted Boswell.
 The goal: expose exactly one hardened HTTP entrypoint, authenticated, over TLS, without
 opening the instance's gRPC port to the world.
 
-**1. Keep gRPC private.** `boswell-server` (:50051) stays bound to `127.0.0.1`. Never
-expose the instance directly; the gRPC `auth_token` check is not a public-facing
-authorization boundary.
+**1. Keep gRPC private.** `boswell-server` (:50051) binds to `127.0.0.1` and refuses to
+start anywhere else (ADR-021). The instance performs no authentication at all, so there is
+nothing to expose it behind.
 
 **2. One public entrypoint — `POST /v1/hooks/ingest` on the gateway.** The
 `boswell-gateway` is a slim service in front of the private gRPC instance that:

@@ -68,7 +68,7 @@ async fn connect(url: &str) -> BosWellServiceClient<Channel> {
     panic!("could not connect to test server at {url}");
 }
 
-fn assert_request(auth: &str) -> AssertRequest {
+fn assert_request() -> AssertRequest {
     AssertRequest {
         namespace: "lang".to_string(),
         subject: "rust".to_string(),
@@ -80,7 +80,6 @@ fn assert_request(auth: &str) -> AssertRequest {
         }),
         tier: Tier::Permanent as i32,
         provenance: vec![],
-        auth_token: auth.to_string(),
     }
 }
 
@@ -90,7 +89,7 @@ async fn test_assert_then_search_over_tcp_mock_backend() {
     let mut client = connect(&url).await;
 
     let asserted = client
-        .assert(assert_request("test-token"))
+        .assert(assert_request())
         .await
         .expect("assert failed")
         .into_inner();
@@ -104,7 +103,6 @@ async fn test_assert_then_search_over_tcp_mock_backend() {
             namespace: None,
             limit: 10,
             min_similarity: 0.5,
-            auth_token: "test-token".to_string(),
         })
         .await
         .expect("search failed")
@@ -117,31 +115,13 @@ async fn test_assert_then_search_over_tcp_mock_backend() {
 }
 
 #[tokio::test]
-async fn test_search_missing_auth_is_rejected() {
-    let url = spawn_server(EmbeddingBackend::Mock, "unused").await;
-    let mut client = connect(&url).await;
-
-    let status = client
-        .search(SearchRequest {
-            query_text: "rust".to_string(),
-            namespace: None,
-            limit: 10,
-            min_similarity: 0.5,
-            auth_token: String::new(),
-        })
-        .await
-        .expect_err("expected an error for missing auth");
-    assert_eq!(status.code(), tonic::Code::Unauthenticated);
-}
-
-#[tokio::test]
 #[ignore = "requires a local Ollama with embeddinggemma"]
 async fn test_assert_then_search_over_tcp_real_embedder() {
     let url = spawn_server(EmbeddingBackend::Ollama, "embeddinggemma").await;
     let mut client = connect(&url).await;
 
     client
-        .assert(assert_request("test-token"))
+        .assert(assert_request())
         .await
         .expect("assert failed");
 
@@ -152,7 +132,6 @@ async fn test_assert_then_search_over_tcp_real_embedder() {
             namespace: None,
             limit: 5,
             min_similarity: 0.0,
-            auth_token: "test-token".to_string(),
         })
         .await
         .expect("search failed")
