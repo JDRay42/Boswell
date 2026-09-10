@@ -253,8 +253,13 @@ Every way in: gRPC, the router, the SDK, the HTTP gateway, MCP, the CLI.
 - **gRPC graceful shutdown.** `server.rs` now calls `serve_with_shutdown`, waiting on
   `ctrl_c` like the Janitor and Synthesizer workers. `start_server_with_shutdown` takes
   the signal as a parameter for callers with a lifecycle of their own. *shipped* (#50)
-- **SDK retry with exponential backoff.** Today it reconnects once on `Unauthenticated`
-  and gives up. *open*
+- **SDK retry with exponential backoff.** `RetryPolicy` on `BoswellClient` — three
+  retries from 100ms, doubling to a 5s ceiling, with equal jitter. Applied to transient
+  transport statuses (`Unavailable`, `DeadlineExceeded`, `ResourceExhausted`, `Aborted`)
+  on read-only RPCs only: nothing on the wire carries an idempotency key, so a repeated
+  `Assert` is a second claim and a repeated `QueryProcedures` is a second receipt.
+  Re-establishing an expired session is unchanged at one attempt, under every policy.
+  *shipped* (#54)
 - **Un-ignore the full-stack E2E tests.** `boswell-sdk/tests/e2e_tests.rs` requires
   manually started router and gRPC servers, so CI never exercises SDK → Router → gRPC →
   Store end to end. *open*

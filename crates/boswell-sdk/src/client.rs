@@ -1,6 +1,7 @@
 //! Boswell client implementation.
 
 use crate::error::SdkError;
+use crate::retry::{Idempotency, RetryAction, RetryPolicy, RetryState};
 use crate::session::establish_session;
 use boswell_domain::{
     Claim, ClaimId, ExecutionReceipt, ExpandResult, Goal, Procedure, Relationship, Tier,
@@ -265,6 +266,8 @@ pub struct BoswellClient {
     /// Learned from the health check; devAuth is a startup decision, so this is
     /// accurate for the life of the connection.
     dev_auth: bool,
+    /// How failed RPCs are retried. See [`RetryPolicy`].
+    retry: RetryPolicy,
 }
 
 impl BoswellClient {
@@ -281,7 +284,23 @@ impl BoswellClient {
                 .build()
                 .expect("Failed to build HTTP client"),
             dev_auth: false,
+            retry: RetryPolicy::default(),
         }
+    }
+
+    /// Replace the retry policy (default: [`RetryPolicy::default`]).
+    ///
+    /// The policy governs the backoff path only. Re-establishing an expired
+    /// session is not optional and happens under every policy, including
+    /// [`RetryPolicy::none`].
+    pub fn with_retry_policy(mut self, retry: RetryPolicy) -> Self {
+        self.retry = retry;
+        self
+    }
+
+    /// The retry policy currently in force.
+    pub fn retry_policy(&self) -> RetryPolicy {
+        self.retry
     }
 
     /// Whether the connected instance runs a development identity adapter
@@ -333,6 +352,28 @@ impl BoswellClient {
         self.connect().await
     }
 
+    /// Act on a failed RPC: re-establish the session, sleep out a backoff, or
+    /// give up by handing `status` back to the caller.
+    ///
+    /// `Ok(())` means the caller should send the request again. `idempotency`
+    /// says whether that is safe to do for a transport failure, where the
+    /// handler may already have run — see [`Idempotency`].
+    async fn handle_retry(
+        &mut self,
+        status: tonic::Status,
+        state: &mut RetryState,
+        idempotency: Idempotency,
+    ) -> Result<(), SdkError> {
+        match state.on_error(&status, idempotency) {
+            RetryAction::Reconnect => self.reconnect().await,
+            RetryAction::Backoff(delay) => {
+                tokio::time::sleep(delay).await;
+                Ok(())
+            }
+            RetryAction::Fail => Err(SdkError::from(status)),
+        }
+    }
+
     /// Assert a claim.
     ///
     /// `confidence` is an interval `(lower, upper)`, matching the domain claim
@@ -349,7 +390,7 @@ impl BoswellClient {
         confidence: Option<(f64, f64)>,
         tier: Option<Tier>,
     ) -> Result<ClaimId, SdkError> {
-        let mut retried = false;
+        let mut retry = RetryState::new(self.retry);
 
         loop {
             let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
@@ -379,19 +420,17 @@ impl BoswellClient {
                     return ClaimId::from_string(&assert_response.claim_id)
                         .map_err(|e| SdkError::GrpcError(format!("Invalid claim ID: {}", e)));
                 }
-                Err(e) if matches!(e.code(), tonic::Code::Unauthenticated) && !retried => {
-                    // Session expired - try to reconnect once
-                    self.reconnect().await?;
-                    retried = true;
+                Err(e) => {
+                    self.handle_retry(e, &mut retry, Idempotency::Unsafe)
+                        .await?
                 }
-                Err(e) => return Err(SdkError::from(e)),
             }
         }
     }
 
     /// Query claims
     pub async fn query(&mut self, filter: QueryFilter) -> Result<Vec<Claim>, SdkError> {
-        let mut retried = false;
+        let mut retry = RetryState::new(self.retry);
 
         loop {
             let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
@@ -429,12 +468,7 @@ impl BoswellClient {
                         SdkError::GrpcError(format!("Failed to convert claim: {}", e))
                     });
                 }
-                Err(e) if matches!(e.code(), tonic::Code::Unauthenticated) && !retried => {
-                    // Session expired - try to reconnect once
-                    self.reconnect().await?;
-                    retried = true;
-                }
-                Err(e) => return Err(SdkError::from(e)),
+                Err(e) => self.handle_retry(e, &mut retry, Idempotency::Safe).await?,
             }
         }
     }
@@ -451,7 +485,7 @@ impl BoswellClient {
         limit: usize,
         min_similarity: f64,
     ) -> Result<Vec<(Claim, f32)>, SdkError> {
-        let mut retried = false;
+        let mut retry = RetryState::new(self.retry);
 
         loop {
             let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
@@ -480,18 +514,14 @@ impl BoswellClient {
                     }
                     return Ok(results);
                 }
-                Err(e) if matches!(e.code(), tonic::Code::Unauthenticated) && !retried => {
-                    self.reconnect().await?;
-                    retried = true;
-                }
-                Err(e) => return Err(SdkError::from(e)),
+                Err(e) => self.handle_retry(e, &mut retry, Idempotency::Safe).await?,
             }
         }
     }
 
     /// Learn multiple claims in batch
     pub async fn learn(&mut self, claims: Vec<Claim>) -> Result<LearnResponse, SdkError> {
-        let mut retried = false;
+        let mut retry = RetryState::new(self.retry);
 
         loop {
             let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
@@ -510,19 +540,17 @@ impl BoswellClient {
 
             match client.learn(request).await {
                 Ok(r) => return Ok(r.into_inner()),
-                Err(e) if matches!(e.code(), tonic::Code::Unauthenticated) && !retried => {
-                    // Session expired - try to reconnect once
-                    self.reconnect().await?;
-                    retried = true;
+                Err(e) => {
+                    self.handle_retry(e, &mut retry, Idempotency::Unsafe)
+                        .await?
                 }
-                Err(e) => return Err(SdkError::from(e)),
             }
         }
     }
 
     /// Forget (evict) claims
     pub async fn forget(&mut self, claim_ids: Vec<ClaimId>) -> Result<bool, SdkError> {
-        let mut retried = false;
+        let mut retry = RetryState::new(self.retry);
 
         'retry: loop {
             let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
@@ -543,13 +571,11 @@ impl BoswellClient {
                             return Ok(false);
                         }
                     }
-                    Err(e) if matches!(e.code(), tonic::Code::Unauthenticated) && !retried => {
-                        // Session expired - try to reconnect once
-                        self.reconnect().await?;
-                        retried = true;
+                    Err(e) => {
+                        self.handle_retry(e, &mut retry, Idempotency::Unsafe)
+                            .await?;
                         continue 'retry;
                     }
-                    Err(e) => return Err(SdkError::from(e)),
                 }
             }
 
@@ -559,7 +585,7 @@ impl BoswellClient {
 
     /// Fetch a single claim by id. Returns `None` if no such claim exists.
     pub async fn get_claim(&mut self, claim_id: ClaimId) -> Result<Option<Claim>, SdkError> {
-        let mut retried = false;
+        let mut retry = RetryState::new(self.retry);
 
         loop {
             let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
@@ -584,11 +610,7 @@ impl BoswellClient {
                     })?;
                     return Ok(Some(claim));
                 }
-                Err(e) if matches!(e.code(), tonic::Code::Unauthenticated) && !retried => {
-                    self.reconnect().await?;
-                    retried = true;
-                }
-                Err(e) => return Err(SdkError::from(e)),
+                Err(e) => self.handle_retry(e, &mut retry, Idempotency::Safe).await?,
             }
         }
     }
@@ -598,7 +620,7 @@ impl BoswellClient {
         &mut self,
         claim_id: ClaimId,
     ) -> Result<Vec<Relationship>, SdkError> {
-        let mut retried = false;
+        let mut retry = RetryState::new(self.retry);
 
         loop {
             let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
@@ -621,11 +643,7 @@ impl BoswellClient {
                         SdkError::GrpcError(format!("Failed to convert relationship: {}", e))
                     });
                 }
-                Err(e) if matches!(e.code(), tonic::Code::Unauthenticated) && !retried => {
-                    self.reconnect().await?;
-                    retried = true;
-                }
-                Err(e) => return Err(SdkError::from(e)),
+                Err(e) => self.handle_retry(e, &mut retry, Idempotency::Safe).await?,
             }
         }
     }
@@ -641,7 +659,7 @@ impl BoswellClient {
         tier: &str,
         source_id: &str,
     ) -> Result<ExtractResult, SdkError> {
-        let mut retried = false;
+        let mut retry = RetryState::new(self.retry);
 
         loop {
             let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
@@ -674,11 +692,10 @@ impl BoswellClient {
                         failures: response.failures,
                     });
                 }
-                Err(e) if matches!(e.code(), tonic::Code::Unauthenticated) && !retried => {
-                    self.reconnect().await?;
-                    retried = true;
+                Err(e) => {
+                    self.handle_retry(e, &mut retry, Idempotency::Unsafe)
+                        .await?
                 }
-                Err(e) => return Err(SdkError::from(e)),
             }
         }
     }
@@ -698,7 +715,7 @@ impl BoswellClient {
         &mut self,
         query: ProcedureQuerySpec,
     ) -> Result<Vec<IssuedProcedure>, SdkError> {
-        let mut retried = false;
+        let mut retry = RetryState::new(self.retry);
 
         loop {
             let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
@@ -721,11 +738,10 @@ impl BoswellClient {
                     let response: QueryProceduresResponse = r.into_inner();
                     return response.procedures.iter().map(issued_from_proto).collect();
                 }
-                Err(e) if matches!(e.code(), tonic::Code::Unauthenticated) && !retried => {
-                    self.reconnect().await?;
-                    retried = true;
+                Err(e) => {
+                    self.handle_retry(e, &mut retry, Idempotency::Unsafe)
+                        .await?
                 }
-                Err(e) => return Err(SdkError::from(e)),
             }
         }
     }
@@ -745,7 +761,7 @@ impl BoswellClient {
         task_id: Option<String>,
         session_id: Option<String>,
     ) -> Result<Option<IssuedProcedure>, SdkError> {
-        let mut retried = false;
+        let mut retry = RetryState::new(self.retry);
 
         loop {
             let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
@@ -768,11 +784,10 @@ impl BoswellClient {
                         None => Ok(None),
                     };
                 }
-                Err(e) if matches!(e.code(), tonic::Code::Unauthenticated) && !retried => {
-                    self.reconnect().await?;
-                    retried = true;
+                Err(e) => {
+                    self.handle_retry(e, &mut retry, Idempotency::Unsafe)
+                        .await?
                 }
-                Err(e) => return Err(SdkError::from(e)),
             }
         }
     }
@@ -788,7 +803,7 @@ impl BoswellClient {
         &mut self,
         report: OutcomeReportSpec,
     ) -> Result<ReportOutcomeResponse, SdkError> {
-        let mut retried = false;
+        let mut retry = RetryState::new(self.retry);
 
         loop {
             let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
@@ -807,11 +822,10 @@ impl BoswellClient {
 
             match client.report_outcome(request).await {
                 Ok(r) => return Ok(r.into_inner()),
-                Err(e) if matches!(e.code(), tonic::Code::Unauthenticated) && !retried => {
-                    self.reconnect().await?;
-                    retried = true;
+                Err(e) => {
+                    self.handle_retry(e, &mut retry, Idempotency::Unsafe)
+                        .await?
                 }
-                Err(e) => return Err(SdkError::from(e)),
             }
         }
     }
@@ -824,7 +838,7 @@ impl BoswellClient {
     /// issued and no reporting obligation is created. Only fetching a leaf
     /// procedure for execution costs the caller an obligation.
     pub async fn query_goals(&mut self, query: GoalQuerySpec) -> Result<Vec<Goal>, SdkError> {
-        let mut retried = false;
+        let mut retry = RetryState::new(self.retry);
 
         loop {
             let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
@@ -850,11 +864,7 @@ impl BoswellClient {
                         })
                         .collect();
                 }
-                Err(e) if matches!(e.code(), tonic::Code::Unauthenticated) && !retried => {
-                    self.reconnect().await?;
-                    retried = true;
-                }
-                Err(e) => return Err(SdkError::from(e)),
+                Err(e) => self.handle_retry(e, &mut retry, Idempotency::Safe).await?,
             }
         }
     }
@@ -868,7 +878,7 @@ impl BoswellClient {
         id: &str,
         namespace_scope: Option<String>,
     ) -> Result<Option<Goal>, SdkError> {
-        let mut retried = false;
+        let mut retry = RetryState::new(self.retry);
 
         loop {
             let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
@@ -890,11 +900,7 @@ impl BoswellClient {
                         None => Ok(None),
                     };
                 }
-                Err(e) if matches!(e.code(), tonic::Code::Unauthenticated) && !retried => {
-                    self.reconnect().await?;
-                    retried = true;
-                }
-                Err(e) => return Err(SdkError::from(e)),
+                Err(e) => self.handle_retry(e, &mut retry, Idempotency::Safe).await?,
             }
         }
     }
@@ -917,7 +923,7 @@ impl BoswellClient {
         context_tags: Vec<String>,
         namespace_scope: Option<String>,
     ) -> Result<Option<ExpandResult>, SdkError> {
-        let mut retried = false;
+        let mut retry = RetryState::new(self.retry);
 
         loop {
             let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
@@ -940,11 +946,7 @@ impl BoswellClient {
                     }
                     return expand_result_from_proto(&response).map(Some);
                 }
-                Err(e) if matches!(e.code(), tonic::Code::Unauthenticated) && !retried => {
-                    self.reconnect().await?;
-                    retried = true;
-                }
-                Err(e) => return Err(SdkError::from(e)),
+                Err(e) => self.handle_retry(e, &mut retry, Idempotency::Safe).await?,
             }
         }
     }
@@ -1086,5 +1088,87 @@ fn domain_claim_to_grpc(claim: Claim) -> boswell_grpc::proto::Claim {
         }),
         tier,
         source_type: claim.source_type,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    /// A client wired to a gRPC endpoint that nothing is listening on.
+    ///
+    /// `connect_lazy` does not dial, so the failure lands on the first RPC as a
+    /// transport error rather than at construction. That is exactly the shape of
+    /// the transient failure the backoff path exists for, without needing a
+    /// server to kill.
+    fn client_pointed_at_a_closed_port(retry: RetryPolicy) -> BoswellClient {
+        let mut client = BoswellClient::new("http://127.0.0.1:1").with_retry_policy(retry);
+        client.session_token = Some("test-token".to_string());
+        client.instance_endpoint = Some("http://127.0.0.1:1".to_string());
+        let channel = Channel::from_static("http://127.0.0.1:1").connect_lazy();
+        client.grpc_client = Some(BosWellServiceClient::new(channel));
+        client
+    }
+
+    #[tokio::test]
+    async fn a_read_backs_off_between_attempts() {
+        let policy = RetryPolicy::default()
+            .without_jitter()
+            .with_max_retries(2)
+            .with_initial_backoff(Duration::from_millis(50));
+        let mut client = client_pointed_at_a_closed_port(policy);
+
+        let started = Instant::now();
+        let result = client.query(QueryFilter::default()).await;
+        let elapsed = started.elapsed();
+
+        assert!(result.is_err(), "a closed port cannot answer a query");
+        // Two retries at 50ms then 100ms. Anything faster means the backoff
+        // never ran and the loop gave up on the first failure.
+        assert!(
+            elapsed >= Duration::from_millis(150),
+            "query returned after {elapsed:?}, too fast to have backed off twice"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_write_fails_without_backing_off() {
+        let policy = RetryPolicy::default()
+            .without_jitter()
+            .with_max_retries(5)
+            .with_initial_backoff(Duration::from_millis(200));
+        let mut client = client_pointed_at_a_closed_port(policy);
+
+        let started = Instant::now();
+        let result = client
+            .assert("test", "s", "p", "o", Some((0.5, 0.5)), None)
+            .await;
+        let elapsed = started.elapsed();
+
+        assert!(result.is_err(), "a closed port cannot accept a claim");
+        // Retrying an assert would duplicate the claim, so the first transport
+        // failure is final. One backoff would already have cost 200ms.
+        assert!(
+            elapsed < Duration::from_millis(200),
+            "assert took {elapsed:?}; it backed off when it should not have"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_zero_retry_policy_gives_up_immediately() {
+        let mut client = client_pointed_at_a_closed_port(RetryPolicy::none());
+
+        let started = Instant::now();
+        assert!(client.query(QueryFilter::default()).await.is_err());
+
+        assert!(started.elapsed() < Duration::from_millis(100));
+    }
+
+    #[test]
+    fn the_default_policy_is_the_one_a_new_client_gets() {
+        let client = BoswellClient::new("http://localhost:8080");
+
+        assert_eq!(client.retry_policy(), RetryPolicy::default());
     }
 }
