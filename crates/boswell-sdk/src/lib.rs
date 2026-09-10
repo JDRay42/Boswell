@@ -27,6 +27,7 @@
 
 mod client;
 mod error;
+mod retry;
 mod session;
 
 pub use client::{
@@ -34,6 +35,7 @@ pub use client::{
     ProcedureQuerySpec, QueryFilter,
 };
 pub use error::SdkError;
+pub use retry::{Idempotency, RetryPolicy};
 
 /// The response to an [`report_outcome`](BoswellClient::report_outcome) call.
 ///
