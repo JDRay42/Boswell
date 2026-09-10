@@ -142,10 +142,16 @@ pub async fn auth_middleware(
         ApiError::unauthorized("Missing or malformed Authorization: Bearer <key> header")
     })?;
 
-    let hash = hash_key(&token);
-    let ctx = state
-        .lookup_key(&hash)
-        .ok_or_else(|| ApiError::unauthorized("Invalid API key"))?;
+    let ctx = match state.lookup_key(&hash_key(&token)) {
+        Some(ctx) => ctx,
+        // Not a configured key. If this gateway trusts an identity provider and
+        // the token is shaped like a JWT, it gets one verification attempt;
+        // otherwise it is simply a bad key, and saying so is not a disclosure.
+        None => match (state.oidc(), looks_like_a_jwt(&token)) {
+            (Some(verifier), true) => verifier.authenticate(&token).await?,
+            _ => return Err(ApiError::unauthorized("Invalid API key")),
+        },
+    };
 
     // Per-key rate limit.
     if !state.check_rate_limit(&ctx.key_id) {
@@ -154,6 +160,21 @@ pub async fn auth_middleware(
 
     req.extensions_mut().insert(ctx);
     Ok(next.run(req).await)
+}
+
+/// Whether a bearer token has the three dot-separated parts of a JWS.
+///
+/// Only a cheap shape test, so an API key that failed lookup produces "invalid
+/// API key" rather than a confusing token-verification error. Nothing is
+/// trusted on the strength of it — verification still does the whole job.
+fn looks_like_a_jwt(token: &str) -> bool {
+    let mut parts = token.split('.');
+    let (Some(header), Some(payload), Some(_signature), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return false;
+    };
+    !header.is_empty() && !payload.is_empty()
 }
 
 /// Extract the raw bearer token from the `Authorization` header.

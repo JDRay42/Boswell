@@ -47,6 +47,11 @@ pub struct GatewayConfig {
     /// Registered API keys, each bound to a namespace and a set of scopes.
     #[serde(default)]
     pub api_keys: Vec<ApiKeyConfig>,
+
+    /// OIDC bearer-token verification. Absent means the gateway accepts API
+    /// keys only.
+    #[serde(default)]
+    pub oidc: Option<OidcConfig>,
 }
 
 impl Default for GatewayConfig {
@@ -59,8 +64,75 @@ impl Default for GatewayConfig {
             request_timeout_secs: 30,
             rate_limit_per_minute: 120,
             api_keys: Vec::new(),
+            oidc: None,
         }
     }
+}
+
+/// OIDC verification settings (ADR-022).
+///
+/// Boswell ships no identity provider. This section names one the operator
+/// already runs, and the subjects it is willing to accept from it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct OidcConfig {
+    /// Issuer URL, matched against the token's `iss` claim. A trailing slash is
+    /// ignored. Also the base for discovery when `jwks_uri` is empty.
+    pub issuer: String,
+
+    /// Accepted `aud` values. Empty disables the audience check, which is only
+    /// right when the provider issues tokens for this gateway alone.
+    pub audiences: Vec<String>,
+
+    /// Key-set URL. Empty means fetch it from the issuer's
+    /// `/.well-known/openid-configuration` on first use.
+    pub jwks_uri: String,
+
+    /// How long a fetched key set is used before it is refetched. A token
+    /// naming an unknown key id triggers a refetch regardless, so this only
+    /// bounds how long a *withdrawn* key stays usable.
+    pub jwks_refresh_secs: u64,
+
+    /// Clock-skew tolerance in seconds for `exp`, `nbf` and `iat`.
+    pub leeway_secs: u64,
+
+    /// Subjects this gateway accepts, and what each may do. A token that
+    /// verifies for a subject listed nowhere here is authenticated and
+    /// unauthorized.
+    #[serde(default)]
+    pub principals: Vec<OidcPrincipalConfig>,
+}
+
+impl Default for OidcConfig {
+    fn default() -> Self {
+        Self {
+            issuer: String::new(),
+            audiences: Vec::new(),
+            jwks_uri: String::new(),
+            jwks_refresh_secs: 3600,
+            leeway_secs: 60,
+            principals: Vec::new(),
+        }
+    }
+}
+
+/// One accepted OIDC subject and the authority it holds here.
+///
+/// The same shape as [`ApiKeyConfig`] minus the secret: authority is Boswell's
+/// to grant either way, and the identity provider only says who is asking.
+#[derive(Debug, Clone, Deserialize)]
+pub struct OidcPrincipalConfig {
+    /// The `sub` claim this entry matches. Provider-assigned and stable;
+    /// never an email address, which can be reassigned.
+    pub subject: String,
+
+    /// Namespace this subject is scoped to. Empty or `"*"` means unrestricted.
+    #[serde(default)]
+    pub namespace: String,
+
+    /// Granted scopes: any of `read`, `write`, `delete`.
+    #[serde(default)]
+    pub scopes: Vec<String>,
 }
 
 /// A single API key entry. The raw key is never stored — only its SHA-256 hash.
@@ -131,6 +203,31 @@ id = "example-agent"
 key_hash = "0000000000000000000000000000000000000000000000000000000000000000"
 namespace = "agent"
 scopes = ["read", "write"]
+
+# OIDC (ADR-022). Optional: leave the whole section out to accept API keys only.
+#
+# Boswell ships no identity provider. Point this at one you already run (Pocket
+# ID is a reasonable local choice). A caller obtains a token from that provider
+# — the device-code grant needs no browser on the agent's side — and presents it
+# as Authorization: Bearer <token>. The gateway verifies it against the
+# provider's published keys, which it caches, so no request costs a round trip.
+#
+# Verification establishes who is asking. What they may do comes from the
+# principals below, exactly as it comes from api_keys above: a token that
+# verifies for a subject listed nowhere here is refused with 403.
+#
+# [oidc]
+# issuer = "https://id.example.com"
+# audiences = ["boswell"]           # empty disables the audience check
+# jwks_uri = ""                     # empty = discover it from the issuer
+# jwks_refresh_secs = 3600
+# leeway_secs = 60                  # clock-skew tolerance
+#
+# subject: the provider's stable `sub` claim, not an email address.
+# [[oidc.principals]]
+# subject = "01234567-89ab-cdef-0123-456789abcdef"
+# namespace = "team"
+# scopes = ["read", "write"]
 "#;
 
 #[cfg(test)]

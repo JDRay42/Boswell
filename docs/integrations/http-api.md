@@ -64,6 +64,19 @@ echo "raw:  $KEY"                                  # give this to the client
 printf '%s' "$KEY" | sha256sum | cut -d' ' -f1     # put this in key_hash
 ```
 
+### OIDC tokens
+
+Where the config carries an `[oidc]` section, a bearer token may instead be a JWT from the
+identity provider it names. The gateway verifies it against that provider's JWKS, which it
+caches, so a verified request costs no round trip. Obtaining the token is between the caller
+and the provider — the device-code grant is the intended flow — and the gateway is not in it.
+
+Verification says who is asking, not what they may do. Authority comes from an
+`[[oidc.principals]]` entry matching the token's `sub`, carrying the same `namespace` and
+`scopes` an API key does. A token that verifies for a subject with no entry gets `403`; one
+that fails verification gets `401`, with no detail about which check failed. API keys keep
+working alongside, and where no `[oidc]` section exists a JWT is simply an unrecognized key.
+
 ### Scopes
 
 Each key grants a set of scopes:
