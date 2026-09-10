@@ -1,6 +1,20 @@
 //! gRPC service implementation
 //!
 //! Implements the BosWellService trait generated from proto definitions.
+//!
+//! # What this layer logs
+//!
+//! Every RPC opens a `debug` span named for its handler and closes with one
+//! event saying what happened. State changes — `assert`, `learn`, `forget`,
+//! `extract`, receipt issue, outcome report — are `info`. Reads and rejections
+//! are `debug`. A store failure the caller only ever sees as an opaque
+//! `Internal` status is `error`, because the log is the sole place its `Debug`
+//! form survives.
+//!
+//! Remembered *content* is never a field. Namespaces, identifiers, tiers,
+//! counts, principals and outcomes are; subjects, predicates, objects, search
+//! text and extraction input are not. An operator reading these logs learns the
+//! shape of the traffic, not what the agent was told.
 
 use boswell_domain::traits::{ClaimQuery, ClaimStore, GoalStore, ProcedureStore};
 use boswell_domain::GoalQuery;
@@ -49,6 +63,29 @@ pub trait ServerExtractor: Send + Sync {
         tier: String,
         source_id: String,
     ) -> Result<ExtractOutcome, String>;
+}
+
+/// Flatten a store error into the `Internal` status the caller sees, recording
+/// it on the way past.
+///
+/// The wire message is byte-for-byte what it has always been. The detour exists
+/// because `Status::internal` is opaque by design: without this the store's
+/// `Debug` form reached nobody, and an operator holding "Query failed" had no
+/// way to find out why.
+fn internal_err<E: std::fmt::Debug>(context: &'static str, err: E) -> Status {
+    tracing::error!(context, error = ?err, "store call failed");
+    Status::internal(format!("{}: {:?}", context, err))
+}
+
+/// The placeholder token rejection, in one place so it is logged once.
+///
+/// Recorded at `debug` rather than `warn` on purpose: the token check is the
+/// placeholder ADR-021 retires in favour of a loopback bind, and until then a
+/// caller who cannot authenticate must not be able to set this process's log
+/// volume.
+fn unauthenticated() -> Status {
+    tracing::debug!("rejected: missing authentication token");
+    Status::unauthenticated("Missing authentication token")
 }
 
 /// Implementation of the BosWellService
@@ -107,7 +144,16 @@ impl<S: ClaimStore> BosWellServiceImpl<S> {
     /// no confidence in.
     fn check_tier(&self, claim: &Claim) -> Result<(), Status> {
         match self.gatekeeper.check_tier_confidence(claim) {
-            Some(reason) => Err(Status::invalid_argument(reason.to_string())),
+            Some(reason) => {
+                tracing::debug!(
+                    claim_id = %claim.id,
+                    namespace = %claim.namespace,
+                    tier = %claim.tier,
+                    %reason,
+                    "rejected: confidence below the tier floor"
+                );
+                Err(Status::invalid_argument(reason.to_string()))
+            }
             None => Ok(()),
         }
     }
@@ -142,7 +188,7 @@ impl<S: ClaimStore> BosWellServiceImpl<S> {
 
         store
             .issue_receipt(&receipt)
-            .map_err(|e| Status::internal(format!("Failed to issue receipt: {:?}", e)))?;
+            .map_err(|e| internal_err("Failed to issue receipt", e))?;
 
         Ok(receipt_to_proto(&receipt))
     }
@@ -243,6 +289,7 @@ where
     S: ClaimStore + ProcedureStore + GoalStore + Send + 'static,
     S::Error: std::fmt::Debug,
 {
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn assert(
         &self,
         request: Request<AssertRequest>,
@@ -251,7 +298,7 @@ where
 
         // Validate authentication token (placeholder for now)
         if req.auth_token.is_empty() {
-            return Err(Status::unauthenticated("Missing authentication token"));
+            return Err(unauthenticated());
         }
 
         // Convert proto types to domain types
@@ -292,7 +339,14 @@ where
         let mut store = self.store.lock().unwrap();
         let result = store
             .assert_claim(claim.clone())
-            .map_err(|e| Status::internal(format!("Failed to assert claim: {:?}", e)))?;
+            .map_err(|e| internal_err("Failed to assert claim", e))?;
+
+        tracing::info!(
+            claim_id = %result,
+            namespace = %claim.namespace,
+            tier = %claim.tier,
+            "claim asserted"
+        );
 
         Ok(Response::new(AssertResponse {
             claim_id: result.to_string(),
@@ -301,6 +355,7 @@ where
         }))
     }
 
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn query(
         &self,
         request: Request<QueryRequest>,
@@ -309,7 +364,7 @@ where
 
         // Validate authentication token
         if req.auth_token.is_empty() {
-            return Err(Status::unauthenticated("Missing authentication token"));
+            return Err(unauthenticated());
         }
 
         let filter = req
@@ -346,9 +401,16 @@ where
         let store = self.store.lock().unwrap();
         let claims = store
             .query_claims(&query)
-            .map_err(|e| Status::internal(format!("Query failed: {:?}", e)))?;
+            .map_err(|e| internal_err("Query failed", e))?;
 
         let total_count = claims.len() as i32;
+
+        tracing::debug!(
+            namespace = query.namespace.as_deref().unwrap_or("<any>"),
+            limit = ?query.limit,
+            count = total_count,
+            "claims queried"
+        );
 
         // Convert to proto
         let proto_claims = claims.into_iter().map(claim_to_proto).collect();
@@ -360,6 +422,7 @@ where
         }))
     }
 
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn search(
         &self,
         request: Request<SearchRequest>,
@@ -367,7 +430,7 @@ where
         let req = request.into_inner();
 
         if req.auth_token.is_empty() {
-            return Err(Status::unauthenticated("Missing authentication token"));
+            return Err(unauthenticated());
         }
         if req.query_text.trim().is_empty() {
             return Err(Status::invalid_argument("query_text must not be empty"));
@@ -383,6 +446,7 @@ where
         let store = self.store.lock().unwrap();
 
         if !store.supports_semantic_search() {
+            tracing::debug!("rejected: semantic search is not enabled");
             return Err(Status::failed_precondition(
                 "Semantic search is not enabled on this instance",
             ));
@@ -397,7 +461,7 @@ where
         };
         let hits = store
             .semantic_search(&req.query_text, fetch, min_similarity)
-            .map_err(|e| Status::internal(format!("Search failed: {:?}", e)))?;
+            .map_err(|e| internal_err("Search failed", e))?;
 
         let results: Vec<SearchResult> = hits
             .into_iter()
@@ -414,6 +478,14 @@ where
 
         let total_count = results.len() as i32;
 
+        tracing::debug!(
+            namespace = req.namespace.as_deref().unwrap_or("<any>"),
+            limit,
+            min_similarity,
+            count = total_count,
+            "semantic search served"
+        );
+
         Ok(Response::new(SearchResponse {
             results,
             total_count,
@@ -421,6 +493,7 @@ where
         }))
     }
 
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn learn(
         &self,
         request: Request<LearnRequest>,
@@ -428,7 +501,7 @@ where
         let req = request.into_inner();
 
         if req.auth_token.is_empty() {
-            return Err(Status::unauthenticated("Missing authentication token"));
+            return Err(unauthenticated());
         }
 
         let mut inserted_count = 0;
@@ -466,6 +539,19 @@ where
             }
         }
 
+        // A batch that rejected nothing is routine; one that rejected part of
+        // itself still answers `Ok`, so the log is where a caller silently
+        // losing half its writes becomes visible.
+        if error_count > 0 {
+            tracing::warn!(
+                inserted_count,
+                error_count,
+                "learn batch completed with rejections"
+            );
+        } else {
+            tracing::info!(inserted_count, "learn batch inserted");
+        }
+
         Ok(Response::new(LearnResponse {
             inserted_count,
             duplicate_count,
@@ -475,6 +561,7 @@ where
         }))
     }
 
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn forget(
         &self,
         request: Request<ForgetRequest>,
@@ -482,7 +569,7 @@ where
         let req = request.into_inner();
 
         if req.auth_token.is_empty() {
-            return Err(Status::unauthenticated("Missing authentication token"));
+            return Err(unauthenticated());
         }
 
         let claim_id = ClaimId::from_string(&req.claim_id)
@@ -492,21 +579,34 @@ where
         // cached confidence (see `SqliteStore::delete_claim`).
         let mut store = self.store.lock().unwrap();
         match store.delete_claim(claim_id) {
-            Ok(true) => Ok(Response::new(ForgetResponse {
-                success: true,
-                message: format!("Claim {} deleted", req.claim_id),
-            })),
-            Ok(false) => Ok(Response::new(ForgetResponse {
-                success: false,
-                message: "Claim not found".to_string(),
-            })),
-            Err(e) => Ok(Response::new(ForgetResponse {
-                success: false,
-                message: format!("Error deleting claim: {:?}", e),
-            })),
+            Ok(true) => {
+                tracing::info!(claim_id = %req.claim_id, "claim deleted");
+                Ok(Response::new(ForgetResponse {
+                    success: true,
+                    message: format!("Claim {} deleted", req.claim_id),
+                }))
+            }
+            Ok(false) => {
+                tracing::debug!(claim_id = %req.claim_id, "claim not found to delete");
+                Ok(Response::new(ForgetResponse {
+                    success: false,
+                    message: "Claim not found".to_string(),
+                }))
+            }
+            // Unlike every other store failure here, this one answers `Ok` with
+            // `success: false` — the same shape a missing claim produces. The
+            // event is the only thing that tells the two apart.
+            Err(e) => {
+                tracing::error!(claim_id = %req.claim_id, error = ?e, "failed to delete claim");
+                Ok(Response::new(ForgetResponse {
+                    success: false,
+                    message: format!("Error deleting claim: {:?}", e),
+                }))
+            }
         }
     }
 
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn get_claim(
         &self,
         request: Request<GetClaimRequest>,
@@ -514,7 +614,7 @@ where
         let req = request.into_inner();
 
         if req.auth_token.is_empty() {
-            return Err(Status::unauthenticated("Missing authentication token"));
+            return Err(unauthenticated());
         }
 
         let claim_id = ClaimId::from_string(&req.claim_id)
@@ -523,19 +623,26 @@ where
         let store = self.store.lock().unwrap();
         match store
             .get_claim(claim_id)
-            .map_err(|e| Status::internal(format!("Failed to get claim: {:?}", e)))?
+            .map_err(|e| internal_err("Failed to get claim", e))?
         {
-            Some(claim) => Ok(Response::new(GetClaimResponse {
-                claim: Some(claim_to_proto(claim)),
-                found: true,
-            })),
-            None => Ok(Response::new(GetClaimResponse {
-                claim: None,
-                found: false,
-            })),
+            Some(claim) => {
+                tracing::debug!(claim_id = %req.claim_id, found = true, "claim fetched");
+                Ok(Response::new(GetClaimResponse {
+                    claim: Some(claim_to_proto(claim)),
+                    found: true,
+                }))
+            }
+            None => {
+                tracing::debug!(claim_id = %req.claim_id, found = false, "claim fetched");
+                Ok(Response::new(GetClaimResponse {
+                    claim: None,
+                    found: false,
+                }))
+            }
         }
     }
 
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn get_relationships(
         &self,
         request: Request<GetRelationshipsRequest>,
@@ -543,23 +650,30 @@ where
         let req = request.into_inner();
 
         if req.auth_token.is_empty() {
-            return Err(Status::unauthenticated("Missing authentication token"));
+            return Err(unauthenticated());
         }
 
         let claim_id = ClaimId::from_string(&req.claim_id)
             .map_err(|e| Status::invalid_argument(format!("Invalid claim ID: {}", e)))?;
 
         let store = self.store.lock().unwrap();
-        let relationships = store
+        let relationships: Vec<_> = store
             .get_relationships(claim_id)
-            .map_err(|e| Status::internal(format!("Failed to get relationships: {:?}", e)))?
+            .map_err(|e| internal_err("Failed to get relationships", e))?
             .into_iter()
             .map(relationship_to_proto)
             .collect();
 
+        tracing::debug!(
+            claim_id = %req.claim_id,
+            count = relationships.len(),
+            "relationships fetched"
+        );
+
         Ok(Response::new(GetRelationshipsResponse { relationships }))
     }
 
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn extract(
         &self,
         request: Request<ExtractRequest>,
@@ -567,10 +681,11 @@ where
         let req = request.into_inner();
 
         if req.auth_token.is_empty() {
-            return Err(Status::unauthenticated("Missing authentication token"));
+            return Err(unauthenticated());
         }
 
         let extractor = self.extractor.as_ref().ok_or_else(|| {
+            tracing::debug!("rejected: extraction is not enabled");
             Status::failed_precondition("Extraction is not enabled on this instance")
         })?;
 
@@ -592,15 +707,34 @@ where
             req.source_id
         };
 
+        // Recorded before the call rather than after: `text` moves into the
+        // extractor, and its length is the only thing about it worth keeping.
+        tracing::debug!(
+            namespace = %req.namespace,
+            %tier,
+            text_len = req.text.len(),
+            "extracting"
+        );
+
         let outcome = extractor
             .extract(req.text, req.namespace, tier, source_id)
             .await
-            .map_err(|e| Status::internal(format!("Extraction failed: {}", e)))?;
+            .map_err(|e| {
+                tracing::error!(error = %e, "extraction failed");
+                Status::internal(format!("Extraction failed: {}", e))
+            })?;
 
         let created_count = outcome.created.len() as i32;
         let corroborated_count = outcome.corroborated_count as i32;
         let failed_count = outcome.failures.len() as i32;
         let claims_created = outcome.created.into_iter().map(claim_to_proto).collect();
+
+        tracing::info!(
+            created_count,
+            corroborated_count,
+            failed_count,
+            "extraction completed"
+        );
 
         Ok(Response::new(ExtractResponse {
             claims_created,
@@ -612,16 +746,25 @@ where
         }))
     }
 
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn health_check(
         &self,
         _request: Request<HealthCheckRequest>,
     ) -> Result<Response<HealthCheckResponse>, Status> {
         let store = self.store.lock().unwrap();
         let query = ClaimQuery::default();
-        let claim_count = store
-            .query_claims(&query)
-            .map(|claims| claims.len() as i64)
-            .unwrap_or(0);
+        // A store that cannot be counted still reports healthy, which is a
+        // separate argument; what it must not do is answer zero and read as an
+        // empty instance.
+        let claim_count = match store.query_claims(&query) {
+            Ok(claims) => claims.len() as i64,
+            Err(e) => {
+                tracing::warn!(error = ?e, "health check could not count claims, reporting 0");
+                0
+            }
+        };
+
+        tracing::trace!(claim_count, "health check served");
 
         Ok(Response::new(HealthCheckResponse {
             status: health_check_response::Status::Healthy as i32,
@@ -635,13 +778,14 @@ where
 
     // ---- Procedural memory (design 15 §3.3, §4.1) ----
 
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn query_procedures(
         &self,
         request: Request<QueryProceduresRequest>,
     ) -> Result<Response<QueryProceduresResponse>, Status> {
         let req = request.into_inner();
         if req.auth_token.is_empty() {
-            return Err(Status::unauthenticated("Missing authentication token"));
+            return Err(unauthenticated());
         }
         let issued_to = require_issued_to(&req.issued_to)?;
 
@@ -659,7 +803,7 @@ where
 
         let procedures = store
             .query_procedures(&query, now)
-            .map_err(|e| Status::internal(format!("Failed to query procedures: {:?}", e)))?;
+            .map_err(|e| internal_err("Failed to query procedures", e))?;
 
         let mut issued = Vec::with_capacity(procedures.len());
         for procedure in &procedures {
@@ -678,6 +822,17 @@ where
         }
 
         let count = issued.len() as i32;
+
+        // `info`, not `debug`: retrieval is what creates the obligation to
+        // report, so this is a write to the receipt table however much it reads
+        // like a query.
+        tracing::info!(
+            namespace = query.namespace.as_deref().unwrap_or("<any>"),
+            issued_to,
+            count,
+            "procedures issued"
+        );
+
         Ok(Response::new(QueryProceduresResponse {
             procedures: issued,
             count,
@@ -685,13 +840,14 @@ where
         }))
     }
 
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn get_procedure(
         &self,
         request: Request<GetProcedureRequest>,
     ) -> Result<Response<GetProcedureResponse>, Status> {
         let req = request.into_inner();
         if req.auth_token.is_empty() {
-            return Err(Status::unauthenticated("Missing authentication token"));
+            return Err(unauthenticated());
         }
         let issued_to = require_issued_to(&req.issued_to)?;
         let id = procedure_id_from_proto(&req.id)
@@ -703,7 +859,7 @@ where
 
         let found = store
             .get_procedure(id)
-            .map_err(|e| Status::internal(format!("Failed to get procedure: {:?}", e)))?;
+            .map_err(|e| internal_err("Failed to get procedure", e))?;
 
         // Scope is checked before the receipt is issued, not after: issuing one for a
         // procedure the caller may not see would leave an obligation nobody can
@@ -712,6 +868,10 @@ where
         let procedure = match found {
             Some(p) if namespace_in_scope(req.namespace_scope.as_deref(), &p.namespace) => p,
             _ => {
+                tracing::debug!(
+                    procedure_id = %req.id,
+                    "procedure not found, or outside the caller's namespace scope"
+                );
                 return Ok(Response::new(GetProcedureResponse {
                     found: false,
                     procedure: None,
@@ -729,6 +889,13 @@ where
             now,
         )?;
 
+        tracing::info!(
+            procedure_id = %req.id,
+            namespace = %procedure.namespace,
+            issued_to,
+            "procedure issued"
+        );
+
         Ok(Response::new(GetProcedureResponse {
             found: true,
             procedure: Some(IssuedProcedure {
@@ -739,13 +906,14 @@ where
         }))
     }
 
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn report_outcome(
         &self,
         request: Request<ReportOutcomeRequest>,
     ) -> Result<Response<ReportOutcomeResponse>, Status> {
         let req = request.into_inner();
         if req.auth_token.is_empty() {
-            return Err(Status::unauthenticated("Missing authentication token"));
+            return Err(unauthenticated());
         }
         let receipt_id = procedure_id_from_proto(&req.receipt_id)
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
@@ -770,8 +938,12 @@ where
         // outstanding receipt.
         let Some(stored) = store
             .get_receipt(receipt_id)
-            .map_err(|e| Status::internal(format!("Failed to load receipt: {:?}", e)))?
+            .map_err(|e| internal_err("Failed to load receipt", e))?
         else {
+            tracing::debug!(
+                receipt_id = %req.receipt_id,
+                "outcome reported against a receipt this instance never issued"
+            );
             return Ok(Response::new(not_found_report(&req.receipt_id)));
         };
 
@@ -780,7 +952,7 @@ where
         // and the report will no-op in the store.
         let namespace = store
             .get_procedure(stored.receipt.procedure_id)
-            .map_err(|e| Status::internal(format!("Failed to load procedure: {:?}", e)))?
+            .map_err(|e| internal_err("Failed to load procedure", e))?
             .map(|p| p.namespace)
             .unwrap_or_default();
 
@@ -788,22 +960,45 @@ where
 
         let outcome = store
             .report_receipt(receipt_id, &report, &stamp, now)
-            .map_err(|e| Status::internal(format!("Failed to report outcome: {:?}", e)))?;
+            .map_err(|e| internal_err("Failed to report outcome", e))?;
 
-        Ok(Response::new(match outcome {
+        let response = match outcome {
             None => not_found_report(&req.receipt_id),
             Some(o) => report_to_proto(o),
-        }))
+        };
+
+        // Quarantine is the interesting case and it is invisible on the wire to
+        // anyone not reading the flags: the report was accepted and changed
+        // nothing, because the reporter's assurance did not reach the
+        // procedure's tier.
+        if response.accepted {
+            tracing::info!(
+                receipt_id = %req.receipt_id,
+                outcome = %req.outcome,
+                applied = response.applied,
+                quarantined = response.quarantined,
+                "outcome recorded"
+            );
+        } else {
+            tracing::debug!(
+                receipt_id = %req.receipt_id,
+                already_final = response.already_final,
+                "outcome not accepted"
+            );
+        }
+
+        Ok(Response::new(response))
     }
     // ---- Goal traversal (design 15 §3.2, §4.1) ----
 
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn query_goals(
         &self,
         request: Request<QueryGoalsRequest>,
     ) -> Result<Response<QueryGoalsResponse>, Status> {
         let req = request.into_inner();
         if req.auth_token.is_empty() {
-            return Err(Status::unauthenticated("Missing authentication token"));
+            return Err(unauthenticated());
         }
 
         let query = GoalQuery {
@@ -817,10 +1012,17 @@ where
 
         let goals = store
             .query_goals(&query)
-            .map_err(|e| Status::internal(format!("Failed to query goals: {:?}", e)))?;
+            .map_err(|e| internal_err("Failed to query goals", e))?;
 
         let wire: Vec<crate::proto::Goal> = goals.iter().map(goal_to_proto).collect();
         let count = wire.len() as i32;
+
+        tracing::debug!(
+            namespace = query.namespace.as_deref().unwrap_or("<any>"),
+            count,
+            "goals queried"
+        );
+
         Ok(Response::new(QueryGoalsResponse {
             goals: wire,
             count,
@@ -828,13 +1030,14 @@ where
         }))
     }
 
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn get_goal(
         &self,
         request: Request<GetGoalRequest>,
     ) -> Result<Response<GetGoalResponse>, Status> {
         let req = request.into_inner();
         if req.auth_token.is_empty() {
-            return Err(Status::unauthenticated("Missing authentication token"));
+            return Err(unauthenticated());
         }
         let id =
             goal_id_from_proto(&req.id).map_err(|e| Status::invalid_argument(e.to_string()))?;
@@ -844,12 +1047,14 @@ where
 
         let found = store
             .get_goal(id)
-            .map_err(|e| Status::internal(format!("Failed to get goal: {:?}", e)))?;
+            .map_err(|e| internal_err("Failed to get goal", e))?;
 
         // Out of scope reads as not-found, so a caller confined to one namespace
         // cannot confirm the existence of another namespace's decomposition.
         let goal =
             found.filter(|g| namespace_in_scope(req.namespace_scope.as_deref(), &g.namespace));
+
+        tracing::debug!(goal_id = %req.id, found = goal.is_some(), "goal fetched");
 
         Ok(Response::new(match goal {
             Some(g) => GetGoalResponse {
@@ -865,13 +1070,14 @@ where
         }))
     }
 
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn expand(
         &self,
         request: Request<ExpandRequest>,
     ) -> Result<Response<ExpandResponse>, Status> {
         let req = request.into_inner();
         if req.auth_token.is_empty() {
-            return Err(Status::unauthenticated("Missing authentication token"));
+            return Err(unauthenticated());
         }
         let goal_id = goal_id_from_proto(&req.goal_id)
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
@@ -888,13 +1094,17 @@ where
         // uses for receipts (design §3.3).
         let goal = store
             .get_goal(goal_id)
-            .map_err(|e| Status::internal(format!("Failed to get goal: {:?}", e)))?;
+            .map_err(|e| internal_err("Failed to get goal", e))?;
 
         let in_scope = goal
             .as_ref()
             .is_some_and(|g| namespace_in_scope(req.namespace_scope.as_deref(), &g.namespace));
 
         if !in_scope {
+            tracing::debug!(
+                goal_id = %req.goal_id,
+                "expand: goal not found, or outside the caller's namespace scope"
+            );
             return Ok(Response::new(ExpandResponse {
                 found: false,
                 candidates: Vec::new(),
@@ -906,7 +1116,7 @@ where
 
         let result = store
             .expand(goal_id, &context, now)
-            .map_err(|e| Status::internal(format!("Failed to expand goal: {:?}", e)))?;
+            .map_err(|e| internal_err("Failed to expand goal", e))?;
 
         let candidates: Vec<_> = result
             .candidates
@@ -923,6 +1133,14 @@ where
             .iter()
             .map(factor_reading_to_proto)
             .collect();
+
+        tracing::debug!(
+            goal_id = %req.goal_id,
+            candidates = candidates.len(),
+            decision_aids = decision_aids.len(),
+            factor_readings = factor_readings.len(),
+            "goal expanded"
+        );
 
         let message = format!(
             "{} candidate(s), {} decision aid(s)",
@@ -946,6 +1164,7 @@ where
 /// so a claim-only deployment must not be able to impersonate one.
 fn require_goals<S: GoalStore>(store: &S) -> Result<(), Status> {
     if !store.supports_goals() {
+        tracing::debug!("rejected: this store holds no goals");
         return Err(Status::unimplemented(
             "this instance's store does not hold goals",
         ));
@@ -979,6 +1198,7 @@ fn require_issued_to(issued_to: &str) -> Result<&str, Status> {
 /// genuine no-match.
 fn require_procedures<S: ProcedureStore>(store: &S) -> Result<(), Status> {
     if !store.supports_procedures() {
+        tracing::debug!("rejected: this store holds no procedures");
         return Err(Status::unimplemented(
             "this instance's store does not hold procedures",
         ));
@@ -2782,6 +3002,399 @@ mod tests {
                 .unwrap()
                 .into_inner();
             assert!(!resp.dev_auth);
+        }
+    }
+
+    /// What the service says about itself.
+    ///
+    /// These tests exist for two reasons. One: an operator's only view into this
+    /// layer is what it emits, and an event nobody asserts on is an event that
+    /// quietly stops firing. Two: the events are a disclosure surface — the
+    /// service handles claim content and must never write it to a log — and the
+    /// only way to hold that line is to check it.
+    mod tracing_output {
+        use super::*;
+        use std::sync::{Arc as StdArc, Mutex as StdMutex};
+        use tracing::field::{Field, Visit};
+        use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
+        use tracing_subscriber::registry::LookupSpan;
+
+        /// One recorded event: its level, the span it fired inside, and its fields.
+        #[derive(Debug, Clone)]
+        struct Recorded {
+            level: tracing::Level,
+            span: Option<String>,
+            fields: Vec<(String, String)>,
+        }
+
+        impl Recorded {
+            fn message(&self) -> &str {
+                self.field("message").unwrap_or("")
+            }
+
+            fn field(&self, name: &str) -> Option<&str> {
+                self.fields
+                    .iter()
+                    .find(|(k, _)| k == name)
+                    .map(|(_, v)| v.as_str())
+            }
+
+            /// Every field rendered back to one string, which is what the
+            /// disclosure check searches.
+            fn rendered(&self) -> String {
+                self.fields
+                    .iter()
+                    .map(|(k, v)| format!("{}={}", k, v))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            }
+        }
+
+        /// Every call fails, which is the only way to reach the `error` events
+        /// without breaking a real store.
+        struct FailingStore;
+
+        impl ProcedureStore for FailingStore {}
+        impl GoalStore for FailingStore {}
+
+        impl ClaimStore for FailingStore {
+            type Error = String;
+
+            fn assert_claim(&mut self, _claim: Claim) -> Result<ClaimId, Self::Error> {
+                Err("disk on fire".to_string())
+            }
+
+            fn get_claim(&self, _id: ClaimId) -> Result<Option<Claim>, Self::Error> {
+                Err("disk on fire".to_string())
+            }
+
+            fn query_claims(&self, _query: &ClaimQuery) -> Result<Vec<Claim>, Self::Error> {
+                Err("disk on fire".to_string())
+            }
+
+            fn add_relationship(&mut self, _r: Relationship) -> Result<(), Self::Error> {
+                Err("disk on fire".to_string())
+            }
+
+            fn get_relationships(&self, _id: ClaimId) -> Result<Vec<Relationship>, Self::Error> {
+                Err("disk on fire".to_string())
+            }
+        }
+
+        #[derive(Default, Clone)]
+        struct Recorder(StdArc<StdMutex<Vec<Recorded>>>);
+
+        impl Recorder {
+            fn all(&self) -> Vec<Recorded> {
+                self.0.lock().unwrap().clone()
+            }
+
+            /// The single event carrying `message`, or a panic naming what was
+            /// recorded instead — a missing event is the failure these tests
+            /// are for, so the diagnostic matters.
+            fn expect(&self, message: &str) -> Recorded {
+                let all = self.all();
+                all.iter()
+                    .find(|e| e.message() == message)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "no event {:?}; recorded: {:?}",
+                            message,
+                            all.iter()
+                                .map(|e| e.message().to_string())
+                                .collect::<Vec<_>>()
+                        )
+                    })
+            }
+        }
+
+        /// Collects both the `%`-formatted and `?`-formatted field values.
+        struct CollectFields(Vec<(String, String)>);
+
+        impl Visit for CollectFields {
+            fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+                self.0
+                    .push((field.name().to_string(), format!("{:?}", value)));
+            }
+
+            fn record_str(&mut self, field: &Field, value: &str) {
+                self.0.push((field.name().to_string(), value.to_string()));
+            }
+        }
+
+        impl<S> Layer<S> for Recorder
+        where
+            S: tracing::Subscriber + for<'a> LookupSpan<'a>,
+        {
+            fn on_event(&self, event: &tracing::Event<'_>, ctx: Context<'_, S>) {
+                let mut fields = CollectFields(Vec::new());
+                event.record(&mut fields);
+                self.0.lock().unwrap().push(Recorded {
+                    level: *event.metadata().level(),
+                    span: ctx.event_span(event).map(|s| s.name().to_string()),
+                    fields: fields.0,
+                });
+            }
+        }
+
+        /// Install the recorder for the rest of the test.
+        ///
+        /// `set_default` is thread-local and `#[tokio::test]` runs on a
+        /// current-thread runtime, so every poll of the handler happens on the
+        /// thread that holds the guard.
+        fn record() -> (Recorder, tracing::subscriber::DefaultGuard) {
+            let recorder = Recorder::default();
+            let subscriber = tracing_subscriber::registry()
+                .with(tracing_subscriber::filter::LevelFilter::TRACE)
+                .with(recorder.clone());
+            (
+                recorder.clone(),
+                tracing::subscriber::set_default(subscriber),
+            )
+        }
+
+        /// The load-bearing one: `#[tracing::instrument]` sits on a method inside
+        /// a `#[tonic::async_trait]` impl, where the attribute is applied to a
+        /// desugared `fn` returning a boxed future rather than to an `async fn`.
+        /// If tracing's async-trait handling ever stops recognising that shape,
+        /// the spans silently vanish and every event goes out unattributed.
+        #[tokio::test]
+        async fn every_event_fires_inside_a_span_named_for_its_rpc() {
+            let service = sqlite_service();
+            let (log, _guard) = record();
+
+            service
+                .assert(Request::new(assert_at(Tier::Task, 0.6, 0.9)))
+                .await
+                .unwrap();
+
+            assert_eq!(log.expect("claim asserted").span.as_deref(), Some("assert"));
+        }
+
+        /// Namespaces, ids and tiers are operational facts. Subjects, predicates
+        /// and objects are what the user told Boswell, and a log file is not a
+        /// place to put them.
+        #[tokio::test]
+        async fn a_claim_is_logged_by_identity_never_by_content() {
+            let service = sqlite_service();
+            let (log, _guard) = record();
+
+            service
+                .assert(Request::new(AssertRequest {
+                    namespace: "test".to_string(),
+                    subject: "Zebulon".to_string(),
+                    predicate: "distrusts".to_string(),
+                    object: "Marmalade".to_string(),
+                    confidence: Some(ConfidenceInterval {
+                        lower: 0.6,
+                        upper: 0.9,
+                    }),
+                    tier: Tier::Task as i32,
+                    provenance: vec![],
+                    auth_token: "token".to_string(),
+                }))
+                .await
+                .unwrap();
+
+            let event = log.expect("claim asserted");
+            assert_eq!(event.level, tracing::Level::INFO);
+            assert_eq!(event.field("namespace"), Some("test"));
+            assert_eq!(event.field("tier"), Some("task"));
+            assert!(event.field("claim_id").is_some_and(|id| !id.is_empty()));
+
+            for recorded in log.all() {
+                let text = recorded.rendered();
+                for secret in ["Zebulon", "distrusts", "Marmalade"] {
+                    assert!(
+                        !text.contains(secret),
+                        "{:?} leaked claim content into {:?}",
+                        recorded.message(),
+                        text
+                    );
+                }
+            }
+        }
+
+        /// A rejection the caller sees as `InvalidArgument` is the operator's
+        /// only clue that a writer is misconfigured, so it names the claim and
+        /// the rule that refused it.
+        #[tokio::test]
+        async fn a_claim_below_its_tier_floor_is_logged_with_the_reason() {
+            let service = sqlite_service();
+            let (log, _guard) = record();
+
+            service
+                .assert(Request::new(assert_at(Tier::Permanent, 0.1, 0.2)))
+                .await
+                .unwrap_err();
+
+            let event = log.expect("rejected: confidence below the tier floor");
+            assert_eq!(event.level, tracing::Level::DEBUG);
+            assert_eq!(event.field("tier"), Some("permanent"));
+            assert!(event
+                .field("reason")
+                .is_some_and(|r| r.contains("permanent")));
+        }
+
+        /// Deliberately `debug`, not `warn`: this rejection is reachable by an
+        /// unauthenticated caller, and a `warn` here would hand them the
+        /// process's log volume. See `unauthenticated`.
+        #[tokio::test]
+        async fn an_unauthenticated_call_cannot_raise_the_log_level() {
+            let service = sqlite_service();
+            let (log, _guard) = record();
+
+            service
+                .assert(Request::new(AssertRequest {
+                    auth_token: String::new(),
+                    ..assert_at(Tier::Task, 0.6, 0.9)
+                }))
+                .await
+                .unwrap_err();
+
+            let event = log.expect("rejected: missing authentication token");
+            assert_eq!(event.level, tracing::Level::DEBUG);
+        }
+
+        /// `Learn` answers `Ok` however many claims it dropped, so a caller
+        /// losing half its writes to the tier floor sees nothing. The `warn` is
+        /// the only signal.
+        #[tokio::test]
+        async fn a_partly_rejected_learn_batch_warns_with_both_counts() {
+            let service = sqlite_service();
+            let (log, _guard) = record();
+
+            let good = claim_to_proto(Claim {
+                id: ClaimId::new(),
+                namespace: "test".to_string(),
+                subject: "a".to_string(),
+                predicate: "b".to_string(),
+                object: "c".to_string(),
+                source_type: Claim::SOURCE_ASSERTION.to_string(),
+                confidence: (0.9, 0.95),
+                tier: "permanent".to_string(),
+                created_at: 1,
+                stale_at: None,
+            });
+            let bad = claim_to_proto(Claim {
+                confidence: (0.1, 0.2),
+                ..claim_from_proto(good.clone()).unwrap()
+            });
+
+            let resp = service
+                .learn(Request::new(LearnRequest {
+                    claims: vec![good, bad],
+                    skip_duplicates: false,
+                    auth_token: "token".to_string(),
+                }))
+                .await
+                .unwrap()
+                .into_inner();
+            assert_eq!(resp.inserted_count, 1);
+            assert_eq!(resp.error_count, 1);
+
+            let event = log.expect("learn batch completed with rejections");
+            assert_eq!(event.level, tracing::Level::WARN);
+            assert_eq!(event.field("inserted_count"), Some("1"));
+            assert_eq!(event.field("error_count"), Some("1"));
+        }
+
+        /// Deletion is the one operation nothing else records: the claim is
+        /// gone from the store, so its id survives only in this event.
+        #[tokio::test]
+        async fn deleting_a_claim_logs_the_id_that_no_longer_exists() {
+            let service = sqlite_service();
+            let id = assert_one(&service, "Alice").await;
+            let (log, _guard) = record();
+
+            service
+                .forget(Request::new(ForgetRequest {
+                    claim_id: id.clone(),
+                    reason: String::new(),
+                    auth_token: "token".to_string(),
+                }))
+                .await
+                .unwrap();
+
+            let event = log.expect("claim deleted");
+            assert_eq!(event.level, tracing::Level::INFO);
+            assert_eq!(event.field("claim_id"), Some(id.as_str()));
+        }
+
+        /// Reads log the namespace and the row count and nothing else. A query
+        /// filter is a question about content, so it stays off the wire here
+        /// even though it is the caller's own text rather than the store's.
+        #[tokio::test]
+        async fn a_query_logs_its_namespace_and_count_but_not_its_filter() {
+            let service = sqlite_service();
+            assert_one(&service, "Winifred").await;
+            let (log, _guard) = record();
+
+            service
+                .query(Request::new(QueryRequest {
+                    filter: Some(QueryFilter {
+                        namespace: Some("test".to_string()),
+                        subject: Some("Winifred".to_string()),
+                        ..Default::default()
+                    }),
+                    mode: QueryMode::Fast as i32,
+                    limit: 5,
+                    auth_token: "token".to_string(),
+                }))
+                .await
+                .unwrap();
+
+            let event = log.expect("claims queried");
+            assert_eq!(event.level, tracing::Level::DEBUG);
+            assert_eq!(event.field("namespace"), Some("test"));
+            assert_eq!(event.field("count"), Some("1"));
+            for recorded in log.all() {
+                assert!(
+                    !recorded.rendered().contains("Winifred"),
+                    "{:?} logged the query subject",
+                    recorded.message()
+                );
+            }
+        }
+
+        /// A store that cannot be read used to report zero claims, which is
+        /// exactly what a healthy empty instance reports.
+        #[tokio::test]
+        async fn a_health_check_over_an_unreadable_store_says_so() {
+            let service = BosWellServiceImpl::new(Arc::new(Mutex::new(FailingStore)));
+            let (log, _guard) = record();
+
+            let resp = service
+                .health_check(Request::new(HealthCheckRequest {}))
+                .await
+                .unwrap()
+                .into_inner();
+            assert_eq!(resp.claim_count, 0);
+
+            let event = log.expect("health check could not count claims, reporting 0");
+            assert_eq!(event.level, tracing::Level::WARN);
+        }
+
+        /// `Status::internal` is opaque by design, so the `Debug` form of the
+        /// store error reaches the operator or it reaches nobody.
+        #[tokio::test]
+        async fn a_store_failure_is_logged_with_the_detail_the_caller_never_sees() {
+            let service = BosWellServiceImpl::new(Arc::new(Mutex::new(FailingStore)));
+            let (log, _guard) = record();
+
+            let err = service
+                .assert(Request::new(assert_at(Tier::Task, 0.6, 0.9)))
+                .await
+                .unwrap_err();
+            assert_eq!(err.code(), tonic::Code::Internal);
+
+            let event = log.expect("store call failed");
+            assert_eq!(event.level, tracing::Level::ERROR);
+            assert_eq!(event.field("context"), Some("Failed to assert claim"));
+            assert!(event
+                .field("error")
+                .is_some_and(|e| e.contains("disk on fire")));
         }
     }
 }

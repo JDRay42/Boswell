@@ -14,6 +14,9 @@ thiserror = { workspace = true }
 # "signal" backs the default `ctrl_c` shutdown in `server.rs`.
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync"] }
 tonic = "0.12"
+# The service layer's only observability. Spans and events are emitted here; the
+# binary that links this crate decides whether anything collects them.
+tracing = { workspace = true }
 prost = "0.13"
 prost-types = "0.13"
 
@@ -28,6 +31,9 @@ tokio = { workspace = true, features = ["net", "time"] }
 # Dev-only: the sample identities are how the trust gradient is exercised in
 # tests. Never a normal dependency — no production path names this crate.
 boswell-devauth = { workspace = true }
+# The tracing tests install a capturing layer to assert on what the service
+# emits — including that it never emits claim content.
+tracing-subscriber = { workspace = true }
 
 [lints]
 workspace = true
