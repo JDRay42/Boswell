@@ -167,9 +167,10 @@ Who said it, how well we know that, and what it lets them do.
   nothing ever promotes. The trust gradient is inert out of the box.
   *open*
 - **Router configuration encryption.** `boswell-router/src/config.rs` reads plaintext TOML;
-  [`09-router.md`](../architecture/09-router.md) still calls for a portable encrypted
-  config, and [`16-backup-recovery.md`](../architecture/16-backup-recovery.md) notes the
-  `age`-encrypted config in `10-security.md` is aspirational. *open*
+  [`09-router.md`](../architecture/09-router.md) files the portable encrypted config as open
+  and states the argument on both sides, and
+  [`16-backup-recovery.md`](../architecture/16-backup-recovery.md) notes the `age`-encrypted
+  config in `10-security.md` is aspirational. *open*
 - **JWT refresh.** The router issues tokens with an expiry and no refresh path; the SDK
   papers over it by reconnecting once on `Unauthenticated`. *open*
 
@@ -206,6 +207,12 @@ Still open, and now sharper for having a decided model to sit in:
 - **The inert trust gradient.** With no identity adapter shipped, every deployment runs with no
   `IdentityProvider`, so reports stamp `Assurance::None`, ceilings sit at the floor and nothing
   promotes. ADR-022 answers this in principle; nothing implements it yet.
+- **Should the router refuse a non-loopback bind?** ADR-021 puts it on loopback behind the
+  gateway and `10-security.md`'s deployment postures assume it is there, but `RouterConfig`
+  accepts `bind_address = "0.0.0.0"` and `start_server` binds it. The gRPC instance refuses
+  exactly this before the socket opens. Mirroring that refusal is a decision, not a bug fix:
+  an exposed router is an unauthenticated endpoint that mints session tokens and lists every
+  instance endpoint. Documented in [`09-router.md`](../architecture/09-router.md) (#60, #61).
 
 ### Security implementation, following the session
 
@@ -240,13 +247,17 @@ Still open, and now sharper for having a decided model to sit in:
   now has two tables — the keys `RouterConfig` actually parses, and what the old table
   promised with each item's real status. Whether the `age`-encrypted config survives ADR-021
   was left open, not resolved. *shipped* (#60)
-- **Finish `09-router.md`.** #60 corrected the config table and marked six sections as
-  unbuilt, but the body still describes a router that does not exist: mTLS session
-  establishment, per-instance tokens validated at the instance, cryptographic fingerprints in
-  the registry, multiple endpoints per instance, and a health monitor. What runs is an axum
-  HTTP service with `POST /session/establish` and `GET /health`. The markers make the document
-  honest; they do not make it a description. A rewrite in the shape of `10-security.md` —
-  built, decided, open — is the remaining work. *open*
+- **Finish [`09-router.md`](../architecture/09-router.md).** #60 corrected the config table and
+  marked six sections as unbuilt; the body still described a router that does not exist. It is
+  now a description, in the shape of `10-security.md` with one category added. **Superseded**
+  is the addition, and it carries mTLS session establishment, per-instance tokens validated at
+  the instance, registry fingerprints and per-instance capability declaration — abandoned under
+  ADR-021, not queued. Health monitoring, multiple endpoints and config encryption are
+  **open**; ADR-019's client-side routing by expertise and its federated-query fallback are
+  **decided, not built** — the SDK receives `expertise` and `mode` and ignores both, picking the
+  first instance reported healthy. Two things got written down for the first time: `GET /health`
+  is a liveness check for the router alone and always answers `healthy`, and the unmeasured
+  memory and CPU figures were removed rather than replaced. *shipped* (#61)
 
 ## Transport and interfaces
 
