@@ -21,7 +21,8 @@ pub mod server;
 pub mod service;
 
 pub use server::{
-    start_server, start_server_with_extractor, start_server_with_identity, ServerConfig,
+    start_server, start_server_with_extractor, start_server_with_identity,
+    start_server_with_shutdown, ServerConfig,
 };
 pub use service::{BosWellServiceImpl, ExtractOutcome, ServerExtractor};
 

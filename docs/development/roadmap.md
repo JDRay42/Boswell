@@ -243,9 +243,9 @@ Every way in: gRPC, the router, the SDK, the HTTP gateway, MCP, the CLI.
 - **MCP tool surface for goals and procedures.** The MCP server exposes five claim-only
   tools against the gateway's fifteen routes — no goal or procedure tools at all. The
   clearest feature lag in the tree. *open*
-- **gRPC graceful shutdown.** `server.rs` calls `.serve(addr)`, not
-  `serve_with_shutdown`. The Janitor and Synthesizer workers both handle `ctrl_c`
-  correctly; the server does not. *open*
+- **gRPC graceful shutdown.** `server.rs` now calls `serve_with_shutdown`, waiting on
+  `ctrl_c` like the Janitor and Synthesizer workers. `start_server_with_shutdown` takes
+  the signal as a parameter for callers with a lifecycle of their own. *shipped* (#50)
 - **SDK retry with exponential backoff.** Today it reconnects once on `Unauthenticated`
   and gives up. *open*
 - **Un-ignore the full-stack E2E tests.** `boswell-sdk/tests/e2e_tests.rs` requires

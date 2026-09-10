@@ -11,7 +11,8 @@ boswell-domain = { workspace = true }
 # keeps the rule in one place instead of restating it here.
 boswell-gatekeeper = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
+# "signal" backs the default `ctrl_c` shutdown in `server.rs`.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync"] }
 tonic = "0.12"
 prost = "0.13"
 prost-types = "0.13"
@@ -21,6 +22,9 @@ tonic-build = "0.12"
 
 [dev-dependencies]
 boswell-store = { workspace = true }
+# The shutdown tests dial the server to prove it was serving, and bound the wait
+# so a regression fails rather than hangs.
+tokio = { workspace = true, features = ["net", "time"] }
 # Dev-only: the sample identities are how the trust gradient is exercised in
 # tests. Never a normal dependency — no production path names this crate.
 boswell-devauth = { workspace = true }

@@ -1,11 +1,16 @@
 //! gRPC server configuration and lifecycle management
 //!
-//! Handles server initialization and binding. Note what it does *not* do:
-//! there is no TLS termination here (see [`ServerConfig::enable_tls`]) and no
-//! graceful shutdown — the server runs until the process is killed.
+//! Handles server initialization, binding and shutdown. Note what it does *not*
+//! do: there is no TLS termination here (see [`ServerConfig::enable_tls`]).
+//!
+//! Shutdown is graceful. The entrypoints below wait on `ctrl_c` and hand that to
+//! tonic's `serve_with_shutdown`, which stops accepting new connections and lets
+//! the in-flight ones finish. [`start_server_with_shutdown`] takes the signal as
+//! a parameter for callers with a lifecycle of their own.
 
 use boswell_domain::traits::{ClaimStore, GoalStore, ProcedureStore};
 use boswell_domain::IdentityProvider;
+use std::future::Future;
 use std::sync::{Arc, Mutex};
 use tonic::transport::Server;
 
@@ -154,6 +159,33 @@ where
     S: ClaimStore + GoalStore + ProcedureStore + Send + 'static,
     S::Error: std::fmt::Debug,
 {
+    start_server_with_shutdown(config, store, extractor, identity, ctrl_c_signal()).await
+}
+
+/// Start the gRPC server, shutting it down when `shutdown` resolves.
+///
+/// This is the entrypoint the others delegate to; they supply `ctrl_c` as the
+/// signal. Take this one when the process has a lifecycle of its own — a
+/// supervisor, a test — and `ctrl_c` is the wrong thing to wait on.
+///
+/// Shutdown is graceful in tonic's sense: the listener closes, in-flight
+/// requests run to completion, and only then does this future return `Ok`.
+/// A caller that needs a deadline should wrap the call in `tokio::time::timeout`
+/// — there is no bound on how long a hung handler can hold shutdown open.
+///
+/// # Errors
+/// Returns error if server fails to start or bind to address
+pub async fn start_server_with_shutdown<S>(
+    config: ServerConfig,
+    store: Arc<Mutex<S>>,
+    extractor: Option<Arc<dyn ServerExtractor>>,
+    identity: Option<Arc<dyn IdentityProvider + Send + Sync>>,
+    shutdown: impl Future<Output = ()>,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    S: ClaimStore + GoalStore + ProcedureStore + Send + 'static,
+    S::Error: std::fmt::Debug,
+{
     // Refuse before binding: an operator who set `enable_tls` must not end up
     // serving plaintext under the impression they are serving TLS.
     config.ensure_startable()?;
@@ -173,15 +205,137 @@ where
 
     Server::builder()
         .add_service(service_server)
-        .serve(addr)
+        .serve_with_shutdown(addr, shutdown)
         .await?;
 
+    println!("BosWell gRPC server stopped");
+
     Ok(())
+}
+
+/// The default shutdown signal: `ctrl_c`, matching the Janitor and Synthesizer
+/// workers.
+///
+/// A failure to *install* the handler resolves the future rather than
+/// propagating, which would shut the server down at startup. That case is
+/// vanishingly rare, so it is reported rather than swallowed; the alternative —
+/// pending forever — would leave a server that cannot be stopped by the one
+/// signal an operator will try.
+async fn ctrl_c_signal() {
+    if let Err(e) = tokio::signal::ctrl_c().await {
+        eprintln!("Failed to listen for shutdown signal, stopping: {e}");
+        return;
+    }
+    println!("Shutdown signal received, stopping BosWell gRPC server");
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use boswell_store::SqliteStore;
+    use std::time::Duration;
+
+    /// Ask the OS for a free port, then let go of it.
+    ///
+    /// There is a race here — nothing stops another process taking the port
+    /// between the drop and the server's bind — but the alternative is a
+    /// hard-coded port, which races with every *other* run of the suite. The
+    /// server cannot report its own bound port, since `serve_with_shutdown`
+    /// takes a `SocketAddr` and returns nothing until it stops.
+    fn free_port() -> u16 {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("the loopback interface should hand out an ephemeral port")
+            .local_addr()
+            .expect("a bound listener has a local address")
+            .port()
+    }
+
+    fn in_memory_store() -> Arc<Mutex<SqliteStore>> {
+        Arc::new(Mutex::new(
+            SqliteStore::new(":memory:", false, 0).expect("in-memory store should open"),
+        ))
+    }
+
+    /// The regression this slice exists for: before `serve_with_shutdown`, this
+    /// future never returned, and the only way to stop the server was to kill
+    /// the process.
+    #[tokio::test]
+    async fn the_server_returns_when_the_shutdown_signal_fires_while_it_is_serving() {
+        let port = free_port();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+
+        // Signal only once the server is actually accepting connections, so a
+        // pass means it served *and* stopped, not that it never started.
+        tokio::spawn(async move {
+            for _ in 0..200 {
+                if tokio::net::TcpStream::connect(("127.0.0.1", port))
+                    .await
+                    .is_ok()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            let _ = tx.send(());
+        });
+
+        let served = tokio::time::timeout(
+            Duration::from_secs(10),
+            start_server_with_shutdown(
+                ServerConfig::new("127.0.0.1", port),
+                in_memory_store(),
+                None,
+                None,
+                async move {
+                    let _ = rx.await;
+                },
+            ),
+        )
+        .await
+        .expect("the server should stop on the signal, not run until the test times out");
+
+        served.expect("a graceful shutdown is not an error");
+    }
+
+    /// A signal that resolves immediately must still leave the server bound
+    /// cleanly first — shutdown is not an error path.
+    #[tokio::test]
+    async fn a_shutdown_signal_that_has_already_fired_stops_the_server_cleanly() {
+        let served = tokio::time::timeout(
+            Duration::from_secs(10),
+            start_server_with_shutdown(
+                ServerConfig::new("127.0.0.1", free_port()),
+                in_memory_store(),
+                None,
+                None,
+                std::future::ready(()),
+            ),
+        )
+        .await
+        .expect("an already-fired signal should stop the server at once");
+
+        served.expect("a graceful shutdown is not an error");
+    }
+
+    /// The TLS refusal runs before the socket is opened, so it must reach the
+    /// caller as an error rather than being overtaken by the shutdown signal.
+    #[tokio::test]
+    async fn a_tls_config_is_refused_even_with_a_shutdown_signal_in_hand() {
+        let err = start_server_with_shutdown(
+            ServerConfig::new("127.0.0.1", free_port()).with_tls("cert.pem", "key.pem"),
+            in_memory_store(),
+            None,
+            None,
+            std::future::pending(),
+        )
+        .await
+        .expect_err("a TLS-requesting config must be refused, not served in the clear");
+
+        assert!(
+            err.to_string().contains("does not implement TLS"),
+            "unexpected error: {err}"
+        );
+    }
 
     #[test]
     fn test_default_config() {
