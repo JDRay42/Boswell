@@ -8,6 +8,7 @@ use boswell_domain::{
     Assurance, Authority, Claim, ClaimId, DelegationChain, EvidenceType, ExecutionReceipt,
     IdentityProvider, Op, ProcedureQuery, ProvenanceStamp, Tier as DomainTier,
 };
+use boswell_gatekeeper::{Gatekeeper, ValidationConfig};
 use std::sync::{Arc, Mutex};
 use tonic::{Request, Response, Status};
 
@@ -59,6 +60,10 @@ pub struct BosWellServiceImpl<S: ClaimStore> {
     /// The identity port (design §6). `None` means no identity backend is
     /// wired, and every self-report is stamped [`Assurance::None`].
     identity: Option<Arc<dyn IdentityProvider + Send + Sync>>,
+    /// Holds direct writes to the same tier/confidence contract the Extractor
+    /// path is held to. Only the tier rule is applied here; see
+    /// [`Gatekeeper::check_tier_confidence`].
+    gatekeeper: Gatekeeper,
 }
 
 /// How long an issued procedure's execution receipt stays open before it
@@ -78,6 +83,32 @@ impl<S: ClaimStore> BosWellServiceImpl<S> {
             extractor: None,
             receipt_ttl_ms: DEFAULT_RECEIPT_TTL_MS,
             identity: None,
+            gatekeeper: Gatekeeper::default_config(),
+        }
+    }
+
+    /// Replace the validation rules applied to direct writes (`Assert` and
+    /// `Learn`).
+    ///
+    /// The default is [`ValidationConfig::default`], matching what the
+    /// Extractor path uses, so the tier a claim can reach does not depend on
+    /// which door it came through. Pass a config with
+    /// `validate_tier_appropriateness` off to accept any confidence at any
+    /// tier.
+    pub fn with_validation_config(mut self, config: ValidationConfig) -> Self {
+        self.gatekeeper = Gatekeeper::new(config);
+        self
+    }
+
+    /// Reject a claim whose confidence is below the floor its tier requires.
+    ///
+    /// The store cannot make this call — it takes whatever it is handed — so a
+    /// transport that skips it lets any caller write a `permanent` claim it has
+    /// no confidence in.
+    fn check_tier(&self, claim: &Claim) -> Result<(), Status> {
+        match self.gatekeeper.check_tier_confidence(claim) {
+            Some(reason) => Err(Status::invalid_argument(reason.to_string())),
+            None => Ok(()),
         }
     }
 
@@ -255,6 +286,8 @@ where
             stale_at: None,
         };
 
+        self.check_tier(&claim)?;
+
         // Assert claim to store
         let mut store = self.store.lock().unwrap();
         let result = store
@@ -427,12 +460,21 @@ where
 
         for proto_claim in req.claims {
             match claim_from_proto(proto_claim) {
-                Ok(claim) => match store.assert_claim(claim.clone()) {
-                    Ok(_) => inserted_count += 1,
-                    Err(_) => {
+                // A batch write is still a write: the same tier contract
+                // applies, per claim, so one bad claim is rejected rather than
+                // the whole batch.
+                Ok(claim) => match self.gatekeeper.check_tier_confidence(&claim) {
+                    Some(reason) => {
                         error_count += 1;
-                        errors.push(format!("Failed to insert claim {}", claim.id));
+                        errors.push(format!("Rejected claim {}: {}", claim.id, reason));
                     }
+                    None => match store.assert_claim(claim.clone()) {
+                        Ok(_) => inserted_count += 1,
+                        Err(_) => {
+                            error_count += 1;
+                            errors.push(format!("Failed to insert claim {}", claim.id));
+                        }
+                    },
                 },
                 Err(e) => {
                     error_count += 1;
@@ -1256,6 +1298,124 @@ mod tests {
             .unwrap()
             .into_inner();
         resp.claim_id
+    }
+
+    /// An `AssertRequest` at `tier` whose confidence interval is `(lower, upper)`.
+    fn assert_at(tier: Tier, lower: f64, upper: f64) -> AssertRequest {
+        AssertRequest {
+            namespace: "test".to_string(),
+            subject: "Alice".to_string(),
+            predicate: "knows".to_string(),
+            object: "Bob".to_string(),
+            confidence: Some(ConfidenceInterval { lower, upper }),
+            tier: tier as i32,
+            provenance: vec![],
+            auth_token: "token".to_string(),
+        }
+    }
+
+    /// The hole this closes: `Assert` reaches the store directly, so before the
+    /// Gatekeeper was wired in, any caller could write a `permanent` claim it
+    /// was 10% sure of.
+    #[tokio::test]
+    async fn test_assert_rejects_confidence_below_the_tier_floor() {
+        let service = sqlite_service();
+
+        let err = service
+            .assert(Request::new(assert_at(Tier::Permanent, 0.1, 0.2)))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert!(
+            err.message().contains("permanent"),
+            "the rejection names the tier that refused it: {}",
+            err.message()
+        );
+
+        // Nothing reached the store.
+        let count = service
+            .health_check(Request::new(HealthCheckRequest {}))
+            .await
+            .unwrap()
+            .into_inner()
+            .claim_count;
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_assert_accepts_confidence_at_the_tier_floor() {
+        let service = sqlite_service();
+
+        // permanent_min_confidence is 0.8, and the rule is `lower < required`,
+        // so exactly the floor passes.
+        service
+            .assert(Request::new(assert_at(Tier::Permanent, 0.8, 0.95)))
+            .await
+            .unwrap();
+
+        // Ephemeral has no floor at all, so a near-worthless claim still lands.
+        service
+            .assert(Request::new(assert_at(Tier::Ephemeral, 0.01, 0.02)))
+            .await
+            .unwrap();
+    }
+
+    /// Turning the rule off has to remain possible, or an operator with a
+    /// different confidence convention cannot run the server at all.
+    #[tokio::test]
+    async fn test_assert_tier_check_can_be_configured_off() {
+        let store = SqliteStore::new(":memory:", false, 0).unwrap();
+        let service = BosWellServiceImpl::new(Arc::new(Mutex::new(store)))
+            .with_validation_config(ValidationConfig::permissive());
+
+        service
+            .assert(Request::new(assert_at(Tier::Permanent, 0.1, 0.2)))
+            .await
+            .unwrap();
+    }
+
+    /// `Learn` is a batch `Assert`, and it reached the store by the same
+    /// unguarded path. One bad claim is rejected; its neighbours are not.
+    #[tokio::test]
+    async fn test_learn_rejects_only_the_claims_below_their_tier_floor() {
+        let service = sqlite_service();
+
+        let good = Claim {
+            id: ClaimId::new(),
+            namespace: "test".to_string(),
+            subject: "Alice".to_string(),
+            predicate: "knows".to_string(),
+            object: "Bob".to_string(),
+            source_type: Claim::SOURCE_ASSERTION.to_string(),
+            confidence: (0.9, 0.95),
+            tier: DomainTier::Permanent.as_str().to_string(),
+            created_at: 1,
+            stale_at: None,
+        };
+        let bad = Claim {
+            id: ClaimId::new(),
+            subject: "Carol".to_string(),
+            confidence: (0.1, 0.2),
+            ..good.clone()
+        };
+
+        let resp = service
+            .learn(Request::new(LearnRequest {
+                claims: vec![claim_to_proto(good), claim_to_proto(bad)],
+                skip_duplicates: false,
+                auth_token: "token".to_string(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert_eq!(resp.inserted_count, 1);
+        assert_eq!(resp.error_count, 1);
+        assert!(
+            resp.errors[0].contains("permanent"),
+            "the error says which rule refused the claim: {}",
+            resp.errors[0]
+        );
     }
 
     #[tokio::test]

@@ -31,12 +31,18 @@ pub enum ValidationStatus {
 }
 
 /// Reasons for rejection
-#[derive(Debug, Clone, PartialEq)]
+///
+/// `Display` renders each reason as a caller-facing sentence, so a transport
+/// rejecting a claim reports the Gatekeeper's own words rather than inventing
+/// its own phrasing for the same rule.
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum RejectionReason {
     /// Invalid entity format (expected namespace:value)
+    #[error("{0}")]
     InvalidEntityFormat(String),
 
     /// Invalid confidence bounds
+    #[error("invalid confidence bounds [{lower}, {upper}]: {issue}")]
     InvalidConfidenceBounds {
         /// Lower bound
         lower: String,
@@ -47,12 +53,16 @@ pub enum RejectionReason {
     },
 
     /// Duplicate claim detected
+    #[error("duplicate of existing claim {existing_id}")]
     Duplicate {
         /// ID of the existing claim
         existing_id: ClaimId,
     },
 
     /// Tier confidence requirement not met
+    #[error(
+        "tier '{tier}' requires a confidence lower bound of at least {required}, got {actual}"
+    )]
     TierConfidenceRequirement {
         /// Required tier
         tier: String,
@@ -63,6 +73,7 @@ pub enum RejectionReason {
     },
 
     /// Semantic duplicate detected
+    #[error("semantic duplicate of claim {existing_id} (similarity {similarity})")]
     SemanticDuplicate {
         /// ID of similar existing claim
         existing_id: ClaimId,
@@ -125,11 +136,9 @@ impl Gatekeeper {
         }
 
         // 3. Tier appropriateness
-        if self.config.validate_tier_appropriateness {
-            if let Some(reason) = self.validate_tier_confidence(claim) {
-                reasons.push(reason);
-                quality_score -= 0.2;
-            }
+        if let Some(reason) = self.check_tier_confidence(claim) {
+            reasons.push(reason);
+            quality_score -= 0.2;
         }
 
         // 4. Duplicate detection (if store available)
@@ -222,6 +231,24 @@ impl Gatekeeper {
         }
 
         None
+    }
+
+    /// Check a claim's confidence against the floor its tier requires.
+    ///
+    /// This is the one rule of [`validate`](Gatekeeper::validate) that a
+    /// transport can apply on its own: it needs no store, so an `Assert` that
+    /// never passes through the Extractor can still be held to the tier
+    /// contract. The duplicate rules deliberately stay behind `validate`,
+    /// because the store's own assert path treats a repeat as corroboration
+    /// rather than as an error.
+    ///
+    /// Returns `None` when the claim passes, when its tier is unparseable, or
+    /// when [`ValidationConfig::validate_tier_appropriateness`] is off.
+    pub fn check_tier_confidence(&self, claim: &Claim) -> Option<RejectionReason> {
+        if !self.config.validate_tier_appropriateness {
+            return None;
+        }
+        self.validate_tier_confidence(claim)
     }
 
     /// Validate tier confidence requirements

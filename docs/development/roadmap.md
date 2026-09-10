@@ -61,11 +61,17 @@ The declarative substrate: what is so. Domain model, storage, extraction, valida
   near-duplicate rejection against the store. *shipped*
 - **`boswell validate` and the personal-memory import path.** *shipped* (#3, and #30 for
   the file-argument pairing)
-- **Tier validation on the gRPC assert path.** `validate_tier_confidence` exists and is
-  unit-tested, but `boswell-grpc` does not depend on `boswell-gatekeeper` at all — the
-  service does `Tier::try_from` and nothing else. The Gatekeeper is only reached through
-  the Extractor path, so a direct `Assert` bypasses it.
-  *open*
+- **Tier validation on the gRPC assert path.** The tier/confidence floor is now enforced
+  on `Assert` and on `Learn`, which is the same hole in batch form — before this, a caller
+  could write a `permanent` claim it was 10% sure of, because the Gatekeeper was only ever
+  reached through the Extractor. `boswell-grpc` depends on `boswell-gatekeeper` and calls
+  its rule rather than restating it. Only the tier rule is applied: the duplicate rules
+  stay behind `Gatekeeper::validate`, because the store's assert path treats a repeat as
+  corroboration rather than as an error, and entity-format validation would reject the
+  bare subjects the wire has always accepted. The floor is configurable off via
+  `BosWellServiceImpl::with_validation_config`, since an operator with a different
+  confidence convention otherwise could not run the server.
+  *shipped* (#48)
 - **LLM-backed semantic validation in the Gatekeeper.** The crate has no LLM dependency
   and the validator makes no LLM call. Distinct from the semantic *duplicate* detection,
   which ships.
