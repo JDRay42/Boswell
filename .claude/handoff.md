@@ -1,7 +1,7 @@
 ---
 status: continue
-item: none — first run, nothing picked up yet
-updated: 2026-09-10T00:00:00Z
+item: Tier validation on the gRPC assert path — shipped in #48
+updated: 2026-09-10T13:00:00Z
 ---
 
 # Handoff
@@ -12,36 +12,65 @@ intent, dead ends, and the next move.
 
 ## Current item
 
-None. This file was bootstrapped, not worked. Pick the first item from
-`docs/development/roadmap.md` yourself and replace this section with it and its
-acceptance criteria.
+None in flight. The last session took *Tier validation on the gRPC assert path* from
+Claims core and shipped it as PR #48, branch `feat/grpc-tier-validation`, commit c96ea46.
+The roadmap slice is marked *shipped (#48)*.
 
-Note that the roadmap's slices carry no order — the file says so explicitly, because
-numbering "implies an order the work does not have". Topmost is therefore not the same as
-next. Choose on what is actually unblocked, and record why you chose it.
+**Check #48 landed before doing anything else.** It was opened with CI green locally
+(fmt, clippy, full workspace tests) and left to merge on green. If it is still open, the
+CI result is the thing to look at; if it merged, `main` has it and the branch is spent.
 
 ## State
 
-Clean tree on `main` at c04ebe0. Nothing in flight: no slice in the roadmap carries the
-*in flight* status.
+`main` was at 8e32ffe when the work started. Nothing else is in flight.
+
+## What #48 actually did
+
+- `boswell-grpc` now depends on `boswell-gatekeeper`, which it never did before. That
+  dependency is the whole point of the slice: the tier/confidence floor lives in one place.
+- `Gatekeeper::check_tier_confidence` is public. It is the one rule of `validate` a
+  transport can apply alone, because it needs no store. It honors
+  `validate_tier_appropriateness`, and `validate` now routes through it rather than
+  duplicating the flag check.
+- Enforced on `Assert` **and** `Learn`. The roadmap slice named only Assert; Learn is the
+  same hole in batch form and was closed with it. One claim below its floor is rejected,
+  its neighbours are not.
+- `RejectionReason` derives `thiserror::Error`, so it has a `Display` and the transport
+  reports the Gatekeeper's wording rather than its own.
+- `BosWellServiceImpl::with_validation_config` turns the floor off.
 
 ## Tried and rejected
 
-Nothing yet.
+- **Running the full `Gatekeeper::validate` on the Assert path.** Two rules make it wrong
+  there, and both would have surfaced as test failures rather than as design arguments if
+  it had shipped. `validate_duplicates` does an exact subject/predicate/object query and
+  rejects a match — but `SqliteStore::assert_claim` treats a repeat as *corroboration*, so
+  running it would reject precisely the writes the corroboration design exists to reward.
+  `validate_entity_format` demands `namespace:value` on subject, predicate and object; the
+  wire has always accepted bare subjects (`"Alice"`), so enabling it silently breaks every
+  existing caller. Tightening either is a separate, breaking decision.
+- **Formatting the rejection message inside `boswell-grpc`.** `check_tier_confidence`
+  returns `Option<RejectionReason>`, and matching one variant out of five needs a catch-all
+  arm that can never fire. Deriving `Display` on the enum was smaller and put the wording
+  where the rule is.
 
 ## Next step
 
-Read `docs/development/roadmap.md`, choose one *open* slice, and work it to a commit.
-Two candidates were visible in the Claims core workstream at bootstrap time, both real
-gaps rather than aspirations:
+Pick a fresh slice from `docs/development/roadmap.md`. Assessed but not taken, in rough
+order of ratio:
 
-- Tier validation on the gRPC assert path. `boswell-grpc` does not depend on
-  `boswell-gatekeeper` at all, so a direct `Assert` bypasses validation entirely.
-- LLM-backed semantic validation in the Gatekeeper, distinct from the semantic duplicate
-  detection that already ships.
-
-Neither was assessed for difficulty. Read the roadmap in full before committing to one —
-there are workstreams below Claims core that this bootstrap did not read.
+- **gRPC graceful shutdown** (Transport). `crates/boswell-grpc/src/server.rs` calls
+  `.serve(addr)`; it wants `serve_with_shutdown`. The Janitor and Synthesizer already
+  handle `ctrl_c` correctly and are the model to copy. Smallest real item in the tree.
+- **Push the triple match into SQL** (Procedural memory), marked in place at
+  `crates/boswell-store/src/procedure_store.rs:351`. Self-contained.
+- **Delete the `auth_token` plumbing and enforce the loopback bind** (ADR-021). Decided,
+  not researched — fourteen `is_empty()` call sites in `boswell-grpc`, plus the router's
+  unread JWT and the SDK carrying it. Bigger than one session may hold; it spans grpc,
+  router, sdk and server config. Note the `auth_token.is_empty()` checks are still in the
+  code #48 touched, deliberately untouched — that deletion is its own slice.
+- **MCP tool surface for goals and procedures** (Transport). The largest feature lag: five
+  claim-only tools against fifteen gateway routes. Not sized.
 
 ## Environment notes
 
@@ -53,6 +82,13 @@ there are workstreams below Claims core that this bootstrap did not read.
 - Building `boswell-grpc` needs `protoc` on PATH.
 - `git fetch` before branching. Branching off a stale local `main` has bitten this repo
   before — a just-merged PR was missing and it surfaced as an unrelated missing field.
+- Full workspace `cargo test` runs in well under a minute now and `clippy` in ~16s warm.
+  Neither is a reason to skip the verify step.
+- `cargo fmt` will rewrap a long `#[error("…")]` attribute onto its own lines. Run it
+  before committing rather than hand-wrapping.
+- PR numbers are shared with issues; `gh pr list --state all --limit 1` gives the last one
+  used, and the next PR gets the next number. That is how #48 was cited in the roadmap
+  *before* the PR existed.
 
 ## Open questions
 
@@ -69,3 +105,9 @@ None. Nothing here needs a decision before work can start.
   re-derive the decisions.
 - Nothing under `.claude/` is tracked by git except this file and
   `backlog-loop.conf`. `settings.local.json` is ignored globally.
+- Assurance-based *tier ceilings* (`climb_ceiling`, `EvidenceType::tier_ceiling`) are the
+  promotion path for procedures and provenance, not claim assert. They are a different
+  mechanism from the tier/confidence floor #48 wired in; do not conflate them.
+- `confidence_from_proto` in `crates/boswell-grpc/src/conversions.rs` already rejects
+  out-of-range and inverted confidence bounds, so the Gatekeeper's
+  `validate_confidence_bounds` would be redundant on the wire path.
