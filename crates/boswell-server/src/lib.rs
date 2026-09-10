@@ -27,7 +27,10 @@ use std::sync::{Arc, Mutex};
 use boswell_devauth::{DevAuth, DevAuthConfig};
 use boswell_domain::traits::ClaimStore;
 use boswell_domain::IdentityProvider;
-use boswell_grpc::{start_server_with_identity, ServerConfig, ServerExtractor};
+use boswell_grpc::{
+    start_server_with_components, MaintenanceSnapshot, MetricsSource, ServerComponents,
+    ServerConfig, ServerExtractor,
+};
 use boswell_store::{EmbeddingModel, OllamaEmbeddingModel, SqliteStore};
 use thiserror::Error;
 
@@ -182,9 +185,11 @@ pub async fn run(config: InstanceConfig) -> Result<(), ServerError> {
     restore_vector_index(&store);
     let store = Arc::new(Mutex::new(store));
 
-    if config.janitor.enabled {
-        spawn_janitor(&config, Arc::clone(&store));
-    }
+    let janitor_metrics = if config.janitor.enabled {
+        Some(spawn_janitor(&config, Arc::clone(&store)))
+    } else {
+        None
+    };
     if config.synthesizer.enabled {
         spawn_synthesizer(&config, Arc::clone(&store));
     }
@@ -234,7 +239,13 @@ pub async fn run(config: InstanceConfig) -> Result<(), ServerError> {
         config.storage.db_path
     );
 
-    start_server_with_identity(server_config, store, extractor, identity)
+    let components = ServerComponents {
+        extractor,
+        identity,
+        metrics: janitor_metrics.map(|m| Arc::new(m) as Arc<dyn MetricsSource>),
+    };
+
+    start_server_with_components(server_config, store, components)
         .await
         .map_err(|e| ServerError::Serve(e.to_string()))
 }
@@ -286,8 +297,46 @@ fn describe_window(spec: Option<&str>) -> String {
     }
 }
 
-/// Spawn the background Janitor sweep loop against the shared store.
-fn spawn_janitor(config: &InstanceConfig, store: Arc<Mutex<SqliteStore>>) {
+/// The Janitor's counters, shared between the sweep task that writes them and
+/// the `GetMetrics` RPC that reads them.
+///
+/// The `Janitor` itself is owned by a `tokio::spawn`ed loop and reachable from
+/// nowhere else, so the loop publishes a clone of its metrics here at the end of
+/// every cycle. A scrape landing mid-sweep therefore reads the last *completed*
+/// cycle's totals rather than a half-applied one.
+#[derive(Clone, Default)]
+pub struct SharedJanitorMetrics(Arc<Mutex<boswell_janitor::JanitorMetrics>>);
+
+impl MetricsSource for SharedJanitorMetrics {
+    fn snapshot(&self) -> MaintenanceSnapshot {
+        let metrics = self.0.lock().unwrap();
+        MaintenanceSnapshot {
+            sweep_count: metrics.sweep_count as u64,
+            deleted: tier_counts(&metrics.deleted),
+            promoted: tier_counts(&metrics.promoted),
+            demoted: tier_counts(&metrics.demoted),
+        }
+    }
+}
+
+/// Flatten one of the Janitor's per-tier maps into a stably ordered list.
+///
+/// `HashMap` iteration order varies between scrapes; sorting costs nothing at
+/// four entries and makes the wire form worth asserting on.
+fn tier_counts(
+    counts: &std::collections::HashMap<boswell_domain::Tier, usize>,
+) -> Vec<(boswell_domain::Tier, u64)> {
+    let mut out: Vec<_> = counts
+        .iter()
+        .map(|(tier, count)| (*tier, *count as u64))
+        .collect();
+    out.sort_by_key(|(tier, _)| tier.as_str());
+    out
+}
+
+/// Spawn the background Janitor sweep loop against the shared store, returning
+/// the handle through which its counters can be read.
+fn spawn_janitor(config: &InstanceConfig, store: Arc<Mutex<SqliteStore>>) -> SharedJanitorMetrics {
     use crate::schedule::Schedule;
     use tokio::time::{interval, Duration};
 
@@ -304,6 +353,9 @@ fn spawn_janitor(config: &InstanceConfig, store: Arc<Mutex<SqliteStore>>) {
 
     let manage_procedures = janitor_config.auto_manage_procedures;
     let expire_receipts = janitor_config.auto_expire_receipts;
+
+    let shared = SharedJanitorMetrics::default();
+    let published = Arc::clone(&shared.0);
 
     tokio::spawn(async move {
         let mut janitor = boswell_janitor::Janitor::new(janitor_config);
@@ -350,8 +402,15 @@ fn spawn_janitor(config: &InstanceConfig, store: Arc<Mutex<SqliteStore>>) {
                 Ok(_) => {}
                 Err(e) => tracing::error!("Janitor receipt sweep failed: {}", e),
             }
+            // Publish once per cycle, after all three sweeps, so a scrape never
+            // sees claim deletions without the procedure changes from the same
+            // pass. Published even when a sweep failed: the counters that did
+            // advance are still true.
+            *published.lock().unwrap() = janitor.metrics().clone();
         }
     });
+
+    shared
 }
 
 /// Spawn the background Synthesizer pass loop against the shared store.

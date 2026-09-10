@@ -16,7 +16,7 @@ use stack::Stack;
 
 /// A full Boswell stack, running in the test process.
 mod stack {
-    use boswell_grpc::server::{start_server_with_shutdown, ServerConfig};
+    use boswell_grpc::server::{start_server_with_shutdown, ServerComponents, ServerConfig};
     use boswell_router::config::{InstanceConfig, RouterConfig};
     use boswell_router::start_server_with_shutdown as start_router_with_shutdown;
     use boswell_store::SqliteStore;
@@ -58,8 +58,7 @@ mod stack {
                 if let Err(e) = start_server_with_shutdown(
                     ServerConfig::new("127.0.0.1", grpc_port),
                     store,
-                    None,
-                    None,
+                    ServerComponents::default(),
                     async move {
                         let _ = grpc_rx.await;
                     },

@@ -331,8 +331,17 @@ Named as a workstream because it has never had one, and that is why none of it e
   handler and closes with one event. State changes are `info`, reads and rejections
   `debug`, store failures `error` — the only place a `Status::internal`'s cause survives.
   Remembered content is never a field, and a test asserts it. *shipped* (#57)
-- **Metrics export.** The Janitor tracks its own counters. Nothing is exported, and there
-  is no Prometheus dependency or `/metrics` endpoint anywhere in the workspace. *open*
+- **Metrics export.** `GET /metrics` on the gateway, Prometheus exposition format, behind
+  the `read` scope. The instance serves no HTTP (ADR-021), so the gateway scrapes the
+  Janitor's counters over the new `GetMetrics` RPC on demand and renders them; nothing is
+  pushed and nothing is cached. Rendered by hand — the workspace still has no Prometheus
+  dependency, and at four counters a registry would be indirection over the one place the
+  numbers are made. Carries no claim count on purpose: counting costs a full scan and a
+  scrape runs every few seconds. *shipped* (#64)
+- **A claim count worth scraping.** `HealthCheckResponse.claim_count` materializes every
+  claim to call `.len()` on them, which is why `/metrics` omits it. A `count_claims` on
+  `ClaimStore` backed by `SELECT COUNT(*)` would make it cheap enough to export, and would
+  fix the health endpoint's cost at the same time. *open*
 - **Benchmarks.** There is no `benches/` directory and no `criterion` dependency. Nothing
   in the repository measures anything — including the "100+ assertions/sec, queries <100ms
   p95" target the February plan asserted and no one ever checked. Either measure it or stop
@@ -832,7 +841,7 @@ Both contributors collaborate once their streams complete:
 - [ ] Reindex operation successfully rebuilds HNSW index
 - [ ] Performance benchmarks meet targets from [01-architecture.md](../architecture/01-architecture.md)
 - [ ] System handles 1000+ claims without degradation
-- [ ] Metrics exported and viewable in Prometheus
+- [x] Metrics exported and viewable in Prometheus (#64)
 
 ---
 

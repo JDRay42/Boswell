@@ -31,8 +31,8 @@ mod retry;
 mod session;
 
 pub use client::{
-    BoswellClient, ExtractResult, GoalQuerySpec, HealthStatus, IssuedProcedure, OutcomeReportSpec,
-    ProcedureQuerySpec, QueryFilter,
+    BoswellClient, ExtractResult, GoalQuerySpec, HealthStatus, IssuedProcedure, MaintenanceMetrics,
+    OutcomeReportSpec, ProcedureQuerySpec, QueryFilter,
 };
 pub use error::SdkError;
 pub use retry::{Idempotency, RetryPolicy};

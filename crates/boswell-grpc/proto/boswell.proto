@@ -56,6 +56,10 @@ service BosWellService {
 
     // Health check for instance status
     rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+
+    // Maintenance counters for scraping. The gateway renders these as Prometheus
+    // exposition text; the instance itself serves no HTTP (ADR-021).
+    rpc GetMetrics(GetMetricsRequest) returns (GetMetricsResponse);
 }
 
 // ========== Common Types ==========
@@ -522,4 +526,34 @@ message HealthCheckResponse {
     // dev-untrusted` marker so callers can see that what they are reading came
     // from fake identities and must not be trusted for long-term memory.
     bool dev_auth = 6;
+}
+
+// ========== Metrics ==========
+
+// A counter carrying the tier it was recorded against.
+message TierCount {
+    Tier tier = 1;
+    uint64 count = 2;
+}
+
+message GetMetricsRequest {
+    // Empty for now
+}
+
+// Instance maintenance counters.
+//
+// Deliberately excludes any figure that would cost a full table scan to
+// produce: a scrape runs every few seconds, and `HealthCheckResponse`'s
+// `claim_count` materializes every claim to count it.
+message GetMetricsResponse {
+    // False when no Janitor is running in this process, in which case every
+    // counter below is zero because nothing has swept, not because nothing
+    // happened.
+    bool janitor_enabled = 1;
+    uint64 sweep_count = 2;
+    // Counters recorded against the tier the claim was in at the time.
+    repeated TierCount deleted = 3;
+    repeated TierCount promoted = 4;
+    repeated TierCount demoted = 5;
+    int64 uptime_seconds = 6;
 }

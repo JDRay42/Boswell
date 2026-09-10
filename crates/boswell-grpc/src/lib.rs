@@ -21,10 +21,12 @@ pub mod server;
 pub mod service;
 
 pub use server::{
-    start_server, start_server_with_extractor, start_server_with_identity,
-    start_server_with_shutdown, ServerConfig,
+    start_server, start_server_with_components, start_server_with_shutdown, ServerComponents,
+    ServerConfig,
 };
-pub use service::{BosWellServiceImpl, ExtractOutcome, ServerExtractor};
+pub use service::{
+    BosWellServiceImpl, ExtractOutcome, MaintenanceSnapshot, MetricsSource, ServerExtractor,
+};
 
 /// Re-export of the `async_trait` attribute macro so downstream crates can
 /// implement [`ServerExtractor`] without depending on `tonic` directly.

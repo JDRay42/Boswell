@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use tonic::transport::Server;
 
 use crate::proto::bos_well_service_server::BosWellServiceServer;
-use crate::service::{BosWellServiceImpl, ServerExtractor};
+use crate::service::{BosWellServiceImpl, MetricsSource, ServerExtractor};
 
 /// Why the server refuses to start when `enable_tls` is set.
 const TLS_NOT_IMPLEMENTED: &str = "enable_tls is set, but this server does not implement TLS. \
@@ -160,10 +160,29 @@ impl ServerConfig {
     }
 }
 
-/// Start the gRPC server.
+/// The optional components a server can be started with.
 ///
-/// The `Extract` RPC returns `FailedPrecondition` under this entrypoint; use
-/// [`start_server_with_extractor`] to enable server-side LLM extraction.
+/// Every field is a port the instance can run without: no extractor means
+/// `Extract` returns `FailedPrecondition`, no identity provider means every
+/// self-report is stamped `Assurance::None`, and no metrics source means
+/// `GetMetrics` reports `janitor_enabled: false`. Bundled into one struct so
+/// attaching the next port does not add another positional parameter to every
+/// entrypoint below.
+#[derive(Default, Clone)]
+pub struct ServerComponents {
+    /// Backs the `Extract` RPC and LLM-mode hook ingest.
+    pub extractor: Option<Arc<dyn ServerExtractor>>,
+    /// The identity port (design §6), which grades a delegation chain into a
+    /// tier ceiling.
+    pub identity: Option<Arc<dyn IdentityProvider + Send + Sync>>,
+    /// The running Janitor's counters, read by the `GetMetrics` RPC.
+    pub metrics: Option<Arc<dyn MetricsSource>>,
+}
+
+/// Start the gRPC server with no optional components attached.
+///
+/// Use [`start_server_with_components`] to attach an extractor, an identity
+/// provider or the Janitor's metrics.
 ///
 /// # Errors
 /// Returns error if server fails to start or bind to address
@@ -176,45 +195,28 @@ where
     S: ClaimStore + GoalStore + ProcedureStore + Send + 'static,
     S::Error: std::fmt::Debug,
 {
-    start_server_with_extractor(config, store, None).await
+    start_server_with_components(config, store, ServerComponents::default()).await
 }
 
-/// Start the gRPC server, optionally attaching a server-side [`ServerExtractor`]
-/// that backs the `Extract` RPC (and LLM-mode hook ingest).
-///
-/// # Errors
-/// Returns error if server fails to start or bind to address
-pub async fn start_server_with_extractor<S>(
-    config: ServerConfig,
-    store: Arc<Mutex<S>>,
-    extractor: Option<Arc<dyn ServerExtractor>>,
-) -> Result<(), Box<dyn std::error::Error>>
-where
-    // See `BosWellServiceImpl`: `Send` suffices because access is via `Arc<Mutex<S>>`.
-    S: ClaimStore + GoalStore + ProcedureStore + Send + 'static,
-    S::Error: std::fmt::Debug,
-{
-    start_server_with_identity(config, store, extractor, None).await
-}
-
-/// Start the gRPC server with an optional extractor **and** an optional
-/// [`IdentityProvider`] (design §6).
+/// Start the gRPC server with the given optional components, shutting down on
+/// `ctrl_c`.
 ///
 /// The identity port is taken as a trait object, never a concrete adapter, so
 /// this crate — and every other crate on the production path — stays ignorant of
-/// which provider is in play. Passing `None` leaves every self-report stamped
-/// `Assurance::None`.
-pub async fn start_server_with_identity<S>(
+/// which provider is in play.
+///
+/// # Errors
+/// Returns error if server fails to start or bind to address
+pub async fn start_server_with_components<S>(
     config: ServerConfig,
     store: Arc<Mutex<S>>,
-    extractor: Option<Arc<dyn ServerExtractor>>,
-    identity: Option<Arc<dyn IdentityProvider + Send + Sync>>,
+    components: ServerComponents,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
     S: ClaimStore + GoalStore + ProcedureStore + Send + 'static,
     S::Error: std::fmt::Debug,
 {
-    start_server_with_shutdown(config, store, extractor, identity, ctrl_c_signal()).await
+    start_server_with_shutdown(config, store, components, ctrl_c_signal()).await
 }
 
 /// Start the gRPC server, shutting it down when `shutdown` resolves.
@@ -233,8 +235,7 @@ where
 pub async fn start_server_with_shutdown<S>(
     config: ServerConfig,
     store: Arc<Mutex<S>>,
-    extractor: Option<Arc<dyn ServerExtractor>>,
-    identity: Option<Arc<dyn IdentityProvider + Send + Sync>>,
+    components: ServerComponents,
     shutdown: impl Future<Output = ()>,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
@@ -249,11 +250,14 @@ where
     let addr = config.loopback_address()?;
 
     let mut service = BosWellServiceImpl::new(store);
-    if let Some(extractor) = extractor {
+    if let Some(extractor) = components.extractor {
         service = service.with_extractor(extractor);
     }
-    if let Some(identity) = identity {
+    if let Some(identity) = components.identity {
         service = service.with_identity_provider(identity);
+    }
+    if let Some(metrics) = components.metrics {
+        service = service.with_metrics_source(metrics);
     }
     let service_server = BosWellServiceServer::new(service);
 
@@ -340,8 +344,7 @@ mod tests {
             start_server_with_shutdown(
                 ServerConfig::new("127.0.0.1", port),
                 in_memory_store(),
-                None,
-                None,
+                ServerComponents::default(),
                 async move {
                     let _ = rx.await;
                 },
@@ -362,8 +365,7 @@ mod tests {
             start_server_with_shutdown(
                 ServerConfig::new("127.0.0.1", free_port()),
                 in_memory_store(),
-                None,
-                None,
+                ServerComponents::default(),
                 std::future::ready(()),
             ),
         )
@@ -386,8 +388,7 @@ mod tests {
             start_server_with_shutdown(
                 ServerConfig::new("127.0.0.1", free_port()).with_tls("cert.pem", "key.pem"),
                 in_memory_store(),
-                None,
-                None,
+                ServerComponents::default(),
                 std::future::pending(),
             ),
         )
@@ -413,8 +414,7 @@ mod tests {
             start_server_with_shutdown(
                 ServerConfig::new("0.0.0.0", free_port()),
                 in_memory_store(),
-                None,
-                None,
+                ServerComponents::default(),
                 std::future::pending(),
             ),
         )

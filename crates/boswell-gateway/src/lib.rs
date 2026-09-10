@@ -14,6 +14,7 @@ pub mod auth;
 pub mod config;
 pub mod error;
 pub mod handlers;
+pub mod metrics;
 pub mod state;
 
 use std::time::Duration;
@@ -106,6 +107,9 @@ pub fn build_router(config: &GatewayConfig, state: AppState) -> Router {
             "/v1/receipts/:receipt_id/report",
             post(handlers::report_outcome),
         )
+        // Unversioned on purpose: Prometheus scrape configs default to
+        // `/metrics`, and the exposition format carries its own version.
+        .route("/metrics", get(metrics::metrics))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth::auth_middleware,

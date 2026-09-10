@@ -87,6 +87,20 @@ pub fn tier_to_proto(tier: &str) -> proto::Tier {
     }
 }
 
+/// Convert per-tier counters into their wire form.
+///
+/// A tier the Janitor never touched is simply absent; the renderer downstream
+/// zero-fills so a series does not appear and disappear between scrapes.
+pub fn tier_counts_to_proto(counts: &[(DomainTier, u64)]) -> Vec<proto::TierCount> {
+    counts
+        .iter()
+        .map(|(tier, count)| proto::TierCount {
+            tier: tier_to_proto(tier.as_str()) as i32,
+            count: *count,
+        })
+        .collect()
+}
+
 /// Convert proto ConfidenceInterval to domain ConfidenceInterval
 pub fn confidence_from_proto(
     conf: Option<proto::ConfidenceInterval>,
