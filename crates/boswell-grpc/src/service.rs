@@ -77,17 +77,6 @@ fn internal_err<E: std::fmt::Debug>(context: &'static str, err: E) -> Status {
     Status::internal(format!("{}: {:?}", context, err))
 }
 
-/// The placeholder token rejection, in one place so it is logged once.
-///
-/// Recorded at `debug` rather than `warn` on purpose: the token check is the
-/// placeholder ADR-021 retires in favour of a loopback bind, and until then a
-/// caller who cannot authenticate must not be able to set this process's log
-/// volume.
-fn unauthenticated() -> Status {
-    tracing::debug!("rejected: missing authentication token");
-    Status::unauthenticated("Missing authentication token")
-}
-
 /// Implementation of the BosWellService
 pub struct BosWellServiceImpl<S: ClaimStore> {
     store: Arc<Mutex<S>>,
@@ -296,11 +285,6 @@ where
     ) -> Result<Response<AssertResponse>, Status> {
         let req = request.into_inner();
 
-        // Validate authentication token (placeholder for now)
-        if req.auth_token.is_empty() {
-            return Err(unauthenticated());
-        }
-
         // Convert proto types to domain types
         let confidence = confidence_from_proto(req.confidence)
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
@@ -361,11 +345,6 @@ where
         request: Request<QueryRequest>,
     ) -> Result<Response<QueryResponse>, Status> {
         let req = request.into_inner();
-
-        // Validate authentication token
-        if req.auth_token.is_empty() {
-            return Err(unauthenticated());
-        }
 
         let filter = req
             .filter
@@ -429,9 +408,6 @@ where
     ) -> Result<Response<SearchResponse>, Status> {
         let req = request.into_inner();
 
-        if req.auth_token.is_empty() {
-            return Err(unauthenticated());
-        }
         if req.query_text.trim().is_empty() {
             return Err(Status::invalid_argument("query_text must not be empty"));
         }
@@ -500,10 +476,6 @@ where
     ) -> Result<Response<LearnResponse>, Status> {
         let req = request.into_inner();
 
-        if req.auth_token.is_empty() {
-            return Err(unauthenticated());
-        }
-
         let mut inserted_count = 0;
         // Duplicates cannot be distinguished from other failures at the generic
         // ClaimStore layer (the error type is opaque), so they are reported under
@@ -568,10 +540,6 @@ where
     ) -> Result<Response<ForgetResponse>, Status> {
         let req = request.into_inner();
 
-        if req.auth_token.is_empty() {
-            return Err(unauthenticated());
-        }
-
         let claim_id = ClaimId::from_string(&req.claim_id)
             .map_err(|e| Status::invalid_argument(format!("Invalid claim ID: {}", e)))?;
 
@@ -613,10 +581,6 @@ where
     ) -> Result<Response<GetClaimResponse>, Status> {
         let req = request.into_inner();
 
-        if req.auth_token.is_empty() {
-            return Err(unauthenticated());
-        }
-
         let claim_id = ClaimId::from_string(&req.claim_id)
             .map_err(|e| Status::invalid_argument(format!("Invalid claim ID: {}", e)))?;
 
@@ -649,10 +613,6 @@ where
     ) -> Result<Response<GetRelationshipsResponse>, Status> {
         let req = request.into_inner();
 
-        if req.auth_token.is_empty() {
-            return Err(unauthenticated());
-        }
-
         let claim_id = ClaimId::from_string(&req.claim_id)
             .map_err(|e| Status::invalid_argument(format!("Invalid claim ID: {}", e)))?;
 
@@ -679,10 +639,6 @@ where
         request: Request<ExtractRequest>,
     ) -> Result<Response<ExtractResponse>, Status> {
         let req = request.into_inner();
-
-        if req.auth_token.is_empty() {
-            return Err(unauthenticated());
-        }
 
         let extractor = self.extractor.as_ref().ok_or_else(|| {
             tracing::debug!("rejected: extraction is not enabled");
@@ -784,9 +740,6 @@ where
         request: Request<QueryProceduresRequest>,
     ) -> Result<Response<QueryProceduresResponse>, Status> {
         let req = request.into_inner();
-        if req.auth_token.is_empty() {
-            return Err(unauthenticated());
-        }
         let issued_to = require_issued_to(&req.issued_to)?;
 
         let query = ProcedureQuery {
@@ -846,9 +799,6 @@ where
         request: Request<GetProcedureRequest>,
     ) -> Result<Response<GetProcedureResponse>, Status> {
         let req = request.into_inner();
-        if req.auth_token.is_empty() {
-            return Err(unauthenticated());
-        }
         let issued_to = require_issued_to(&req.issued_to)?;
         let id = procedure_id_from_proto(&req.id)
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
@@ -912,9 +862,6 @@ where
         request: Request<ReportOutcomeRequest>,
     ) -> Result<Response<ReportOutcomeResponse>, Status> {
         let req = request.into_inner();
-        if req.auth_token.is_empty() {
-            return Err(unauthenticated());
-        }
         let receipt_id = procedure_id_from_proto(&req.receipt_id)
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
 
@@ -997,10 +944,6 @@ where
         request: Request<QueryGoalsRequest>,
     ) -> Result<Response<QueryGoalsResponse>, Status> {
         let req = request.into_inner();
-        if req.auth_token.is_empty() {
-            return Err(unauthenticated());
-        }
-
         let query = GoalQuery {
             namespace: req.namespace,
             intent_contains: req.intent_contains,
@@ -1036,9 +979,6 @@ where
         request: Request<GetGoalRequest>,
     ) -> Result<Response<GetGoalResponse>, Status> {
         let req = request.into_inner();
-        if req.auth_token.is_empty() {
-            return Err(unauthenticated());
-        }
         let id =
             goal_id_from_proto(&req.id).map_err(|e| Status::invalid_argument(e.to_string()))?;
 
@@ -1076,9 +1016,6 @@ where
         request: Request<ExpandRequest>,
     ) -> Result<Response<ExpandResponse>, Status> {
         let req = request.into_inner();
-        if req.auth_token.is_empty() {
-            return Err(unauthenticated());
-        }
         let goal_id = goal_id_from_proto(&req.goal_id)
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
         let context = traversal_context_from_proto(req.context.as_ref());
@@ -1392,21 +1329,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_search_requires_auth() {
-        let service = BosWellServiceImpl::new(Arc::new(Mutex::new(SemanticMockStore)));
-        let resp = service
-            .search(Request::new(SearchRequest {
-                query_text: "rust".to_string(),
-                namespace: None,
-                limit: 10,
-                min_similarity: 0.5,
-                auth_token: String::new(),
-            }))
-            .await;
-        assert_eq!(resp.unwrap_err().code(), tonic::Code::Unauthenticated);
-    }
-
-    #[tokio::test]
     async fn test_search_unsupported_store() {
         let service = BosWellServiceImpl::new(Arc::new(Mutex::new(MockStore)));
         let resp = service
@@ -1415,7 +1337,6 @@ mod tests {
                 namespace: None,
                 limit: 10,
                 min_similarity: 0.5,
-                auth_token: "token".to_string(),
             }))
             .await;
         assert_eq!(resp.unwrap_err().code(), tonic::Code::FailedPrecondition);
@@ -1432,7 +1353,6 @@ mod tests {
                 namespace: None,
                 limit: 10,
                 min_similarity: 0.5,
-                auth_token: "token".to_string(),
             }))
             .await
             .unwrap()
@@ -1447,7 +1367,6 @@ mod tests {
                 namespace: Some("lang".to_string()),
                 limit: 10,
                 min_similarity: 0.5,
-                auth_token: "token".to_string(),
             }))
             .await
             .unwrap()
@@ -1495,7 +1414,6 @@ mod tests {
                 }),
                 tier: Tier::Task as i32,
                 provenance: vec![],
-                auth_token: "token".to_string(),
             }))
             .await
             .unwrap()
@@ -1513,7 +1431,6 @@ mod tests {
             confidence: Some(ConfidenceInterval { lower, upper }),
             tier: tier as i32,
             provenance: vec![],
-            auth_token: "token".to_string(),
         }
     }
 
@@ -1606,7 +1523,6 @@ mod tests {
             .learn(Request::new(LearnRequest {
                 claims: vec![claim_to_proto(good), claim_to_proto(bad)],
                 skip_duplicates: false,
-                auth_token: "token".to_string(),
             }))
             .await
             .unwrap()
@@ -1630,7 +1546,6 @@ mod tests {
         let found = service
             .get_claim(Request::new(GetClaimRequest {
                 claim_id: id.clone(),
-                auth_token: "token".to_string(),
             }))
             .await
             .unwrap()
@@ -1642,26 +1557,12 @@ mod tests {
         let missing = service
             .get_claim(Request::new(GetClaimRequest {
                 claim_id: ClaimId::new().to_string(),
-                auth_token: "token".to_string(),
             }))
             .await
             .unwrap()
             .into_inner();
         assert!(!missing.found);
         assert!(missing.claim.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_get_claim_requires_auth() {
-        let service = sqlite_service();
-        let err = service
-            .get_claim(Request::new(GetClaimRequest {
-                claim_id: ClaimId::new().to_string(),
-                auth_token: String::new(),
-            }))
-            .await
-            .unwrap_err();
-        assert_eq!(err.code(), tonic::Code::Unauthenticated);
     }
 
     #[tokio::test]
@@ -1673,7 +1574,6 @@ mod tests {
             .forget(Request::new(ForgetRequest {
                 claim_id: id.clone(),
                 reason: String::new(),
-                auth_token: "token".to_string(),
             }))
             .await
             .unwrap()
@@ -1684,7 +1584,6 @@ mod tests {
         let found = service
             .get_claim(Request::new(GetClaimRequest {
                 claim_id: id.clone(),
-                auth_token: "token".to_string(),
             }))
             .await
             .unwrap()
@@ -1696,7 +1595,6 @@ mod tests {
             .forget(Request::new(ForgetRequest {
                 claim_id: id,
                 reason: String::new(),
-                auth_token: "token".to_string(),
             }))
             .await
             .unwrap()
@@ -1729,10 +1627,7 @@ mod tests {
         }
 
         let rels = service
-            .get_relationships(Request::new(GetRelationshipsRequest {
-                claim_id: a,
-                auth_token: "token".to_string(),
-            }))
+            .get_relationships(Request::new(GetRelationshipsRequest { claim_id: a }))
             .await
             .unwrap()
             .into_inner();
@@ -1779,7 +1674,6 @@ mod tests {
                 }),
                 mode: QueryMode::Fast as i32,
                 limit: 100,
-                auth_token: "token".to_string(),
             }))
             .await
             .unwrap()
@@ -1839,7 +1733,6 @@ mod tests {
                 }),
                 mode: QueryMode::Fast as i32,
                 limit: 5,
-                auth_token: "token".to_string(),
             }))
             .await
             .unwrap()
@@ -1859,7 +1752,6 @@ mod tests {
                 namespace: "test".to_string(),
                 tier: "task".to_string(),
                 source_id: String::new(),
-                auth_token: "token".to_string(),
             }))
             .await
             .unwrap_err();
@@ -1964,7 +1856,6 @@ mod tests {
                 issued_to: issued_to.into(),
                 task_id: Some("task-1".into()),
                 session_id: Some("session-1".into()),
-                auth_token: "token".into(),
             }
         }
 
@@ -1977,7 +1868,6 @@ mod tests {
                 executor_confidence: None,
                 cost: None,
                 notes: None,
-                auth_token: "token".into(),
             }
         }
 
@@ -2252,7 +2142,6 @@ mod tests {
                     namespace_scope: Some("person:someone-else".into()),
                     task_id: None,
                     session_id: None,
-                    auth_token: "token".into(),
                 }))
                 .await
                 .unwrap()
@@ -2285,7 +2174,6 @@ mod tests {
                     namespace_scope: Some("person:jd".into()),
                     task_id: None,
                     session_id: None,
-                    auth_token: "token".into(),
                 }))
                 .await
                 .unwrap()
@@ -2433,7 +2321,6 @@ mod tests {
                     context_tags: vec!["time:quick".into()],
                 }),
                 namespace_scope: None,
-                auth_token: "token".to_string(),
             }
         }
 
@@ -2655,7 +2542,6 @@ mod tests {
                 .get_goal(Request::new(GetGoalRequest {
                     id: parent.to_string(),
                     namespace_scope: None,
-                    auth_token: "token".to_string(),
                 }))
                 .await
                 .unwrap()
@@ -2684,7 +2570,6 @@ mod tests {
                     namespace: Some("person:jd".into()),
                     intent_contains: Some("prepare-breakfast".into()),
                     limit: None,
-                    auth_token: "token".to_string(),
                 }))
                 .await
                 .unwrap()
@@ -2696,7 +2581,6 @@ mod tests {
                     namespace: Some("person:someone-else".into()),
                     intent_contains: None,
                     limit: None,
-                    auth_token: "token".to_string(),
                 }))
                 .await
                 .unwrap()
@@ -2712,7 +2596,6 @@ mod tests {
                 .get_goal(Request::new(GetGoalRequest {
                     id: parent.to_string(),
                     namespace_scope: Some("person:someone-else".into()),
-                    auth_token: "token".to_string(),
                 }))
                 .await
                 .unwrap()
@@ -2720,17 +2603,6 @@ mod tests {
 
             assert!(!resp.found);
             assert!(resp.goal.is_none());
-        }
-
-        #[tokio::test]
-        async fn traversal_requires_auth() {
-            let (service, parent) = service_with_decomposition();
-
-            let mut req = expand_req(&parent.to_string());
-            req.auth_token = String::new();
-
-            let err = service.expand(Request::new(req)).await.unwrap_err();
-            assert_eq!(err.code(), tonic::Code::Unauthenticated);
         }
 
         /// A store that holds no goals answers `Unimplemented` rather than an
@@ -2860,7 +2732,6 @@ mod tests {
                     issued_to: principal.to_string(),
                     task_id: None,
                     session_id: None,
-                    auth_token: "token".to_string(),
                 }))
                 .await
                 .unwrap()
@@ -2882,7 +2753,6 @@ mod tests {
                     executor_confidence: None,
                     cost: None,
                     notes: None,
-                    auth_token: "token".to_string(),
                 }))
                 .await
                 .unwrap()
@@ -3192,7 +3062,6 @@ mod tests {
                     }),
                     tier: Tier::Task as i32,
                     provenance: vec![],
-                    auth_token: "token".to_string(),
                 }))
                 .await
                 .unwrap();
@@ -3237,26 +3106,6 @@ mod tests {
                 .is_some_and(|r| r.contains("permanent")));
         }
 
-        /// Deliberately `debug`, not `warn`: this rejection is reachable by an
-        /// unauthenticated caller, and a `warn` here would hand them the
-        /// process's log volume. See `unauthenticated`.
-        #[tokio::test]
-        async fn an_unauthenticated_call_cannot_raise_the_log_level() {
-            let service = sqlite_service();
-            let (log, _guard) = record();
-
-            service
-                .assert(Request::new(AssertRequest {
-                    auth_token: String::new(),
-                    ..assert_at(Tier::Task, 0.6, 0.9)
-                }))
-                .await
-                .unwrap_err();
-
-            let event = log.expect("rejected: missing authentication token");
-            assert_eq!(event.level, tracing::Level::DEBUG);
-        }
-
         /// `Learn` answers `Ok` however many claims it dropped, so a caller
         /// losing half its writes to the tier floor sees nothing. The `warn` is
         /// the only signal.
@@ -3286,7 +3135,6 @@ mod tests {
                 .learn(Request::new(LearnRequest {
                     claims: vec![good, bad],
                     skip_duplicates: false,
-                    auth_token: "token".to_string(),
                 }))
                 .await
                 .unwrap()
@@ -3312,7 +3160,6 @@ mod tests {
                 .forget(Request::new(ForgetRequest {
                     claim_id: id.clone(),
                     reason: String::new(),
-                    auth_token: "token".to_string(),
                 }))
                 .await
                 .unwrap();
@@ -3340,7 +3187,6 @@ mod tests {
                     }),
                     mode: QueryMode::Fast as i32,
                     limit: 5,
-                    auth_token: "token".to_string(),
                 }))
                 .await
                 .unwrap();

@@ -36,7 +36,11 @@ pub enum ConfigError {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct InstanceConfig {
-    /// Address the gRPC server binds to (e.g. `127.0.0.1`).
+    /// Address the gRPC server binds to. **Loopback only.**
+    ///
+    /// A routable address is a startup error, not a warning: the instance
+    /// authenticates nothing and sits inside the boundary the HTTP gateway
+    /// draws (ADR-021). Enforced in `boswell_grpc::ServerConfig`.
     pub bind_address: String,
 
     /// Port the gRPC server binds to (e.g. `50051`).
@@ -379,7 +383,9 @@ impl InstanceConfig {
 /// Commented starter config emitted by the `init` subcommand.
 pub const STARTER_TOML: &str = r#"# Boswell instance server configuration
 
-# Address and port the gRPC server binds to.
+# Address and port the gRPC server binds to. Loopback only — the instance does not
+# authenticate, so a routable address is refused at startup (ADR-021). Put
+# boswell-gateway in front of it to reach memory from anywhere else.
 bind_address = "127.0.0.1"
 bind_port = 50051
 

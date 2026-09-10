@@ -123,7 +123,7 @@ message AssertRequest {
     ConfidenceInterval confidence = 5;
     Tier tier = 6;                            // Optional tier targeting
     repeated ProvenanceEntry provenance = 7;  // Provenance chain
-    string auth_token = 8;                    // Authentication token
+    reserved 8;  // was auth_token; deleted by ADR-021
 }
 
 message AssertResponse {
@@ -154,7 +154,7 @@ message QueryRequest {
     QueryFilter filter = 1;
     QueryMode mode = 2;
     int32 limit = 3;                     // Maximum results (default: 100)
-    string auth_token = 4;
+    reserved 4;  // was auth_token; deleted by ADR-021
 }
 
 message QueryResponse {
@@ -170,7 +170,7 @@ message SearchRequest {
     optional string namespace = 2;       // Optional namespace prefix filter
     int32 limit = 3;                     // Maximum results (default: 10)
     double min_similarity = 4;           // Minimum cosine similarity [0.0, 1.0]
-    string auth_token = 5;
+    reserved 5;  // was auth_token; deleted by ADR-021
 }
 
 message SearchResult {
@@ -189,7 +189,7 @@ message SearchResponse {
 message LearnRequest {
     repeated Claim claims = 1;           // Batch of claims to insert
     bool skip_duplicates = 2;            // Skip duplicate detection for performance
-    string auth_token = 3;
+    reserved 3;  // was auth_token; deleted by ADR-021
 }
 
 message LearnResponse {
@@ -205,7 +205,7 @@ message LearnResponse {
 message ForgetRequest {
     string claim_id = 1;                 // Claim to mark for eviction
     string reason = 2;                   // Optional eviction reason
-    string auth_token = 3;
+    reserved 3;  // was auth_token; deleted by ADR-021
 }
 
 message ForgetResponse {
@@ -217,7 +217,7 @@ message ForgetResponse {
 
 message GetClaimRequest {
     string claim_id = 1;                 // ULID of the claim to fetch
-    string auth_token = 2;
+    reserved 2;  // was auth_token; deleted by ADR-021
 }
 
 message GetClaimResponse {
@@ -229,7 +229,7 @@ message GetClaimResponse {
 
 message GetRelationshipsRequest {
     string claim_id = 1;                 // ULID whose relationships to fetch
-    string auth_token = 2;
+    reserved 2;  // was auth_token; deleted by ADR-021
 }
 
 message GetRelationshipsResponse {
@@ -243,7 +243,7 @@ message ExtractRequest {
     string namespace = 2;                // Target namespace for extracted claims
     string tier = 3;                     // Optional tier (default: "task")
     string source_id = 4;                // Optional source identifier for provenance
-    string auth_token = 5;
+    reserved 5;  // was auth_token; deleted by ADR-021
 }
 
 message ExtractResponse {
@@ -352,7 +352,7 @@ message QueryProceduresRequest {
     string issued_to = 6;                // principal the receipts are issued to
     optional string task_id = 7;
     optional string session_id = 8;
-    string auth_token = 9;
+    reserved 9;  // was auth_token; deleted by ADR-021
 }
 
 message QueryProceduresResponse {
@@ -371,7 +371,7 @@ message GetProcedureRequest {
     // probe cannot leave an unanswerable obligation against someone else's
     // procedure. Empty or "*" means unrestricted.
     optional string namespace_scope = 5;
-    string auth_token = 6;
+    reserved 6;  // was auth_token; deleted by ADR-021
 }
 
 message GetProcedureResponse {
@@ -390,7 +390,7 @@ message ReportOutcomeRequest {
     optional double executor_confidence = 5;
     optional double cost = 6;
     optional string notes = 7;
-    string auth_token = 8;
+    reserved 8;  // was auth_token; deleted by ADR-021
 }
 
 message ReportOutcomeResponse {
@@ -454,7 +454,7 @@ message QueryGoalsRequest {
     optional string namespace = 1;
     optional string intent_contains = 2; // case-insensitive substring of intent
     optional uint32 limit = 3;
-    string auth_token = 4;
+    reserved 4;  // was auth_token; deleted by ADR-021
 }
 
 message QueryGoalsResponse {
@@ -468,7 +468,7 @@ message GetGoalRequest {
     // Namespace the caller is confined to; a goal outside it reads as not-found.
     // Empty or "*" means unrestricted.
     optional string namespace_scope = 2;
-    string auth_token = 3;
+    reserved 3;  // was auth_token; deleted by ADR-021
 }
 
 message GetGoalResponse {
@@ -484,7 +484,7 @@ message ExpandRequest {
     // checked *before* any surface is built so a cross-namespace probe learns
     // nothing about another namespace's decomposition.
     optional string namespace_scope = 3;
-    string auth_token = 4;
+    reserved 4;  // was auth_token; deleted by ADR-021
 }
 
 message ExpandResponse {

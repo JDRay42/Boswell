@@ -55,7 +55,9 @@ The SDK follows this flow:
 
 1. **Session Establishment**: Client POSTs to Router `/session/establish` to get JWT token and instance topology
 2. **gRPC Connection**: Client connects to assigned instance endpoint
-3. **Operations**: Client includes token in all gRPC request `auth_token` fields
+3. **Operations**: Client calls the instance directly. The session token is *not* sent on
+   gRPC requests — the instance is inside the security boundary and authenticates nothing
+   (ADR-021)
 4. **Error Handling**: Maps gRPC errors to user-friendly SDK errors
 
 ## Error Handling

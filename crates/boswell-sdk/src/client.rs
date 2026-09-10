@@ -258,6 +258,10 @@ pub struct QueryFilter {
 /// Boswell SDK client
 pub struct BoswellClient {
     router_endpoint: String,
+    /// The router's session JWT, held as the record that topology discovery
+    /// happened. It is **not** sent on gRPC requests: the instance is inside the
+    /// security boundary and authenticates nothing (ADR-021), so there is no
+    /// `auth_token` field to carry it in. Read by [`Self::is_connected`].
     session_token: Option<String>,
     instance_endpoint: Option<String>,
     grpc_client: Option<BosWellServiceClient<Channel>>,
@@ -394,7 +398,6 @@ impl BoswellClient {
 
         loop {
             let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
-            let token = self.session_token.as_ref().ok_or(SdkError::NotConnected)?;
 
             let confidence_interval =
                 confidence.map(|(lower, upper)| ConfidenceInterval { lower, upper });
@@ -411,7 +414,6 @@ impl BoswellClient {
                 confidence: confidence_interval,
                 tier: tier_i32,
                 provenance: vec![],
-                auth_token: token.clone(),
             };
 
             match client.assert(request).await {
@@ -434,7 +436,6 @@ impl BoswellClient {
 
         loop {
             let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
-            let token = self.session_token.as_ref().ok_or(SdkError::NotConnected)?;
 
             let grpc_filter = GrpcQueryFilter {
                 namespace: filter.namespace.clone(),
@@ -450,7 +451,6 @@ impl BoswellClient {
                 filter: Some(grpc_filter),
                 mode: GrpcQueryMode::Fast as i32,
                 limit: 100,
-                auth_token: token.clone(),
             };
 
             match client.query(request).await {
@@ -489,14 +489,12 @@ impl BoswellClient {
 
         loop {
             let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
-            let token = self.session_token.as_ref().ok_or(SdkError::NotConnected)?;
 
             let request = SearchRequest {
                 query_text: query_text.to_string(),
                 namespace: namespace.clone(),
                 limit: limit as i32,
                 min_similarity,
-                auth_token: token.clone(),
             };
 
             match client.search(request).await {
@@ -525,7 +523,6 @@ impl BoswellClient {
 
         loop {
             let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
-            let token = self.session_token.as_ref().ok_or(SdkError::NotConnected)?;
 
             let grpc_claims: Vec<_> = claims
                 .iter()
@@ -535,7 +532,6 @@ impl BoswellClient {
             let request = LearnRequest {
                 claims: grpc_claims,
                 skip_duplicates: false,
-                auth_token: token.clone(),
             };
 
             match client.learn(request).await {
@@ -554,14 +550,12 @@ impl BoswellClient {
 
         'retry: loop {
             let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
-            let token = self.session_token.as_ref().ok_or(SdkError::NotConnected)?;
 
             // Execute forget operations sequentially
             for claim_id in &claim_ids {
                 let request = ForgetRequest {
                     claim_id: claim_id.to_string(),
                     reason: String::new(),
-                    auth_token: token.clone(),
                 };
 
                 match client.forget(request).await {
@@ -589,11 +583,9 @@ impl BoswellClient {
 
         loop {
             let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
-            let token = self.session_token.as_ref().ok_or(SdkError::NotConnected)?;
 
             let request = GetClaimRequest {
                 claim_id: claim_id.to_string(),
-                auth_token: token.clone(),
             };
 
             match client.get_claim(request).await {
@@ -624,11 +616,9 @@ impl BoswellClient {
 
         loop {
             let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
-            let token = self.session_token.as_ref().ok_or(SdkError::NotConnected)?;
 
             let request = GetRelationshipsRequest {
                 claim_id: claim_id.to_string(),
-                auth_token: token.clone(),
             };
 
             match client.get_relationships(request).await {
@@ -663,14 +653,12 @@ impl BoswellClient {
 
         loop {
             let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
-            let token = self.session_token.as_ref().ok_or(SdkError::NotConnected)?;
 
             let request = ExtractRequest {
                 text: text.to_string(),
                 namespace: namespace.to_string(),
                 tier: tier.to_string(),
                 source_id: source_id.to_string(),
-                auth_token: token.clone(),
             };
 
             match client.extract(request).await {
@@ -719,7 +707,6 @@ impl BoswellClient {
 
         loop {
             let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
-            let token = self.session_token.as_ref().ok_or(SdkError::NotConnected)?;
 
             let request = QueryProceduresRequest {
                 namespace: query.namespace.clone(),
@@ -730,7 +717,6 @@ impl BoswellClient {
                 issued_to: query.issued_to.clone(),
                 task_id: query.task_id.clone(),
                 session_id: query.session_id.clone(),
-                auth_token: token.clone(),
             };
 
             match client.query_procedures(request).await {
@@ -765,7 +751,6 @@ impl BoswellClient {
 
         loop {
             let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
-            let token = self.session_token.as_ref().ok_or(SdkError::NotConnected)?;
 
             let request = GetProcedureRequest {
                 id: id.to_string(),
@@ -773,7 +758,6 @@ impl BoswellClient {
                 namespace_scope: namespace_scope.clone(),
                 task_id: task_id.clone(),
                 session_id: session_id.clone(),
-                auth_token: token.clone(),
             };
 
             match client.get_procedure(request).await {
@@ -807,7 +791,6 @@ impl BoswellClient {
 
         loop {
             let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
-            let token = self.session_token.as_ref().ok_or(SdkError::NotConnected)?;
 
             let request = ReportOutcomeRequest {
                 receipt_id: report.receipt_id.clone(),
@@ -817,7 +800,6 @@ impl BoswellClient {
                 executor_confidence: report.executor_confidence,
                 cost: report.cost,
                 notes: report.notes.clone(),
-                auth_token: token.clone(),
             };
 
             match client.report_outcome(request).await {
@@ -842,13 +824,11 @@ impl BoswellClient {
 
         loop {
             let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
-            let token = self.session_token.as_ref().ok_or(SdkError::NotConnected)?;
 
             let request = QueryGoalsRequest {
                 namespace: query.namespace.clone(),
                 intent_contains: query.intent_contains.clone(),
                 limit: query.limit,
-                auth_token: token.clone(),
             };
 
             match client.query_goals(request).await {
@@ -882,12 +862,10 @@ impl BoswellClient {
 
         loop {
             let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
-            let token = self.session_token.as_ref().ok_or(SdkError::NotConnected)?;
 
             let request = GetGoalRequest {
                 id: id.to_string(),
                 namespace_scope: namespace_scope.clone(),
-                auth_token: token.clone(),
             };
 
             match client.get_goal(request).await {
@@ -927,7 +905,6 @@ impl BoswellClient {
 
         loop {
             let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
-            let token = self.session_token.as_ref().ok_or(SdkError::NotConnected)?;
 
             let request = ExpandRequest {
                 goal_id: goal_id.to_string(),
@@ -935,7 +912,6 @@ impl BoswellClient {
                     context_tags: context_tags.clone(),
                 }),
                 namespace_scope: namespace_scope.clone(),
-                auth_token: token.clone(),
             };
 
             match client.expand(request).await {
