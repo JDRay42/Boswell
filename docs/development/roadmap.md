@@ -304,6 +304,14 @@ that needs a model calls one trait, and configuration decides who answers it.
 - **Name a chat model that exists.** Every default, sample and doc pointed at
   `qwen2.5:7b`, and the shipped `config/instance.toml` had drifted from the sample the
   server itself emits — it was missing `[extraction]` entirely. *shipped* (#42)
+- **Quiet hours for the background jobs.** `[janitor]`, `[synthesizer]` and
+  `[contradiction]` each take an optional `run_between = "02:00-06:00"` in local time,
+  so the heavy local-model work can be kept to hours nobody is using the machine. The
+  window is a gate, not a schedule: the interval still says how often, and a windowed
+  job polls rather than sleeping a full interval, because a twelve-hour interval landing
+  at 13:00 and 01:00 would never fall inside a four-hour night window. An unparseable
+  window stops the server at startup, since a window that never opens fails silently at
+  2 a.m. where nobody is watching. *shipped* (#43)
 - **Cost and token accounting.** Every hosted response carries usage counts and every one
   of them is discarded. Nothing in Boswell can answer what an extraction run cost. *open*
 - **Streaming, tool use and multi-turn conversation.** Absent on purpose. The trait is one
