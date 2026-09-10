@@ -1,7 +1,7 @@
 ---
 status: continue
 item: gRPC graceful shutdown — shipped in #50
-updated: 2026-09-10T21:05:00Z
+updated: 2026-09-10T21:20:00Z
 ---
 
 # Handoff
@@ -16,14 +16,13 @@ None in flight. The last session took *gRPC graceful shutdown* from Transport an
 it as PR #50, branch `feat/grpc-graceful-shutdown`, commit 134bda6. The roadmap slice is
 marked *shipped (#50)*.
 
-**Check #50 before anything else.** It was opened with CI running and this file was
-written before the result was known. If it merged, the branch is spent and you start
-fresh. If CI is red, fixing it is your item — do not start a new slice on top of it.
+#50 has landed. CI was green and it merged as 28d1a8f; the branch is deleted and spent.
+Nothing is waiting on you from it.
 
 ## State
 
-Branch `feat/grpc-graceful-shutdown` at 134bda6, one commit ahead of `main` (ed44f99).
-Tree clean. All three CI commands passed locally before the push.
+`main` at 28d1a8f, clean, nothing in flight. The next session starts fresh on a slice of
+its own choosing.
 
 ## What #50 actually did
 
