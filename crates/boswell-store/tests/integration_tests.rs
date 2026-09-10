@@ -475,3 +475,80 @@ fn test_stale_at_field() {
         "Should preserve stale_at value"
     );
 }
+
+/// `count_claims` and `query_claims` share one filter builder so they cannot
+/// disagree. This walks a spread of queries and asserts the equivalence the
+/// trait promises, including the limited case — a count under a limit is the
+/// number of rows that would come back, not the number that match.
+#[test]
+fn test_count_claims_agrees_with_query_claims() {
+    let mut store = SqliteStore::new(":memory:", false, 0).unwrap();
+
+    for i in 0..10 {
+        let claim = Claim {
+            id: ClaimId::new(),
+            namespace: format!("ns{}", i % 2),
+            subject: format!("Subject{}", i),
+            predicate: "is".to_string(),
+            object: "something".to_string(),
+            source_type: if i % 3 == 0 { "import" } else { "assertion" }.to_string(),
+            confidence: (0.1 * i as f64, 0.9),
+            tier: if i % 2 == 0 { "task" } else { "permanent" }.to_string(),
+            created_at: 1000 + i as u64,
+            stale_at: None,
+        };
+        store.assert_claim(claim).unwrap();
+    }
+
+    let queries = [
+        ClaimQuery::default(),
+        ClaimQuery {
+            namespace: Some("ns0".to_string()),
+            ..Default::default()
+        },
+        ClaimQuery {
+            tier: Some("permanent".to_string()),
+            ..Default::default()
+        },
+        ClaimQuery {
+            source_type: Some("import".to_string()),
+            ..Default::default()
+        },
+        ClaimQuery {
+            min_confidence: Some(0.5),
+            ..Default::default()
+        },
+        ClaimQuery {
+            subject: Some("Subject7".to_string()),
+            ..Default::default()
+        },
+        ClaimQuery {
+            tier: Some("task".to_string()),
+            limit: Some(2),
+            ..Default::default()
+        },
+        ClaimQuery {
+            tier: Some("nonexistent".to_string()),
+            ..Default::default()
+        },
+    ];
+
+    for query in &queries {
+        let counted = store.count_claims(query).unwrap();
+        let queried = store.query_claims(query).unwrap().len() as u64;
+        assert_eq!(counted, queried, "count and query disagree for {:?}", query);
+    }
+
+    // The spread is only worth something if some of those queries matched.
+    assert_eq!(store.count_claims(&ClaimQuery::default()).unwrap(), 10);
+    assert_eq!(
+        store
+            .count_claims(&ClaimQuery {
+                tier: Some("task".to_string()),
+                limit: Some(2),
+                ..Default::default()
+            })
+            .unwrap(),
+        2
+    );
+}

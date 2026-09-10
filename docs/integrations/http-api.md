@@ -384,6 +384,12 @@ boswell_instance_up 1
 # HELP boswell_instance_uptime_seconds Seconds the instance has been running.
 # TYPE boswell_instance_uptime_seconds gauge
 boswell_instance_uptime_seconds 3600
+# HELP boswell_claims Claims currently held by the instance, by tier.
+# TYPE boswell_claims gauge
+boswell_claims{tier="ephemeral"} 118
+boswell_claims{tier="task"} 402
+boswell_claims{tier="project"} 77
+boswell_claims{tier="permanent"} 15
 # HELP boswell_janitor_enabled Whether a Janitor sweep loop is running in the instance.
 # TYPE boswell_janitor_enabled gauge
 boswell_janitor_enabled 1
@@ -398,7 +404,7 @@ boswell_janitor_claims_deleted_total{tier="project"} 0
 boswell_janitor_claims_deleted_total{tier="permanent"} 0
 ```
 
-Three things to know before alerting on it:
+Four things to know before alerting on it:
 
 - **An unreachable instance is a 200, not an error.** The response is `boswell_instance_up 0`
   and nothing else. A failed HTTP scrape cannot be told apart from a Prometheus that could
@@ -409,9 +415,13 @@ Three things to know before alerting on it:
   all three of its sweeps complete, so a scrape landing mid-cycle reads the previous cycle's
   totals rather than a half-applied one. They reset when the instance restarts, which is
   what `counter` means.
+- **`boswell_claims` is a gauge and is independent of the Janitor.** It is a census of the
+  store, so it is populated even when `boswell_janitor_enabled` is 0, and it goes down as
+  well as up. Each tier is one `SELECT COUNT(*)`, so it costs the same whether the instance
+  holds ten claims or ten million. A tier missing from the response is a tier whose count
+  failed, which is why it is absent rather than zero.
 
-There is deliberately no claim count here. Counting claims costs a full scan, and a scrape
-runs every few seconds; `GET /v1/health` carries `claim_count` for the occasional look.
+`sum(boswell_claims)` is the same figure `GET /v1/health` reports as `claim_count`.
 
 ## `X-Boswell-Auth` — the development-identity marker
 

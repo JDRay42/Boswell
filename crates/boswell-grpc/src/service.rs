@@ -30,7 +30,7 @@ use crate::conversions::{
     claim_from_proto, claim_to_proto, confidence_from_proto, expanded_candidate_to_proto,
     factor_reading_to_proto, goal_id_from_proto, goal_to_proto, outcome_report_from_proto,
     procedure_id_from_proto, procedure_to_proto, receipt_to_proto, relationship_to_proto,
-    tier_counts_to_proto, tier_from_proto, traversal_context_from_proto,
+    tier_counts_to_proto, tier_from_proto, tier_to_proto, traversal_context_from_proto,
 };
 use crate::proto::bos_well_service_server::BosWellService;
 use crate::proto::*;
@@ -308,6 +308,52 @@ impl<S: ClaimStore> BosWellServiceImpl<S> {
             timestamp: now,
             dev_provider: self.is_dev_auth(),
         }
+    }
+}
+
+/// Helpers that need the store's error type to be printable, which the trait
+/// impl below requires anyway.
+impl<S> BosWellServiceImpl<S>
+where
+    S: ClaimStore,
+    S::Error: std::fmt::Debug,
+{
+    /// How many claims sit in each tier right now, in wire form.
+    ///
+    /// One `COUNT` per tier rather than one query returning every claim: this
+    /// runs on every Prometheus scrape, so it must not be proportional to how
+    /// much has been remembered.
+    ///
+    /// A tier whose count fails is left out rather than reported as zero. An
+    /// absent series is a gap a dashboard draws as a gap; a zero is a claim that
+    /// the tier is empty.
+    fn count_claims_by_tier(&self) -> Vec<TierCount> {
+        let store = self.store.lock().unwrap();
+
+        [
+            DomainTier::Ephemeral,
+            DomainTier::Task,
+            DomainTier::Project,
+            DomainTier::Permanent,
+        ]
+        .iter()
+        .filter_map(|tier| {
+            let query = ClaimQuery {
+                tier: Some(tier.as_str().to_string()),
+                ..Default::default()
+            };
+            match store.count_claims(&query) {
+                Ok(count) => Some(TierCount {
+                    tier: tier_to_proto(tier.as_str()) as i32,
+                    count,
+                }),
+                Err(e) => {
+                    tracing::warn!(tier = tier.as_str(), error = ?e, "metrics could not count claims in tier");
+                    None
+                }
+            }
+        })
+        .collect()
     }
 }
 
@@ -754,8 +800,8 @@ where
         // A store that cannot be counted still reports healthy, which is a
         // separate argument; what it must not do is answer zero and read as an
         // empty instance.
-        let claim_count = match store.query_claims(&query) {
-            Ok(claims) => claims.len() as i64,
+        let claim_count = match store.count_claims(&query) {
+            Ok(count) => count as i64,
             Err(e) => {
                 tracing::warn!(error = ?e, "health check could not count claims, reporting 0");
                 0
@@ -781,11 +827,17 @@ where
     ) -> Result<Response<GetMetricsResponse>, Status> {
         let uptime_seconds = self.start_time.elapsed().as_secs() as i64;
 
+        // How much is remembered is a fact about the store, not about the
+        // Janitor, so it is gathered before the enabled check and reported
+        // either way.
+        let claims = self.count_claims_by_tier();
+
         let Some(source) = self.metrics.as_ref() else {
             tracing::debug!("metrics served with no janitor attached");
             return Ok(Response::new(GetMetricsResponse {
                 janitor_enabled: false,
                 uptime_seconds,
+                claims,
                 ..Default::default()
             }));
         };
@@ -800,6 +852,7 @@ where
             promoted: tier_counts_to_proto(&snapshot.promoted),
             demoted: tier_counts_to_proto(&snapshot.demoted),
             uptime_seconds,
+            claims,
         }))
     }
 
@@ -1458,8 +1511,9 @@ mod tests {
         let health = response.into_inner();
 
         assert_eq!(health.status, health_check_response::Status::Healthy as i32);
-        // health_check counts claims via query_claims; MockStore returns exactly
-        // one canned claim, so the count path is actually verified (not just >= 0).
+        // health_check counts claims via count_claims, which MockStore inherits
+        // as the default (query then length); MockStore returns exactly one
+        // canned claim, so the count path is verified, not just >= 0.
         assert_eq!(health.claim_count, 1);
     }
 
@@ -1515,6 +1569,47 @@ mod tests {
         assert_eq!(metrics.deleted[0].count, 9);
         assert_eq!(metrics.promoted[0].tier, Tier::Task as i32);
         assert_eq!(metrics.demoted[0].tier, Tier::Permanent as i32);
+    }
+
+    /// The claim census is a fact about the store, so it is reported whether or
+    /// not a Janitor is attached — this service has none. Every tier gets an
+    /// entry, in lifecycle order, so an empty tier is a zero rather than a hole.
+    #[tokio::test]
+    async fn get_metrics_counts_the_claims_in_each_tier() {
+        let service = sqlite_service();
+        assert_one(&service, "Alice").await;
+        assert_one(&service, "Carol").await;
+
+        let metrics = service
+            .get_metrics(Request::new(GetMetricsRequest {}))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert!(!metrics.janitor_enabled);
+        assert_eq!(metrics.claims.len(), 4);
+        assert_eq!(
+            metrics.claims.iter().map(|c| c.tier).collect::<Vec<_>>(),
+            vec![
+                Tier::Ephemeral as i32,
+                Tier::Task as i32,
+                Tier::Project as i32,
+                Tier::Permanent as i32,
+            ]
+        );
+
+        let by_tier = |tier: Tier| {
+            metrics
+                .claims
+                .iter()
+                .find(|c| c.tier == tier as i32)
+                .unwrap()
+                .count
+        };
+        // assert_one writes at the task tier.
+        assert_eq!(by_tier(Tier::Task), 2);
+        assert_eq!(by_tier(Tier::Ephemeral), 0);
+        assert_eq!(by_tier(Tier::Permanent), 0);
     }
 
     // ---- Tests exercising the new RPCs against a real in-memory store ----

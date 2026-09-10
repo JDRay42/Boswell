@@ -283,6 +283,66 @@ impl SqliteStore {
         Ok(false)
     }
 
+    /// Build the `WHERE` tail shared by [`ClaimStore::query_claims`] and
+    /// [`ClaimStore::count_claims`], returning it alongside its bound
+    /// parameters.
+    ///
+    /// Both callers open with `WHERE 1=1`, so every clause here appends. Split
+    /// out so the two cannot drift: a filter the count ignores is a count that
+    /// disagrees with the query it claims to describe.
+    ///
+    /// `ClaimQuery::semantic_text` is not a filter here — semantic search is
+    /// [`ClaimStore::semantic_search`], a different path.
+    fn claim_filter_sql(query: &ClaimQuery) -> (String, Vec<Box<dyn rusqlite::ToSql>>) {
+        let mut sql = String::new();
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+        if let Some(namespace) = &query.namespace {
+            sql.push_str(" AND namespace LIKE ?");
+            params.push(Box::new(format!("{}%", namespace)));
+        }
+
+        // Exact, case-sensitive triple match. The columns carry no COLLATE, so
+        // SQLite's `=` compares bytes — the same semantics as Rust's `==` on the
+        // strings this replaced.
+        if let Some(subject) = &query.subject {
+            sql.push_str(" AND subject = ?");
+            params.push(Box::new(subject.clone()));
+        }
+
+        if let Some(predicate) = &query.predicate {
+            sql.push_str(" AND predicate = ?");
+            params.push(Box::new(predicate.clone()));
+        }
+
+        if let Some(object) = &query.object {
+            sql.push_str(" AND object = ?");
+            params.push(Box::new(object.clone()));
+        }
+
+        if let Some(tier) = &query.tier {
+            sql.push_str(" AND tier = ?");
+            params.push(Box::new(tier.clone()));
+        }
+
+        if let Some(source_type) = &query.source_type {
+            sql.push_str(" AND source_type = ?");
+            params.push(Box::new(source_type.clone()));
+        }
+
+        if let Some(min_conf) = query.min_confidence {
+            sql.push_str(" AND base_lower >= ?");
+            params.push(Box::new(min_conf));
+        }
+
+        if let Some(limit) = query.limit {
+            sql.push_str(" LIMIT ?");
+            params.push(Box::new(limit));
+        }
+
+        (sql, params)
+    }
+
     /// Convert ClaimId to bytes for storage
     fn claim_id_to_bytes(id: ClaimId) -> Vec<u8> {
         id.value().to_be_bytes().to_vec()
@@ -459,54 +519,12 @@ impl ClaimStore for SqliteStore {
     }
 
     fn query_claims(&self, query: &ClaimQuery) -> Result<Vec<Claim>, Self::Error> {
-        let mut sql = String::from(
+        let (tail, params) = Self::claim_filter_sql(query);
+        let sql = format!(
             "SELECT id, namespace, subject, predicate, object, base_lower, base_upper, tier, created_at, stale_at, source_type
-             FROM claims WHERE 1=1"
+             FROM claims WHERE 1=1{}",
+            tail
         );
-        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-
-        if let Some(namespace) = &query.namespace {
-            sql.push_str(" AND namespace LIKE ?");
-            params.push(Box::new(format!("{}%", namespace)));
-        }
-
-        // Exact, case-sensitive triple match. The columns carry no COLLATE, so
-        // SQLite's `=` compares bytes — the same semantics as Rust's `==` on the
-        // strings this replaced.
-        if let Some(subject) = &query.subject {
-            sql.push_str(" AND subject = ?");
-            params.push(Box::new(subject.clone()));
-        }
-
-        if let Some(predicate) = &query.predicate {
-            sql.push_str(" AND predicate = ?");
-            params.push(Box::new(predicate.clone()));
-        }
-
-        if let Some(object) = &query.object {
-            sql.push_str(" AND object = ?");
-            params.push(Box::new(object.clone()));
-        }
-
-        if let Some(tier) = &query.tier {
-            sql.push_str(" AND tier = ?");
-            params.push(Box::new(tier.clone()));
-        }
-
-        if let Some(source_type) = &query.source_type {
-            sql.push_str(" AND source_type = ?");
-            params.push(Box::new(source_type.clone()));
-        }
-
-        if let Some(min_conf) = query.min_confidence {
-            sql.push_str(" AND base_lower >= ?");
-            params.push(Box::new(min_conf));
-        }
-
-        if let Some(limit) = query.limit {
-            sql.push_str(" LIMIT ?");
-            params.push(Box::new(limit));
-        }
 
         let mut stmt = self.conn.prepare(&sql)?;
         let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
@@ -540,6 +558,26 @@ impl ClaimStore for SqliteStore {
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(claims)
+    }
+
+    /// `SELECT COUNT(*)` over the same filter [`SqliteStore::query_claims`]
+    /// builds, so nothing is decoded into a [`Claim`] to be counted and thrown
+    /// away.
+    ///
+    /// The limit is applied inside the subquery rather than dropped, because the
+    /// trait promises this equals what `query_claims` would return.
+    fn count_claims(&self, query: &ClaimQuery) -> Result<u64, Self::Error> {
+        let (tail, params) = Self::claim_filter_sql(query);
+        let sql = format!(
+            "SELECT COUNT(*) FROM (SELECT 1 FROM claims WHERE 1=1{})",
+            tail
+        );
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let count: i64 = stmt.query_row(&param_refs[..], |row| row.get(0))?;
+
+        Ok(count.max(0) as u64)
     }
 
     fn add_relationship(&mut self, relationship: Relationship) -> Result<(), Self::Error> {

@@ -556,4 +556,7 @@ message GetMetricsResponse {
     repeated TierCount promoted = 4;
     repeated TierCount demoted = 5;
     int64 uptime_seconds = 6;
+    // Claims currently in the store, by tier. Independent of the Janitor: this
+    // is present and true even when janitor_enabled is false.
+    repeated TierCount claims = 7;
 }

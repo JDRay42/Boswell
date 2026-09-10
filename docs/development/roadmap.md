@@ -336,12 +336,15 @@ Named as a workstream because it has never had one, and that is why none of it e
   Janitor's counters over the new `GetMetrics` RPC on demand and renders them; nothing is
   pushed and nothing is cached. Rendered by hand — the workspace still has no Prometheus
   dependency, and at four counters a registry would be indirection over the one place the
-  numbers are made. Carries no claim count on purpose: counting costs a full scan and a
-  scrape runs every few seconds. *shipped* (#64)
-- **A claim count worth scraping.** `HealthCheckResponse.claim_count` materializes every
-  claim to call `.len()` on them, which is why `/metrics` omits it. A `count_claims` on
-  `ClaimStore` backed by `SELECT COUNT(*)` would make it cheap enough to export, and would
-  fix the health endpoint's cost at the same time. *open*
+  numbers are made. Shipped carrying no claim count, because counting then cost a full
+  scan; #65 made counting cheap and added it. *shipped* (#64)
+- **A claim count worth scraping.** `ClaimStore::count_claims` counts what `query_claims`
+  would return without materializing it — the two share one filter builder in `SqliteStore`
+  so they cannot drift, and the trait's default implementation is the old query-then-length
+  so no other store had to change. `GET /v1/health` now counts instead of scanning, and
+  `/metrics` carries `boswell_claims{tier}`: a gauge, not a counter, and a fact about the
+  store rather than the Janitor, so it is reported whether or not a sweep loop is running.
+  *shipped* (#65)
 - **Benchmarks.** There is no `benches/` directory and no `criterion` dependency. Nothing
   in the repository measures anything — including the "100+ assertions/sec, queries <100ms
   p95" target the February plan asserted and no one ever checked. Either measure it or stop
