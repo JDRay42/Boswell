@@ -1,7 +1,7 @@
 ---
 status: continue
 item: Tier validation on the gRPC assert path — shipped in #48
-updated: 2026-09-10T13:00:00Z
+updated: 2026-09-10T19:40:00Z
 ---
 
 # Handoff
@@ -16,13 +16,13 @@ None in flight. The last session took *Tier validation on the gRPC assert path* 
 Claims core and shipped it as PR #48, branch `feat/grpc-tier-validation`, commit c96ea46.
 The roadmap slice is marked *shipped (#48)*.
 
-**Check #48 landed before doing anything else.** It was opened with CI green locally
-(fmt, clippy, full workspace tests) and left to merge on green. If it is still open, the
-CI result is the thing to look at; if it merged, `main` has it and the branch is spent.
+#48 has landed. CI was green and it merged as 0a1254d; the branch is deleted and spent.
+Nothing is waiting on you from it.
 
 ## State
 
-`main` was at 8e32ffe when the work started. Nothing else is in flight.
+`main` at 0a1254d, clean, nothing in flight. The next session starts fresh on a slice of
+its own choosing.
 
 ## What #48 actually did
 
@@ -89,6 +89,12 @@ order of ratio:
 - PR numbers are shared with issues; `gh pr list --state all --limit 1` gives the last one
   used, and the next PR gets the next number. That is how #48 was cited in the roadmap
   *before* the PR existed.
+- `main` is protected. Everything lands by PR, including a handoff-only change, so a
+  session that means to record something for the next one must budget context for the
+  branch, the PR, and the CI wait. Do not leave that to the last thousand tokens.
+- The measured context number runs a few thousand above what `/context` reports, because
+  it counts the raw cached input the API bills for. Treat it as the conservative figure;
+  it is the one to compare against the budget.
 
 ## Open questions
 
@@ -104,7 +110,16 @@ None. Nothing here needs a decision before work can start.
 - Security posture was settled on 2026-09-10 in ADR-021 and ADR-022. Read them; do not
   re-derive the decisions.
 - Nothing under `.claude/` is tracked by git except this file and
-  `backlog-loop.conf`. `settings.local.json` is ignored globally.
+  `backlog-loop.conf`. `settings.local.json` is ignored globally, and `.claude/logs/`
+  self-ignores.
+- The loop driver and the `/pickup` skill live in `~/.claude/scripts/backlog-loop.sh` and
+  `~/.claude/skills/pickup/`, deliberately outside this repo because they are not
+  Boswell-specific. The consequence is that they are unversioned and invisible from here:
+  if the loop starts behaving differently, that is where to look, and nothing in this
+  repo's history will explain the change.
+- The skill's rule against stacking a branch on an unmerged one, and its rule against
+  promising post-exit work, both came from watching the first real iteration do exactly
+  those two things. They are not speculative; do not relax them.
 - Assurance-based *tier ceilings* (`climb_ceiling`, `EvidenceType::tier_ceiling`) are the
   promotion path for procedures and provenance, not claim assert. They are a different
   mechanism from the tier/confidence floor #48 wired in; do not conflate them.
