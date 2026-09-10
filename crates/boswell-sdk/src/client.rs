@@ -8,19 +8,19 @@ use boswell_domain::{
 };
 use boswell_grpc::conversions::{
     expanded_candidate_from_proto, factor_reading_from_proto, goal_from_proto,
-    procedure_from_proto, receipt_from_proto, relationship_from_proto,
+    procedure_from_proto, receipt_from_proto, relationship_from_proto, tier_from_proto,
 };
 use boswell_grpc::proto::{
     bos_well_service_client::BosWellServiceClient, health_check_response, AssertRequest,
     AssertResponse, ConfidenceInterval, ExpandRequest, ExpandResponse, ExtractRequest,
     ExtractResponse, ForgetRequest, ForgetResponse, GetClaimRequest, GetClaimResponse,
-    GetGoalRequest, GetGoalResponse, GetProcedureRequest, GetProcedureResponse,
-    GetRelationshipsRequest, GetRelationshipsResponse, HealthCheckRequest, HealthCheckResponse,
-    IssuedProcedure as GrpcIssuedProcedure, LearnRequest, LearnResponse,
+    GetGoalRequest, GetGoalResponse, GetMetricsRequest, GetMetricsResponse, GetProcedureRequest,
+    GetProcedureResponse, GetRelationshipsRequest, GetRelationshipsResponse, HealthCheckRequest,
+    HealthCheckResponse, IssuedProcedure as GrpcIssuedProcedure, LearnRequest, LearnResponse,
     QueryFilter as GrpcQueryFilter, QueryGoalsRequest, QueryGoalsResponse,
     QueryMode as GrpcQueryMode, QueryProceduresRequest, QueryProceduresResponse, QueryRequest,
     QueryResponse, ReportOutcomeRequest, ReportOutcomeResponse, SearchRequest, SearchResponse,
-    Tier as GrpcTier,
+    Tier as GrpcTier, TierCount as GrpcTierCount,
 };
 use tonic::transport::Channel;
 
@@ -219,6 +219,29 @@ pub struct HealthStatus {
     /// (design §7.2). When true, nothing this instance serves may be trusted
     /// for long-term memory, and downstream layers must say so.
     pub dev_auth: bool,
+}
+
+/// Instance maintenance counters as reported by the `GetMetrics` RPC.
+///
+/// Per-tier counts are cumulative since the instance started and carry the tier
+/// the claim was in when the Janitor acted on it. A tier the Janitor has not
+/// touched is absent rather than zero.
+#[derive(Debug, Clone, Default)]
+pub struct MaintenanceMetrics {
+    /// False when no Janitor is running in the instance, in which case every
+    /// count below is empty because nothing has swept — not because nothing
+    /// happened.
+    pub janitor_enabled: bool,
+    /// Sweep cycles completed.
+    pub sweep_count: u64,
+    /// Seconds the instance has been running.
+    pub uptime_seconds: i64,
+    /// Claims deleted, by the tier they were deleted from.
+    pub deleted: Vec<(Tier, u64)>,
+    /// Claims promoted, by the tier they were promoted from.
+    pub promoted: Vec<(Tier, u64)>,
+    /// Claims demoted, by the tier they were demoted from.
+    pub demoted: Vec<(Tier, u64)>,
 }
 
 /// Result of a server-side extraction (`Extract` RPC), as seen by the SDK.
@@ -976,6 +999,44 @@ impl BoswellClient {
             dev_auth: response.dev_auth,
         })
     }
+
+    /// Read the instance's maintenance counters via the `GetMetrics` RPC.
+    ///
+    /// Connects on demand; the RPC itself is unauthenticated, like the rest of
+    /// the instance surface (ADR-021). Deliberately carries no claim count: a
+    /// scrape runs every few seconds and counting claims costs a full scan.
+    pub async fn metrics(&mut self) -> Result<MaintenanceMetrics, SdkError> {
+        self.ensure_connected().await?;
+        let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
+
+        let response: GetMetricsResponse =
+            client.get_metrics(GetMetricsRequest {}).await?.into_inner();
+
+        Ok(MaintenanceMetrics {
+            janitor_enabled: response.janitor_enabled,
+            sweep_count: response.sweep_count,
+            uptime_seconds: response.uptime_seconds,
+            deleted: tier_counts_from_proto(response.deleted),
+            promoted: tier_counts_from_proto(response.promoted),
+            demoted: tier_counts_from_proto(response.demoted),
+        })
+    }
+}
+
+/// Drop any counter whose tier the instance did not name.
+///
+/// In an exposition format the label carries half the meaning, so a count that
+/// cannot be attributed to a tier is worth less than the guess it would take to
+/// place it.
+fn tier_counts_from_proto(counts: Vec<GrpcTierCount>) -> Vec<(Tier, u64)> {
+    counts
+        .into_iter()
+        .filter_map(|entry| {
+            let tier = GrpcTier::try_from(entry.tier).ok()?;
+            let name = tier_from_proto(tier).ok()?;
+            Tier::parse(&name).map(|tier| (tier, entry.count))
+        })
+        .collect()
 }
 
 // Helper functions for type conversion

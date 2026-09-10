@@ -30,7 +30,7 @@ use crate::conversions::{
     claim_from_proto, claim_to_proto, confidence_from_proto, expanded_candidate_to_proto,
     factor_reading_to_proto, goal_id_from_proto, goal_to_proto, outcome_report_from_proto,
     procedure_id_from_proto, procedure_to_proto, receipt_to_proto, relationship_to_proto,
-    tier_from_proto, traversal_context_from_proto,
+    tier_counts_to_proto, tier_from_proto, traversal_context_from_proto,
 };
 use crate::proto::bos_well_service_server::BosWellService;
 use crate::proto::*;
@@ -65,6 +65,35 @@ pub trait ServerExtractor: Send + Sync {
     ) -> Result<ExtractOutcome, String>;
 }
 
+/// A point-in-time read of the instance's maintenance counters.
+///
+/// Counts are per tier, carrying the tier the claim was in when the Janitor
+/// acted on it. A tier absent from a list has a count of zero.
+#[derive(Debug, Clone, Default)]
+pub struct MaintenanceSnapshot {
+    /// Sweep cycles completed since the process started.
+    pub sweep_count: u64,
+    /// Claims deleted, by the tier they were deleted from.
+    pub deleted: Vec<(DomainTier, u64)>,
+    /// Claims promoted, by the tier they were promoted from.
+    pub promoted: Vec<(DomainTier, u64)>,
+    /// Claims demoted, by the tier they were demoted from.
+    pub demoted: Vec<(DomainTier, u64)>,
+}
+
+/// Where the [`GetMetrics`](BosWellService::get_metrics) RPC reads the Janitor's
+/// counters from.
+///
+/// The Janitor runs as a background task owned by `boswell-server`, out of this
+/// crate's reach, so the server implements this over whatever it shares with
+/// that task. It is a trait for the same reason [`ServerExtractor`] is: the
+/// transport must not take a dependency on the component behind it.
+pub trait MetricsSource: Send + Sync {
+    /// Read the current counters. Called once per scrape, so it must not block
+    /// on anything slower than a mutex.
+    fn snapshot(&self) -> MaintenanceSnapshot;
+}
+
 /// Flatten a store error into the `Internal` status the caller sees, recording
 /// it on the way past.
 ///
@@ -90,6 +119,8 @@ pub struct BosWellServiceImpl<S: ClaimStore> {
     /// path is held to. Only the tier rule is applied here; see
     /// [`Gatekeeper::check_tier_confidence`].
     gatekeeper: Gatekeeper,
+    /// The Janitor's counters, if a Janitor is running in this process.
+    metrics: Option<Arc<dyn MetricsSource>>,
 }
 
 /// How long an issued procedure's execution receipt stays open before it
@@ -110,6 +141,7 @@ impl<S: ClaimStore> BosWellServiceImpl<S> {
             receipt_ttl_ms: DEFAULT_RECEIPT_TTL_MS,
             identity: None,
             gatekeeper: Gatekeeper::default_config(),
+            metrics: None,
         }
     }
 
@@ -186,6 +218,16 @@ impl<S: ClaimStore> BosWellServiceImpl<S> {
     /// ingest) can turn text into claims.
     pub fn with_extractor(mut self, extractor: Arc<dyn ServerExtractor>) -> Self {
         self.extractor = Some(extractor);
+        self
+    }
+
+    /// Attach the running Janitor's counters so `GetMetrics` can report them.
+    ///
+    /// Without one the RPC still answers — with `janitor_enabled: false` and
+    /// zeroes — because a scrape target that errors when a component is off is
+    /// indistinguishable from one that is down.
+    pub fn with_metrics_source(mut self, metrics: Arc<dyn MetricsSource>) -> Self {
+        self.metrics = Some(metrics);
         self
     }
 
@@ -729,6 +771,35 @@ where
             claim_count,
             message: "Service is healthy".to_string(),
             dev_auth: self.is_dev_auth(),
+        }))
+    }
+
+    #[tracing::instrument(level = "debug", skip_all)]
+    async fn get_metrics(
+        &self,
+        _request: Request<GetMetricsRequest>,
+    ) -> Result<Response<GetMetricsResponse>, Status> {
+        let uptime_seconds = self.start_time.elapsed().as_secs() as i64;
+
+        let Some(source) = self.metrics.as_ref() else {
+            tracing::debug!("metrics served with no janitor attached");
+            return Ok(Response::new(GetMetricsResponse {
+                janitor_enabled: false,
+                uptime_seconds,
+                ..Default::default()
+            }));
+        };
+
+        let snapshot = source.snapshot();
+        tracing::trace!(sweep_count = snapshot.sweep_count, "metrics served");
+
+        Ok(Response::new(GetMetricsResponse {
+            janitor_enabled: true,
+            sweep_count: snapshot.sweep_count,
+            deleted: tier_counts_to_proto(&snapshot.deleted),
+            promoted: tier_counts_to_proto(&snapshot.promoted),
+            demoted: tier_counts_to_proto(&snapshot.demoted),
+            uptime_seconds,
         }))
     }
 
@@ -1390,6 +1461,60 @@ mod tests {
         // health_check counts claims via query_claims; MockStore returns exactly
         // one canned claim, so the count path is actually verified (not just >= 0).
         assert_eq!(health.claim_count, 1);
+    }
+
+    /// A [`MetricsSource`] returning whatever it was built with, standing in for
+    /// the Janitor task the server owns.
+    struct FixedMetrics(MaintenanceSnapshot);
+
+    impl MetricsSource for FixedMetrics {
+        fn snapshot(&self) -> MaintenanceSnapshot {
+            self.0.clone()
+        }
+    }
+
+    /// With no Janitor running, the RPC answers rather than failing: a scrape
+    /// target that errors when a component is switched off cannot be told apart
+    /// from one that is down.
+    #[tokio::test]
+    async fn get_metrics_reports_a_missing_janitor_without_failing() {
+        let service = BosWellServiceImpl::new(Arc::new(Mutex::new(MockStore)));
+
+        let metrics = service
+            .get_metrics(Request::new(GetMetricsRequest {}))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert!(!metrics.janitor_enabled);
+        assert_eq!(metrics.sweep_count, 0);
+        assert!(metrics.deleted.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_metrics_reports_the_attached_source_per_tier() {
+        let service = BosWellServiceImpl::new(Arc::new(Mutex::new(MockStore))).with_metrics_source(
+            Arc::new(FixedMetrics(MaintenanceSnapshot {
+                sweep_count: 4,
+                deleted: vec![(DomainTier::Ephemeral, 9)],
+                promoted: vec![(DomainTier::Task, 2)],
+                demoted: vec![(DomainTier::Permanent, 1)],
+            })),
+        );
+
+        let metrics = service
+            .get_metrics(Request::new(GetMetricsRequest {}))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert!(metrics.janitor_enabled);
+        assert_eq!(metrics.sweep_count, 4);
+        assert_eq!(metrics.deleted.len(), 1);
+        assert_eq!(metrics.deleted[0].tier, Tier::Ephemeral as i32);
+        assert_eq!(metrics.deleted[0].count, 9);
+        assert_eq!(metrics.promoted[0].tier, Tier::Task as i32);
+        assert_eq!(metrics.demoted[0].tier, Tier::Permanent as i32);
     }
 
     // ---- Tests exercising the new RPCs against a real in-memory store ----

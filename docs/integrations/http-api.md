@@ -94,7 +94,9 @@ continuously. Exhaustion returns `429 Too Many Requests`. Set `0` to disable.
 
 ## Endpoints
 
-All paths are under `/v1` and speak JSON.
+All paths are under `/v1` and speak JSON, with one exception: `GET /metrics`
+is unversioned because Prometheus scrape configs default to that path and the
+exposition format carries its own version.
 
 | Method & path | Scope | Purpose |
 |---|---|---|
@@ -115,6 +117,7 @@ All paths are under `/v1` and speak JSON.
 | `GET /v1/procedures` | read | Retrieve procedures for a goal/intent (issues receipts) |
 | `GET /v1/procedures/{id}` | read | Fetch one procedure (issues a receipt) |
 | `POST /v1/receipts/{receipt_id}/report` | write | Report an execution outcome |
+| `GET /metrics` | read | Instance maintenance counters, Prometheus exposition format |
 
 ### Assert — `POST /v1/claims`
 
@@ -365,6 +368,50 @@ claims its preconditions read.
 
 A goal that exists but whose children were all filtered out returns `200` with
 empty `candidates`; a goal that does not exist (or is out of scope) returns `404`.
+
+## Metrics — `GET /metrics`
+
+Prometheus exposition text (`text/plain; version=0.0.4`) for the instance behind the
+gateway. Authenticated like every other route, requiring the `read` scope; put the key in
+the scrape config's `bearer_token`. The instance serves no HTTP of its own
+([ADR-021](../ADRs/021-gateway-is-the-security-boundary.md)), so the gateway scrapes it
+over gRPC on demand and renders the result. Nothing is cached between scrapes.
+
+```
+# HELP boswell_instance_up Whether the gateway reached the instance on this scrape.
+# TYPE boswell_instance_up gauge
+boswell_instance_up 1
+# HELP boswell_instance_uptime_seconds Seconds the instance has been running.
+# TYPE boswell_instance_uptime_seconds gauge
+boswell_instance_uptime_seconds 3600
+# HELP boswell_janitor_enabled Whether a Janitor sweep loop is running in the instance.
+# TYPE boswell_janitor_enabled gauge
+boswell_janitor_enabled 1
+# HELP boswell_janitor_sweeps_total Janitor sweep cycles completed since the instance started.
+# TYPE boswell_janitor_sweeps_total counter
+boswell_janitor_sweeps_total 12
+# HELP boswell_janitor_claims_deleted_total Claims deleted by the Janitor, by the tier they were deleted from.
+# TYPE boswell_janitor_claims_deleted_total counter
+boswell_janitor_claims_deleted_total{tier="ephemeral"} 40
+boswell_janitor_claims_deleted_total{tier="task"} 0
+boswell_janitor_claims_deleted_total{tier="project"} 0
+boswell_janitor_claims_deleted_total{tier="permanent"} 0
+```
+
+Three things to know before alerting on it:
+
+- **An unreachable instance is a 200, not an error.** The response is `boswell_instance_up 0`
+  and nothing else. A failed HTTP scrape cannot be told apart from a Prometheus that could
+  not reach the gateway; `up 0` can. Alert on that gauge, not on scrape failure.
+- **`boswell_janitor_enabled 0` means no Janitor is running in that instance**, so the
+  counters below it are zero because nothing swept — not because nothing needed sweeping.
+- **Counters advance once per sweep cycle, not once per claim.** The Janitor publishes after
+  all three of its sweeps complete, so a scrape landing mid-cycle reads the previous cycle's
+  totals rather than a half-applied one. They reset when the instance restarts, which is
+  what `counter` means.
+
+There is deliberately no claim count here. Counting claims costs a full scan, and a scrape
+runs every few seconds; `GET /v1/health` carries `claim_count` for the occasional look.
 
 ## `X-Boswell-Auth` — the development-identity marker
 

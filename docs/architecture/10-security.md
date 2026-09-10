@@ -95,7 +95,7 @@ parts:
 | Namespace isolation | Each key is bound to a namespace. A key may act on that namespace or a child of it (`"<ns>:..."`). Empty or `"*"` is unrestricted. A read with no requested namespace falls back to the key's own, so results never leak sideways. |
 | Rate limiting | Per-key requests per minute, `rate_limit_per_minute`. `0` disables it. |
 | Audit | Every mutation is logged with key id, namespace, operation, and count. |
-| Unauthenticated surface | `/v1/health` only. |
+| Unauthenticated surface | `/v1/health` only. `GET /metrics` is authenticated and needs the `read` scope — how fast a deployment's memory decays is operational detail. |
 
 The gateway's `/v1` surface is a **superset** of the gRPC service: every gRPC method has a
 route in front of it, plus `/v1/recall` and `/v1/hooks/ingest`. Nothing outside the host needs
@@ -225,7 +225,7 @@ independence; the code catches up when subagents exist.
 
 | Threat | Mitigation | Status |
 |---|---|---|
-| Unauthenticated remote read or write | Gateway bearer key on every `/v1` route but `/v1/health`. | built |
+| Unauthenticated remote read or write | Gateway bearer key on every route but `/v1/health`, including the unversioned `GET /metrics`. | built |
 | Stolen API key | Replace its hash in the gateway config and restart. | built, manual |
 | Cross-namespace read or write by a valid key | Namespace binding on the key; reads fall back to the key's own namespace. | built |
 | Privilege beyond intent (a read key deleting) | Per-key `read`/`write`/`delete` scopes, checked per handler. | built |
