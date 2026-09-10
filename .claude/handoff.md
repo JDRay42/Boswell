@@ -1,7 +1,7 @@
 ---
 status: continue
-item: gRPC graceful shutdown — shipped in #50
-updated: 2026-09-10T21:20:00Z
+item: Push the triple match into SQL — shipped in #52
+updated: 2026-09-10T23:05:00Z
 ---
 
 # Handoff
@@ -12,70 +12,73 @@ intent, dead ends, and the next move.
 
 ## Current item
 
-None in flight. The last session took *gRPC graceful shutdown* from Transport and shipped
-it as PR #50, branch `feat/grpc-graceful-shutdown`, commit 134bda6. The roadmap slice is
-marked *shipped (#50)*.
-
-#50 has landed. CI was green and it merged as 28d1a8f; the branch is deleted and spent.
-Nothing is waiting on you from it.
+None in flight. The last session took *Push the triple match into SQL* from Procedural
+memory and shipped it as PR #52, branch `feat/claim-query-triple-filter`, commit 6808f16.
+CI was green; it merged as 54a76e6 and the branch is deleted. Nothing is waiting on you.
 
 ## State
 
-`main` at 28d1a8f, clean, nothing in flight. The next session starts fresh on a slice of
-its own choosing.
+`main` at 54a76e6, clean, nothing in flight.
 
-## What #50 actually did
+## What #52 actually did
 
-- `server.rs` calls `serve_with_shutdown`, not `.serve(addr)`. The old call never
-  returned, so an instance could only be stopped by killing the process.
-- `start_server_with_shutdown` is the new full-parameter entrypoint and takes the signal
-  as an argument; the three existing entrypoints delegate to it with `ctrl_c`. **No
-  existing signature changed**, so no caller moved — `boswell-server/src/lib.rs:237` still
-  calls `start_server_with_identity` and now gets `ctrl_c` for free.
-- A failure to install the signal handler resolves the future (server stops) and reports
-  on stderr. Propagating would refuse to start; pending forever would ignore the one
-  signal an operator reaches for.
-- `tokio`'s `signal` feature is declared in `boswell-grpc`'s manifest, and `net`/`time` in
-  its dev-dependencies.
+- `ClaimQuery` grew `subject`, `predicate`, `object: Option<String>`, wired into
+  `SqliteStore::query_claims` as exact `=` filters and backed by a new composite index
+  `idx_claims_triple ON claims(subject, predicate, object)`.
+- The item as written named one call site. There were **three**, and two of them were
+  carrying bugs, not just doing extra work:
+  - `procedure_store::precondition_holds` — the named one. Now one `LIMIT 1` query.
+  - `gatekeeper/validator.rs` duplicate check — asked for `limit: Some(100)` rows
+    matching only namespace and tier, then compared triples in Rust. A duplicate past
+    the hundredth row was never seen and the write went through.
+  - `grpc/service.rs::query` — passed `limit` to the store and filtered the triple out of
+    the *results*, so `limit` meant "rows scanned". A caller filtering by subject could
+    get an empty response while matches existed. This was the user-visible one.
+- `schema.sql` is `execute_batch`ed in full on every open, all statements
+  `IF NOT EXISTS`, so the new index reaches existing databases with no migration step.
+  `run_migrations()` was not touched.
+- `synthesizer.rs` and `validator.rs` had exhaustive `ClaimQuery` literals that broke the
+  build; both moved to `..ClaimQuery::default()` so the next field addition does not.
 
 ## Tried and rejected
 
-- **Spawning the server on a `tokio::task` in the tests.** `start_server_*` returns
-  `Result<(), Box<dyn std::error::Error>>`, and `Box<dyn Error>` is not `Send`, so the
-  `JoinHandle` will not compile. Wrapping the call in an async block that maps the error
-  to `String` does fix it, but the shape that survived is simpler: await the *server* on
-  the test task and spawn the *trigger*.
-- **Binding the test server to port 0 and asking it what it got.**
-  `serve_with_shutdown` takes a `SocketAddr` and returns nothing until it stops, so there
-  is no way to read back the ephemeral port. Hence the `free_port()` helper, which binds
-  `127.0.0.1:0`, reads `local_addr().port()`, and drops the listener. That races with
-  another process taking the port in the gap; a hard-coded port races every other run of
-  the suite, which is worse.
-- **Firing the shutdown signal after a fixed `sleep`.** A pass would not prove the server
-  ever bound. The test dials the port in a retry loop and signals on the first successful
-  connection instead, so a pass means bound → served → stopped.
+- **Pushing the triple into `Goal::expand` as well** (`goal_store.rs:230`). Rejected on
+  the merits, not for scope. `expand` deliberately fetches *one* context slice per hop at
+  the lowest precondition floor and evaluates every edge check against it in-process.
+  Per-precondition SQL would turn one query into N. The in-Rust filter there is the right
+  shape; do not "finish the job" by changing it.
+- **Scoping preconditions to a namespace while the query was being rewritten.** The old
+  in-Rust match compared only the triple, across every namespace. Adding a namespace
+  filter would have been a silent behavior change riding along on a performance fix.
+  Left as-is; if namespace scoping is wanted it is its own decision.
+- **Normalizing the gRPC `QueryFilter`'s triple fields with `.filter(|s| !s.trim().is_empty())`,
+  the way `source_type` is normalized.** The Rust filter being replaced treated an empty
+  string as a literal that matches nothing. Passing it through verbatim preserves that.
+  Changing it is a wire-behavior change and does not belong in this commit.
 
 ## Next step
 
 Pick a fresh slice from `docs/development/roadmap.md`. Assessed but not taken, in rough
 order of ratio:
 
-- **Push the triple match into SQL** (Procedural memory), marked in place at
-  `crates/boswell-store/src/procedure_store.rs:351`. Self-contained; the smallest item
-  now that shutdown is closed.
 - **SDK retry with exponential backoff** (Transport). Today it reconnects once on
-  `Unauthenticated` and gives up. Not researched.
+  `Unauthenticated` and gives up. Not researched. Probably the smallest item now.
 - **Delete the `auth_token` plumbing and enforce the loopback bind** (ADR-021). Decided,
   not researched — fourteen `is_empty()` call sites in `boswell-grpc`, plus the router's
   unread JWT and the SDK carrying it. Bigger than one session may hold; it spans grpc,
-  router, sdk and server config. The `auth_token.is_empty()` checks were deliberately left
-  untouched by both #48 and #50; that deletion is its own slice.
+  router, sdk and server config. #48, #50 and #52 all deliberately left the
+  `auth_token.is_empty()` checks untouched; that deletion is its own slice.
 - **Un-ignore the full-stack E2E tests** (Transport). `boswell-sdk/tests/e2e_tests.rs`
-  needs manually started router and gRPC servers. #50 makes this *more* tractable than it
-  was — `start_server_with_shutdown` is exactly the handle a test harness needs to stand a
-  server up and tear it down — but the router still has no equivalent.
-- **MCP tool surface for goals and procedures** (Transport). The largest feature lag: five
-  claim-only tools against fifteen gateway routes. Not sized.
+  needs manually started router and gRPC servers. #50's `start_server_with_shutdown` is
+  exactly the handle a harness needs, but the router still has no equivalent.
+- **Promotion timing (§8 #4).** Promotion into a Janitor-style background sweep with a
+  synchronous fast-track for authority endorsements. §8.1 already picked the shape;
+  engineering, not research.
+- **MCP tool surface for goals and procedures** (Transport). The largest feature lag:
+  five claim-only tools against fifteen gateway routes. Not sized.
+- **Semantic intent match for procedure and goal retrieval.** Still open, still the
+  sibling of the item #52 closed. Marked at `procedure_store.rs:295`, `goal_store.rs:114`,
+  `schema.sql:185`. Needs the embedding path (ADR-005), so it is research, not plumbing.
 
 ## Open questions
 
@@ -91,13 +94,13 @@ None. Nothing here needs a decision before work can start.
 - Building `boswell-grpc` needs `protoc` on PATH.
 - `git fetch` before branching. Branching off a stale local `main` has bitten this repo
   before — a just-merged PR was missing and it surfaced as an unrelated missing field.
-- Full workspace `cargo test` runs in well under a minute now and `clippy` in ~16s warm.
-  Neither is a reason to skip the verify step.
+- Full workspace `cargo test` runs in well under a minute and `clippy` in ~16s warm.
+  Neither is a reason to skip the verify step. CI itself takes ~2m30s.
 - `cargo fmt` will rewrap a long `#[error("…")]` attribute onto its own lines. Run it
   before committing rather than hand-wrapping.
 - PR numbers are shared with issues; `gh pr list --state all --limit 1` gives the last one
-  used, and the next PR gets the next number. That is how #48 was cited in the roadmap
-  *before* the PR existed.
+  used, and the next PR gets the next number. That is how #48 and #52 were cited in the
+  roadmap *before* the PR existed.
 - `main` is protected. Everything lands by PR, including a handoff-only change, so a
   session that means to record something for the next one must budget context for the
   branch, the PR, and the CI wait. Do not leave that to the last thousand tokens.
@@ -105,11 +108,21 @@ None. Nothing here needs a decision before work can start.
   it counts the raw cached input the API bills for. Treat it as the conservative figure;
   it is the one to compare against the budget.
 - Tests that stand a server up belong in `server.rs`'s `mod tests`, not in a `tests/`
-  directory — `boswell-grpc` has no integration-test directory and did not grow one for
-  #50. `free_port()` and `in_memory_store()` live there and are worth reusing.
+  directory — `boswell-grpc` has no integration-test directory. `free_port()` and
+  `in_memory_store()` live there and are worth reusing.
 - The workspace pins `tokio = { features = ["full"] }`, so a per-crate `features = [...]`
   list adds nothing that is not already resolved. Declare features anyway; the list is
   documentation of what the crate actually uses, not a build constraint.
+- Adding a field to a widely-constructed domain struct like `ClaimQuery` is a
+  five-crate compile break. `cargo clippy --workspace --all-targets` finds every site in
+  one pass; work through them before touching tests. Several such literals are now
+  `..Default::default()` precisely so the next addition is cheaper.
+- gRPC service tests against a real store use the `sqlite_service()` / `assert_one()`
+  helpers around line 1260 of `service.rs`. `test_query_by_source_type` is the closest
+  template for anything exercising `query`.
+- To prove a new regression test actually bites, `cp` the file to `/tmp`, revert the one
+  line that fixes the bug, run the single test, and restore. It costs one incremental
+  build and it is the difference between a test and decoration.
 
 ## Do not re-investigate
 
@@ -146,3 +159,8 @@ None. Nothing here needs a decision before work can start.
 - Roadmap line ~626, "Graceful shutdown handling", is the *Janitor's* framework item under
   the phase plan. It is not the transport slice #50 closed; do not re-open it on that
   basis.
+- The `claims` table's `subject`, `predicate` and `object` columns carry no `COLLATE`, so
+  SQLite `=` on them is a byte comparison — identical to Rust `==`. #52 depends on this;
+  it was checked against `schema.sql`, not assumed.
+- Every in-Rust triple filter over claims is gone as of #52. If you find yourself writing
+  `.filter(|c| c.subject == ...)`, use the `ClaimQuery` fields instead.
