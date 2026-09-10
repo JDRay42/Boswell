@@ -128,11 +128,14 @@ count, decision). Optionally add HMAC request signing for integrity on top of TL
 stdout/stderr can surface in Claude Code debug logs and transcripts, so never echo a
 token; keep it in the header path.
 
-**8. Alignment with Boswell's security roadmap.** Boswell's target model
-([`docs/architecture/10-security.md`](../architecture/10-security.md)) is mTLS
-everywhere with per-instance signed tokens. That is not implemented yet. The ingest-auth
-design above is a concrete, shippable first step toward it — a single authenticated,
-TLS-fronted, namespace-scoped surface — rather than a replacement for it.
+**8. Alignment with Boswell's security model.** The boundary is the HTTP gateway
+([`docs/architecture/10-security.md`](../architecture/10-security.md),
+[ADR-021](../ADRs/021-gateway-is-the-security-boundary.md)): the gateway authenticates and
+everything behind it binds to loopback. The ingest-auth design above *is* that boundary applied
+to hooks — a single authenticated, TLS-fronted, namespace-scoped surface — rather than a step
+toward some later one. What is still to come is what carries delegation through it: OIDC at the
+human edge and attenuable tokens below ([ADR-022](../ADRs/022-delegated-credentials.md)), in
+place of hand-placed API keys.
 
 ### Threat model at a glance
 

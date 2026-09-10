@@ -152,14 +152,14 @@ Who said it, how well we know that, and what it lets them do.
 - **The code stops claiming security it does not provide.** `enable_tls` refuses to start
   instead of printing "TLS enabled" and serving plaintext; devAuth's manifest no longer
   claims to be excluded from production builds. *shipped* (#36)
-- **gRPC authentication.** The service checks that `auth_token` is non-empty and nothing
-  else — fourteen call sites, no signature verification anywhere. The router mints a
-  properly signed JWT and the SDK carries it on every call; the instance never reads it.
-  Any process that can reach the port can write to any tier by sending the string `"x"`.
-  The posture question is now answered ([ADR-021](../ADRs/021-gateway-is-the-security-boundary.md)):
-  the gateway is the boundary, so the `auth_token` plumbing is deleted rather than verified,
-  and the loopback bind becomes a startup error rather than a recommendation.
-  *open*
+- **gRPC authentication, resolved by deletion.** The service used to check that `auth_token`
+  was non-empty and nothing else — fourteen call sites, no signature verification anywhere, so
+  any process that could reach the port could write to any tier by sending the string `"x"`.
+  The posture question is answered ([ADR-021](../ADRs/021-gateway-is-the-security-boundary.md)):
+  the gateway is the boundary, so the `auth_token` plumbing was deleted rather than verified and
+  the loopback bind became a startup error rather than a recommendation. The router still mints
+  its session JWT for topology discovery (ADR-019); no instance reads it. See the security
+  implementation section below. *shipped* (#58)
 - **devAuth becomes a test-only fixture.** Out of `boswell-server`, still driving the Sybil
   scenarios — which are the entire evidence base for §8.3 and cannot move with it. The
   consequence to settle first: with no adapter shipped, every deployment runs with no
@@ -227,9 +227,19 @@ Still open, and now sharper for having a decided model to sit in:
   not read as ten independent witnesses. `CONTEXT.md` already says the root is the unit of
   independence and #33 counts the authenticated principal; the two diverge the moment subagents
   hold their own tokens. *open*
-- **Rewrite [`10-security.md`](../architecture/10-security.md).** It specifies the mTLS model
-  the session rejected. It carries a superseding note; it needs to describe the decided design.
-  *open*
+- **Rewrite [`10-security.md`](../architecture/10-security.md).** It specified the mTLS model
+  the session rejected. It now describes the decided design and separates three states
+  explicitly — built, decided-not-built, and genuinely open — so nothing in it reads as
+  deployable that is not. The four documents that described it as an unbuilt "target model"
+  were corrected in the same PR: `claude-code-hooks.md` §8, the closing note in
+  `http-api.md`, the backup-encryption item in `16-backup-recovery.md`, and the relationship
+  line in `15-procedural-memory.md`. *shipped* (#59)
+- **Correct the config table in [`09-router.md`](../architecture/09-router.md).** It is from the
+  same superseded design as the old `10-security.md`: `config_path: ./router.enc`,
+  `listen_address: 0.0.0.0:9000`, and a `signing_key_path` "in encrypted config". None of it
+  describes the router that was built — which reads plaintext TOML and belongs on loopback
+  behind the gateway. Split out of #59 rather than folded in, because it needs the code checked
+  field by field rather than a rewrite. *open*
 
 ## Transport and interfaces
 
