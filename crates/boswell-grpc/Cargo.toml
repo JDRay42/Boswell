@@ -6,6 +6,10 @@ rust-version.workspace = true
 
 [dependencies]
 boswell-domain = { workspace = true }
+# The tier/confidence contract is the Gatekeeper's rule, and Assert is a write
+# path that never passes through the Extractor. Depending on the crate is what
+# keeps the rule in one place instead of restating it here.
+boswell-gatekeeper = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
 tonic = "0.12"
