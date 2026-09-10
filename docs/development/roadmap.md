@@ -143,8 +143,9 @@ Who said it, how well we know that, and what it lets them do.
   else — fourteen call sites, no signature verification anywhere. The router mints a
   properly signed JWT and the SDK carries it on every call; the instance never reads it.
   Any process that can reach the port can write to any tier by sending the string `"x"`.
-  The fix depends on the posture question below: verify the JWT, or delete the plumbing and
-  bind to localhost by construction.
+  The posture question is now answered ([ADR-021](../ADRs/021-gateway-is-the-security-boundary.md)):
+  the gateway is the boundary, so the `auth_token` plumbing is deleted rather than verified,
+  and the loopback bind becomes a startup error rather than a recommendation.
   *open*
 - **devAuth becomes a test-only fixture.** Out of `boswell-server`, still driving the Sybil
   scenarios — which are the entire evidence base for §8.3 and cannot move with it. The
@@ -161,29 +162,57 @@ Who said it, how well we know that, and what it lets them do.
 
 ### Security design session
 
-A focused session, not a slice — the questions below are answered together or not at all,
-because each one's answer constrains the others. Written down because the context that
-makes them answerable is the part that disappears between sessions.
+Held 2026-09-10. Four of the six questions are answered and recorded as
+[ADR-021](../ADRs/021-gateway-is-the-security-boundary.md) and
+[ADR-022](../ADRs/022-delegated-credentials.md); ADR-017 is superseded. What the session
+settled:
 
-- **What is the threat model?** Everything below is currently answered against an unstated
-  one, which is how "the gRPC instance is meant to stay bound to `127.0.0.1`" came to be
-  documented as a deployment preference when it is a load-bearing control.
-- **Does gRPC verify the router's JWT, or is it trusted-network-only?** If the latter, the
-  token plumbing should be deleted rather than left looking functional, and the localhost
-  bind should be enforced rather than recommended.
+- **The threat model.** Boswell is a memory server reached by agents acting for one
+  implementer, deployed either on that implementer's machine or on a host of theirs reachable
+  from the internet. Public reach is a requirement, so authentication at the boundary is a
+  control rather than a preference.
+- **Where the boundary is.** The HTTP gateway. The gRPC instance is inside it, binds to
+  loopback by construction, and loses its `auth_token` theatre rather than gaining real
+  verification. ADR-021.
+- **How agents authenticate.** OIDC device-code establishes the implementer once, for months;
+  the gateway trades that for an attenuable token the agent narrows locally for each subagent,
+  with no issuer in the loop. ADR-022.
+- **Whether Boswell ships an identity adapter.** No. Identity stays the operator's to run and
+  govern; the gateway consumes OIDC rather than implementing it.
+
+Still open, and now sharper for having a decided model to sit in:
+
 - **Where does TLS terminate?** The standing position, recorded in
   [`README.md`](../../README.md) and in `boswell-gateway/src/config.rs`, is that TLS and
   public reach are provided by a reverse proxy or tunnel in front of Boswell — neither the
-  gateway nor the instance terminates it. Implementing TLS in-process would move the trust
-  boundary, not fill a gap, so it is a decision to revisit deliberately rather than a
-  missing feature to add.
-- **Does Boswell ship a default identity adapter, or require an external IdP?** With the
-  answer to the inert-gradient consequence above.
-- **How do agents in the intended environments authenticate?** Local Ollama-hosted agents,
-  local Claude agents, and cloud-hosted Claude agents all need streamlined access to the
-  same memory store, from different trust positions.
-- **How are gateway API keys issued and rotated?** Today they are SHA-256 hashes in a
-  config file, with no issuance path.
+  gateway nor the instance terminates it. With the gateway now the boundary rather than one
+  transport among two, this is worth revisiting deliberately rather than inheriting.
+- **How are gateway API keys issued and rotated?** Today they are SHA-256 hashes in a config
+  file with no issuance path. ADR-022 supplies the shape of the answer — tokens descend from a
+  grant — but not the migration from the keys that exist.
+- **The inert trust gradient.** With no identity adapter shipped, every deployment runs with no
+  `IdentityProvider`, so reports stamp `Assurance::None`, ceilings sit at the floor and nothing
+  promotes. ADR-022 answers this in principle; nothing implements it yet.
+
+### Security implementation, following the session
+
+- **Delete the `auth_token` plumbing and enforce the loopback bind** (ADR-021). Fourteen
+  `is_empty()` call sites in `boswell-grpc`, plus the router's unread JWT and the SDK's carrying
+  of it. *open*
+- **OIDC verification at the gateway** — device-code grant, JWKS cached and checked locally so
+  no request costs a round trip to the provider (ADR-022). *open*
+- **Attenuable tokens** (`biscuit-auth`): root token minted from a verified OIDC identity,
+  attenuation for subagents, and the Datalog authorization policy. *open*
+- **Revocation list.** Offline verification means a revoked grant is invisible until something
+  checks; the gateway needs a revocation table keyed by token id, and every token needs a
+  bounded lifetime so the list stays small. *open*
+- **Corroboration resolves a token to its delegation root**, so ten subagents of one agent do
+  not read as ten independent witnesses. `CONTEXT.md` already says the root is the unit of
+  independence and #33 counts the authenticated principal; the two diverge the moment subagents
+  hold their own tokens. *open*
+- **Rewrite [`10-security.md`](../architecture/10-security.md).** It specifies the mTLS model
+  the session rejected. It carries a superseding note; it needs to describe the decided design.
+  *open*
 
 ## Transport and interfaces
 

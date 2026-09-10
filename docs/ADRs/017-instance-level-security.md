@@ -2,7 +2,11 @@
 
 ## Status
 
-Accepted
+Superseded by [ADR-021](021-gateway-is-the-security-boundary.md) — the requirement stands (no
+unauthenticated access at the boundary), the mechanism does not. Manual per-client certificate
+registration cannot survive agents that mint credentials for subagents. See ADR-021 for the
+boundary and [ADR-022](022-delegated-credentials.md) for what replaced mTLS as the trust
+mechanism.
 
 ## Context
 
