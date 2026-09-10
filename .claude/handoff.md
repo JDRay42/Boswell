@@ -1,7 +1,7 @@
 ---
 status: continue
-item: Push the triple match into SQL — shipped in #52
-updated: 2026-09-10T23:05:00Z
+item: SDK retry with exponential backoff — shipped in #54
+updated: 2026-09-10T23:55:00Z
 ---
 
 # Handoff
@@ -12,62 +12,71 @@ intent, dead ends, and the next move.
 
 ## Current item
 
-None in flight. The last session took *Push the triple match into SQL* from Procedural
-memory and shipped it as PR #52, branch `feat/claim-query-triple-filter`, commit 6808f16.
-CI was green; it merged as 54a76e6 and the branch is deleted. Nothing is waiting on you.
+None in flight. The last session took *SDK retry with exponential backoff* from Transport
+and shipped it as PR #54, branch `feat/sdk-retry-backoff`, commit 3a27865. CI was green;
+it merged as 0398fb3 and the branch is deleted. Nothing is waiting on you.
 
 ## State
 
-`main` at 54a76e6, clean, nothing in flight.
+`main` at 0398fb3, clean, nothing in flight.
 
-## What #52 actually did
+## What #54 actually did
 
-- `ClaimQuery` grew `subject`, `predicate`, `object: Option<String>`, wired into
-  `SqliteStore::query_claims` as exact `=` filters and backed by a new composite index
-  `idx_claims_triple ON claims(subject, predicate, object)`.
-- The item as written named one call site. There were **three**, and two of them were
-  carrying bugs, not just doing extra work:
-  - `procedure_store::precondition_holds` — the named one. Now one `LIMIT 1` query.
-  - `gatekeeper/validator.rs` duplicate check — asked for `limit: Some(100)` rows
-    matching only namespace and tier, then compared triples in Rust. A duplicate past
-    the hundredth row was never seen and the write went through.
-  - `grpc/service.rs::query` — passed `limit` to the store and filtered the triple out of
-    the *results*, so `limit` meant "rows scanned". A caller filtering by subject could
-    get an empty response while matches existed. This was the user-visible one.
-- `schema.sql` is `execute_batch`ed in full on every open, all statements
-  `IF NOT EXISTS`, so the new index reaches existing databases with no migration step.
-  `run_migrations()` was not touched.
-- `synthesizer.rs` and `validator.rs` had exhaustive `ClaimQuery` literals that broke the
-  build; both moved to `..ClaimQuery::default()` so the next field addition does not.
+- New `crates/boswell-sdk/src/retry.rs`: `RetryPolicy` (public), `Idempotency` (public),
+  `RetryState` / `RetryAction` (crate-private). Default policy is three retries from
+  100ms, doubling to a 5s ceiling, equal jitter. `BoswellClient::with_retry_policy` and
+  `retry_policy()` are the knobs; `RetryPolicy::none()` turns the backoff path off.
+- The fourteen hand-rolled `let mut retried = false;` loops in `client.rs` now each end
+  in one `Err(e) => self.handle_retry(e, &mut retry, Idempotency::…).await?` arm.
+  `handle_retry` is the single place that reconnects, sleeps, or gives up.
+- **Backoff applies only to `Idempotency::Safe` calls.** Nothing on the wire carries an
+  idempotency key, so a repeated `Assert` is a second claim. Marked `Unsafe`: `assert`,
+  `learn`, `forget`, `extract`, `query_procedures`, `get_procedure`, `report_outcome`.
+  `get_procedure` and `query_procedures` are `Unsafe` because retrieval issues the
+  receipt — checked in `service.rs`, not assumed. `expand` is `Safe`; traversal issues no
+  receipt.
+- Retryable statuses are `Unavailable`, `DeadlineExceeded`, `ResourceExhausted`,
+  `Aborted`. `Internal` and `Unknown` are excluded on purpose.
+- Session reconnect is unchanged: exactly one attempt, for every RPC, under every policy
+  including `none()`. It does not spend the backoff budget — there is a test for that.
+- SDK test count went 1 → 14. `client.rs` gained a `mod tests` (it had none) that points
+  a client at a closed port via `connect_lazy` and asserts on elapsed time.
 
 ## Tried and rejected
 
-- **Pushing the triple into `Goal::expand` as well** (`goal_store.rs:230`). Rejected on
-  the merits, not for scope. `expand` deliberately fetches *one* context slice per hop at
-  the lowest precondition floor and evaluates every edge check against it in-process.
-  Per-precondition SQL would turn one query into N. The in-Rust filter there is the right
-  shape; do not "finish the job" by changing it.
-- **Scoping preconditions to a namespace while the query was being rewritten.** The old
-  in-Rust match compared only the triple, across every namespace. Adding a namespace
-  filter would have been a silent behavior change riding along on a performance fix.
-  Left as-is; if namespace scoping is wanted it is its own decision.
-- **Normalizing the gRPC `QueryFilter`'s triple fields with `.filter(|s| !s.trim().is_empty())`,
-  the way `source_type` is normalized.** The Rust filter being replaced treated an empty
-  string as a literal that matches nothing. Passing it through verbatim preserves that.
-  Changing it is a wire-behavior change and does not belong in this commit.
+- **Adding a `rand` dependency for jitter.** Nothing in the workspace pulls `rand` in, and
+  backoff jitter does not need an RNG — it needs clients that failed together to stop
+  waking together. `jitter_fraction()` uses `SystemTime::now().subsec_nanos()`. If you
+  find yourself reaching for `rand` here, the reason has to be something other than this.
+- **Full jitter (`rand(0, base)`), the AWS-blog default.** It permits a near-zero first
+  retry, which defeats backing off at all on the attempt that matters most. Equal jitter
+  (`base/2 + rand(0, base/2)`) is what shipped.
+- **Retrying mutating RPCs on `Unavailable` anyway,** on the theory that tonic's
+  `Unavailable` almost always means the request never reached a handler. It does not
+  always mean that: a server that processed the write and then died mid-response produces
+  the same status. Without an idempotency key on the wire the client cannot tell the two
+  apart, so it does not try.
+- **Making `handle_retry` take a closure over the RPC call** to remove the `loop` from all
+  fourteen sites. The closure needs `&mut self.grpc_client` while `reconnect()` needs
+  `&mut self`; getting that past the borrow checker means either an `Arc<Mutex<_>>` around
+  the channel or a macro. Both cost more than the fourteen four-line loops they remove.
+- **Hand-wrapping the `Idempotency::Unsafe` call-site arms.** `Unsafe` is two chars longer
+  than `Safe` and pushes past 100 columns, so `cargo fmt` expands those seven arms to a
+  block. That is fmt's output, not a style choice; leave it.
 
 ## Next step
 
 Pick a fresh slice from `docs/development/roadmap.md`. Assessed but not taken, in rough
 order of ratio:
 
-- **SDK retry with exponential backoff** (Transport). Today it reconnects once on
-  `Unauthenticated` and gives up. Not researched. Probably the smallest item now.
 - **Delete the `auth_token` plumbing and enforce the loopback bind** (ADR-021). Decided,
   not researched — fourteen `is_empty()` call sites in `boswell-grpc`, plus the router's
   unread JWT and the SDK carrying it. Bigger than one session may hold; it spans grpc,
-  router, sdk and server config. #48, #50 and #52 all deliberately left the
+  router, sdk and server config. #48, #50, #52 and #54 all deliberately left the
   `auth_token.is_empty()` checks untouched; that deletion is its own slice.
+- **Tracing in the gRPC service layer** (Observability). `service.rs` contains zero
+  `tracing::` calls while `boswell-server` initialises `tracing-subscriber`. Mechanical,
+  well-bounded, and probably the smallest item on the board now.
 - **Un-ignore the full-stack E2E tests** (Transport). `boswell-sdk/tests/e2e_tests.rs`
   needs manually started router and gRPC servers. #50's `start_server_with_shutdown` is
   exactly the handle a harness needs, but the router still has no equivalent.
@@ -76,9 +85,9 @@ order of ratio:
   engineering, not research.
 - **MCP tool surface for goals and procedures** (Transport). The largest feature lag:
   five claim-only tools against fifteen gateway routes. Not sized.
-- **Semantic intent match for procedure and goal retrieval.** Still open, still the
-  sibling of the item #52 closed. Marked at `procedure_store.rs:295`, `goal_store.rs:114`,
-  `schema.sql:185`. Needs the embedding path (ADR-005), so it is research, not plumbing.
+- **Semantic intent match for procedure and goal retrieval.** Still open. Marked at
+  `procedure_store.rs:295`, `goal_store.rs:114`, `schema.sql:185`. Needs the embedding
+  path (ADR-005), so it is research, not plumbing.
 
 ## Open questions
 
@@ -96,11 +105,12 @@ None. Nothing here needs a decision before work can start.
   before — a just-merged PR was missing and it surfaced as an unrelated missing field.
 - Full workspace `cargo test` runs in well under a minute and `clippy` in ~16s warm.
   Neither is a reason to skip the verify step. CI itself takes ~2m30s.
-- `cargo fmt` will rewrap a long `#[error("…")]` attribute onto its own lines. Run it
-  before committing rather than hand-wrapping.
+- `cargo fmt` will rewrap a long `#[error("…")]` attribute onto its own lines, and will
+  expand a match arm that crosses 100 columns into a block. Run it before committing
+  rather than hand-wrapping; then re-run `--check` to confirm.
 - PR numbers are shared with issues; `gh pr list --state all --limit 1` gives the last one
-  used, and the next PR gets the next number. That is how #48 and #52 were cited in the
-  roadmap *before* the PR existed.
+  used, and the next PR gets the next number. That is how #48, #52 and #54 were cited in
+  the roadmap *before* the PR existed. It has been right every time so far.
 - `main` is protected. Everything lands by PR, including a handoff-only change, so a
   session that means to record something for the next one must budget context for the
   branch, the PR, and the CI wait. Do not leave that to the last thousand tokens.
@@ -122,7 +132,16 @@ None. Nothing here needs a decision before work can start.
   template for anything exercising `query`.
 - To prove a new regression test actually bites, `cp` the file to `/tmp`, revert the one
   line that fixes the bug, run the single test, and restore. It costs one incremental
-  build and it is the difference between a test and decoration.
+  build and it is the difference between a test and decoration. #54 did this for its
+  timing test by stubbing `RetryAction::Backoff` to `Fail`.
+- A repetitive mechanical edit across many call sites (#54 rewrote fourteen) is better
+  done with a throwaway `python3` heredoc that regex-substitutes and *prints the count
+  and the list of sites it touched*. The printed list is the check that no site was
+  silently missed; `cargo build` alone will not tell you.
+- SDK client tests do not need a server. `BoswellClient`'s fields are private but
+  `mod tests` is inside `client.rs`, so a test can set `session_token` and `grpc_client`
+  directly and point a `connect_lazy` channel at `http://127.0.0.1:1`. The first RPC then
+  fails with `Unavailable` — the exact status the retry path cares about.
 
 ## Do not re-investigate
 
@@ -164,3 +183,10 @@ None. Nothing here needs a decision before work can start.
   it was checked against `schema.sql`, not assumed.
 - Every in-Rust triple filter over claims is gone as of #52. If you find yourself writing
   `.filter(|c| c.subject == ...)`, use the `ClaimQuery` fields instead.
+- `Goal::expand` (`goal_store.rs:230`) filters preconditions in Rust on purpose: it
+  fetches one context slice per hop and evaluates every edge check against it. Pushing
+  that into SQL would turn one query into N. #52 rejected this deliberately; it is the
+  right shape.
+- The SDK's per-RPC `Idempotency` markings in `client.rs` were derived from what each
+  handler actually does, including checking `service.rs` for receipt issuance. Do not
+  re-derive them. If you make an RPC idempotent on the wire, change its marking then.
