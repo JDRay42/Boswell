@@ -242,6 +242,9 @@ pub struct MaintenanceMetrics {
     pub promoted: Vec<(Tier, u64)>,
     /// Claims demoted, by the tier they were demoted from.
     pub demoted: Vec<(Tier, u64)>,
+    /// Claims currently held, by the tier they are in. A fact about the store,
+    /// so it is populated whether or not a Janitor is running.
+    pub claims: Vec<(Tier, u64)>,
 }
 
 /// Result of a server-side extraction (`Extract` RPC), as seen by the SDK.
@@ -1019,6 +1022,7 @@ impl BoswellClient {
             deleted: tier_counts_from_proto(response.deleted),
             promoted: tier_counts_from_proto(response.promoted),
             demoted: tier_counts_from_proto(response.demoted),
+            claims: tier_counts_from_proto(response.claims),
         })
     }
 }

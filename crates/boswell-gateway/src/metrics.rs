@@ -8,7 +8,7 @@
 //! [ADR-021]: ../../../docs/ADRs/021-gateway-is-the-security-boundary.md
 //!
 //! Rendered by hand rather than through a metrics crate. The whole surface is
-//! four counters and two gauges, and a registry would buy indirection over the
+//! four counters and three gauges, and a registry would buy indirection over the
 //! one place the numbers are actually produced.
 
 use axum::extract::State;
@@ -31,8 +31,8 @@ const EXPOSITION_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8"
 /// claim is deleted and vanishes on restart is a series nobody can alert on.
 const ALL_TIERS: [Tier; 4] = [Tier::Ephemeral, Tier::Task, Tier::Project, Tier::Permanent];
 
-/// `GET /metrics` — the instance's maintenance counters in Prometheus exposition
-/// format.
+/// `GET /metrics` — the instance's maintenance counters and claim census in
+/// Prometheus exposition format.
 ///
 /// Authenticated like the rest of the gateway, requiring the `read` scope: the
 /// gateway is the public face of the deployment (ADR-021), and how much memory
@@ -91,6 +91,14 @@ fn render(metrics: Option<&MaintenanceMetrics>) -> String {
         metrics.uptime_seconds.max(0)
     ));
 
+    by_tier(
+        &mut out,
+        "boswell_claims",
+        "gauge",
+        "Claims currently held by the instance, by tier.",
+        &metrics.claims,
+    );
+
     help(
         &mut out,
         "boswell_janitor_enabled",
@@ -116,18 +124,21 @@ fn render(metrics: Option<&MaintenanceMetrics>) -> String {
     by_tier(
         &mut out,
         "boswell_janitor_claims_deleted_total",
+        "counter",
         "Claims deleted by the Janitor, by the tier they were deleted from.",
         &metrics.deleted,
     );
     by_tier(
         &mut out,
         "boswell_janitor_claims_promoted_total",
+        "counter",
         "Claims promoted by the Janitor, by the tier they were promoted from.",
         &metrics.promoted,
     );
     by_tier(
         &mut out,
         "boswell_janitor_claims_demoted_total",
+        "counter",
         "Claims demoted by the Janitor, by the tier they were demoted from.",
         &metrics.demoted,
     );
@@ -143,10 +154,10 @@ fn help(out: &mut String, name: &str, kind: &str, text: &str) {
     ));
 }
 
-/// Write one tier-labelled counter, zero-filling every tier the instance did not
+/// Write one tier-labelled series, zero-filling every tier the instance did not
 /// report.
-fn by_tier(out: &mut String, name: &str, text: &str, counts: &[(Tier, u64)]) {
-    help(out, name, "counter", text);
+fn by_tier(out: &mut String, name: &str, kind: &str, text: &str, counts: &[(Tier, u64)]) {
+    help(out, name, kind, text);
     for tier in ALL_TIERS {
         let count = counts
             .iter()
@@ -174,6 +185,7 @@ mod tests {
             deleted: vec![(Tier::Ephemeral, 3)],
             promoted: vec![(Tier::Project, 1)],
             demoted: vec![],
+            claims: vec![(Tier::Task, 12), (Tier::Permanent, 4)],
         }
     }
 
@@ -196,6 +208,17 @@ mod tests {
         assert!(out.contains("boswell_janitor_sweeps_total 7\n"));
         assert!(out.contains("boswell_janitor_claims_deleted_total{tier=\"ephemeral\"} 3\n"));
         assert!(out.contains("boswell_janitor_claims_promoted_total{tier=\"project\"} 1\n"));
+        assert!(out.contains("boswell_claims{tier=\"task\"} 12\n"));
+        assert!(out.contains("boswell_claims{tier=\"permanent\"} 4\n"));
+    }
+
+    /// The claim census is a gauge, not a counter. Typed as a counter, a
+    /// deletion would read to Prometheus as a counter reset and `rate()` would
+    /// invent traffic that never happened.
+    #[test]
+    fn the_claim_census_is_typed_as_a_gauge() {
+        let out = render(Some(&sample()));
+        assert!(out.contains("# TYPE boswell_claims gauge\n"));
     }
 
     /// Alerting on `rate(...[5m])` needs the series to exist before anything has
@@ -205,6 +228,7 @@ mod tests {
         let out = render(Some(&sample()));
         for tier in ALL_TIERS {
             for metric in [
+                "boswell_claims",
                 "boswell_janitor_claims_deleted_total",
                 "boswell_janitor_claims_promoted_total",
                 "boswell_janitor_claims_demoted_total",

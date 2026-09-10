@@ -25,6 +25,18 @@ pub trait ClaimStore {
     /// Query claims matching criteria
     fn query_claims(&self, query: &ClaimQuery) -> Result<Vec<Claim>, Self::Error>;
 
+    /// Count the claims [`ClaimStore::query_claims`] would return for `query`,
+    /// without materializing them.
+    ///
+    /// The contract is exactly that equivalence, `query.limit` included: a count
+    /// under a limit is the number of rows that would come back, not the number
+    /// that match. The default implementation runs the query and takes its
+    /// length, so a store that cannot count cheaply is still correct; stores
+    /// with a backend that can count override it.
+    fn count_claims(&self, query: &ClaimQuery) -> Result<u64, Self::Error> {
+        Ok(self.query_claims(query)?.len() as u64)
+    }
+
     /// Add a relationship between claims
     fn add_relationship(&mut self, relationship: Relationship) -> Result<(), Self::Error>;
 
