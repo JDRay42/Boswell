@@ -187,9 +187,20 @@ pub async fn auth_middleware(
             // this gateway's root key or it does not. A failure is reported as a
             // bad key, which is what an unparseable bearer token is.
             _ => match state.tokens() {
-                Some(authority) => authority.authenticate(&token).map_err(|e| {
-                    tracing::debug!("bearer token is not a valid grant: {}", e);
-                    ApiError::unauthorized("Invalid API key")
+                Some(authority) => authority.authenticate(&token).map_err(|e| match e {
+                    // Said out loud, unlike every other rejection here. The
+                    // holder already holds the token, so naming its fate
+                    // discloses nothing — and a delegate whose *root* was
+                    // revoked would otherwise read "invalid key" and go looking
+                    // for a typo.
+                    crate::tokens::TokenError::Revoked => {
+                        tracing::info!("rejected a revoked token");
+                        ApiError::unauthorized("This token has been revoked")
+                    }
+                    other => {
+                        tracing::debug!("bearer token is not a valid grant: {}", other);
+                        ApiError::unauthorized("Invalid API key")
+                    }
                 })?,
                 None => return Err(ApiError::unauthorized("Invalid API key")),
             },

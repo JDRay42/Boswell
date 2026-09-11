@@ -260,10 +260,17 @@ Still open, and now sharper for having a decided model to sit in:
   gateway reads a claim's tier at authorization time, so there is no check to narrow. *shipped*
   (#70)
 - **Revocation list.** Offline verification means a revoked grant is invisible until something
-  checks; the gateway needs a revocation table keyed by token id, and every token needs a
-  bounded lifetime so the list stays small. Now the next item rather than a distant one: #70
-  ships tokens with a `max_ttl_secs` ceiling and nothing else that ends one early.
-  `Biscuit::revocation_identifiers` is the key to check against. *open*
+  checks, so the gateway checks a file: `revocation_list_path` in `[tokens]` names one hex
+  revocation identifier per line, re-`stat`ed at most once per `revocation_refresh_secs` and
+  re-read when it changes. A token is revoked when *any* of its blocks is listed, which is what
+  lets one line end a root and its whole delegation subtree — every attenuated token still
+  carries the root's authority block. `POST /v1/tokens` returns each token's `revocation_id` and
+  `boswell-gateway revocation-ids <token>` prints the identifiers of any token an operator
+  holds, without the root key. A revoked token gets `401` and is told so, unlike every other
+  rejection at that layer. A file that becomes unreadable leaves its loaded entries in force; a
+  line that is not hex is skipped rather than discarding the file around it. Config and a store
+  table were both rejected: config needs a restart, and a store table would put a network round
+  trip on the path whose whole point is not having one. *shipped* (#71)
 - **Corroboration resolves a token to its delegation root**, so ten subagents of one agent do
   not read as ten independent witnesses. Unblocked by #70 and now concrete: an attenuated token's
   `AuthContext.key_id` is read from the *authority* block, so it already names the root rather

@@ -91,10 +91,22 @@ pub struct TokenConfig {
     /// Lifetime of a minted root token when the caller names none.
     pub default_ttl_secs: u64,
 
-    /// Ceiling on a requested lifetime. Verification is offline, so a token's
-    /// own expiry is the only thing that stops it being useful; the shorter it
-    /// is, the smaller the revocation problem ADR-022 leaves open.
+    /// Ceiling on a requested lifetime. Verification is offline, so expiry and
+    /// the revocation list are the only two things that end a token; the
+    /// shorter this is, the shorter the list has to stay.
     pub max_ttl_secs: u64,
+
+    /// Path to the revocation list — one hex revocation identifier per line,
+    /// `#` comments allowed. Empty means no list, and so nothing revoked.
+    ///
+    /// A file rather than config or a store table: it changes at incident
+    /// speed, and the gateway re-reads it without a restart and without a
+    /// network call. See [`crate::revocation`].
+    pub revocation_list_path: String,
+
+    /// How long a loaded revocation list is used before the file is re-`stat`ed.
+    /// This is the delay between appending a line and the gateway honoring it.
+    pub revocation_refresh_secs: u64,
 }
 
 impl Default for TokenConfig {
@@ -103,6 +115,8 @@ impl Default for TokenConfig {
             root_private_key: String::new(),
             default_ttl_secs: 24 * 60 * 60,
             max_ttl_secs: 30 * 24 * 60 * 60,
+            revocation_list_path: String::new(),
+            revocation_refresh_secs: 15,
         }
     }
 }
@@ -280,13 +294,22 @@ scopes = ["read", "write"]
 # any principal, so it belongs in a file only the gateway can read. Generate:
 #   boswell-gateway keygen
 #
-# Verification is offline, so a token's own expiry is the only thing that ends
-# it early. Keep max_ttl_secs as short as the deployment tolerates.
+# Verification is offline, so a token's own expiry and the revocation list are
+# the only two things that end it early. Keep max_ttl_secs as short as the
+# deployment tolerates: it bounds how long the list has to remember anything.
 #
 # [tokens]
 # root_private_key = "0000000000000000000000000000000000000000000000000000000000000000"
 # default_ttl_secs = 86400      # 1 day
 # max_ttl_secs = 2592000        # 30 days
+#
+# revocation_list_path names a file of revocation identifiers, one lowercase hex
+# id per line, # comments allowed. Appending a line ends that token, and every
+# token attenuated from it, within revocation_refresh_secs. /v1/tokens returns
+# the id of each token it mints; `boswell-gateway revocation-ids <token>` prints
+# the ids of any token you hold. With no file named, expiry is the only brake.
+# revocation_list_path = "config/revoked.txt"
+# revocation_refresh_secs = 15
 "#;
 
 #[cfg(test)]

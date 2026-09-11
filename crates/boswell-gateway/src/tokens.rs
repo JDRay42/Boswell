@@ -62,6 +62,7 @@ use thiserror::Error;
 
 use crate::auth::{AuthContext, Scope};
 use crate::config::TokenConfig;
+use crate::revocation::{self, RevocationList};
 
 /// Errors from minting, parsing or authorizing an attenuable token.
 #[derive(Debug, Error)]
@@ -90,6 +91,10 @@ pub enum TokenError {
     /// The token verified but its authority block was not one this gateway minted.
     #[error("token is not a Boswell grant: {0}")]
     Malformed(String),
+
+    /// The token, or one it was attenuated from, is on the revocation list.
+    #[error("token has been revoked")]
+    Revoked,
 }
 
 /// A freshly minted root token and when it stops being valid.
@@ -99,6 +104,10 @@ pub struct MintedToken {
     pub token: String,
     /// Expiry as a Unix timestamp in seconds.
     pub expires_at: u64,
+    /// The authority block's revocation identifier, hex. Recording it is what
+    /// lets an operator end this token — and every token attenuated from it —
+    /// before its expiry; see [`crate::revocation`].
+    pub revocation_id: String,
 }
 
 /// The gateway's token-minting and token-verifying half.
@@ -110,6 +119,7 @@ pub struct TokenAuthority {
     root: KeyPair,
     default_ttl: Duration,
     max_ttl: Duration,
+    revocations: RevocationList,
 }
 
 impl std::fmt::Debug for TokenAuthority {
@@ -120,6 +130,7 @@ impl std::fmt::Debug for TokenAuthority {
             .field("root_public_key", &self.root.public().to_bytes_hex())
             .field("default_ttl", &self.default_ttl)
             .field("max_ttl", &self.max_ttl)
+            .field("revocations", &self.revocations.len())
             .finish()
     }
 }
@@ -137,6 +148,10 @@ impl TokenAuthority {
             root: KeyPair::from(&private),
             default_ttl: Duration::from_secs(config.default_ttl_secs),
             max_ttl: Duration::from_secs(config.max_ttl_secs),
+            revocations: RevocationList::new(
+                &config.revocation_list_path,
+                config.revocation_refresh_secs,
+            ),
         })
     }
 
@@ -144,6 +159,11 @@ impl TokenAuthority {
     /// needs and it cannot mint.
     pub fn root_public_key_hex(&self) -> String {
         self.root.public().to_bytes_hex()
+    }
+
+    /// The revocation list this authority consults.
+    pub fn revocations(&self) -> &RevocationList {
+        &self.revocations
     }
 
     /// Mint a root token carrying exactly the authority of `ctx`.
@@ -199,11 +219,20 @@ impl TokenAuthority {
             .and_then(|b| b.build(&self.root))
             .map_err(|e| TokenError::Rejected(e.to_string()))?;
 
+        let revocation_id = biscuit
+            .revocation_identifiers()
+            .first()
+            .map(|id| revocation::to_hex(id))
+            .ok_or_else(|| {
+                TokenError::Rejected("a minted token had no authority block".to_string())
+            })?;
+
         Ok(MintedToken {
             token: biscuit
                 .to_base64()
                 .map_err(|e| TokenError::Rejected(e.to_string()))?,
             expires_at: unix_seconds(expiry),
+            revocation_id,
         })
     }
 
@@ -221,6 +250,16 @@ impl TokenAuthority {
         // and the lifetime bounds. Restrictions are `check all`, so they hold
         // vacuously here and bite in `require`/`require_namespace` instead.
         authorize(&biscuit, &[]).map_err(TokenError::Rejected)?;
+
+        // Every block, not just the last: a token dies with any of its
+        // ancestors, which is what makes revoking a root kill its whole
+        // delegation subtree.
+        if self
+            .revocations
+            .is_revoked(&biscuit.revocation_identifiers())
+        {
+            return Err(TokenError::Revoked);
+        }
 
         let principal = single_string(&biscuit, "principal")?;
         let namespace = single_string(&biscuit, "namespace")?;
@@ -371,6 +410,26 @@ fn single_string(biscuit: &Biscuit, predicate: &str) -> Result<String, TokenErro
     }
 }
 
+/// Every block's revocation identifier for a token, hex, in block order.
+///
+/// The first is the authority block — the root grant, and the id that revokes
+/// every token attenuated from it. Each one after it is a block some holder
+/// appended, and revoking one of those ends that delegate and its own
+/// descendants while leaving its parent alone.
+///
+/// Parses without verifying, so it needs no key: reading the ids off a token
+/// tells you nothing the holder does not already have, and an operator holding
+/// a token to revoke should not need the root key to name it.
+pub fn revocation_ids(token: &str) -> Result<Vec<String>, TokenError> {
+    let biscuit = biscuit_auth::UnverifiedBiscuit::from_base64(token)
+        .map_err(|e| TokenError::Rejected(e.to_string()))?;
+    Ok(biscuit
+        .revocation_identifiers()
+        .iter()
+        .map(|id| revocation::to_hex(id))
+        .collect())
+}
+
 /// Seconds since the Unix epoch, saturating at 0 for pre-epoch times.
 fn unix_seconds(time: SystemTime) -> u64 {
     time.duration_since(SystemTime::UNIX_EPOCH)
@@ -391,11 +450,43 @@ mod tests {
             root_private_key: keypair.private().to_bytes_hex(),
             default_ttl_secs: 3600,
             max_ttl_secs: 86400,
+            ..TokenConfig::default()
         })
         .expect("a freshly generated key should load")
     }
 
-    fn context(namespace: &str, scopes: &[Scope]) -> AuthContext {
+    /// An authority whose revocation list is a temp file, re-read on every
+    /// check. `name` keeps parallel tests off each other's file.
+    pub(super) fn authority_with_revocations(name: &str) -> (TokenAuthority, std::path::PathBuf) {
+        let keypair = KeyPair::new_with_algorithm(Algorithm::Ed25519);
+        let path = std::env::temp_dir().join(format!(
+            "boswell-token-revocations-{}-{}.txt",
+            std::process::id(),
+            name
+        ));
+        std::fs::write(&path, "").expect("create an empty list");
+        let authority = TokenAuthority::new(&TokenConfig {
+            root_private_key: keypair.private().to_bytes_hex(),
+            default_ttl_secs: 3600,
+            max_ttl_secs: 86400,
+            revocation_list_path: path.to_string_lossy().into_owned(),
+            revocation_refresh_secs: 0,
+        })
+        .expect("a freshly generated key should load");
+        (authority, path)
+    }
+
+    pub(super) fn revoke(path: &std::path::Path, id: &str) {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(path)
+            .expect("reopen the list");
+        writeln!(file, "{}", id).expect("append");
+        file.sync_all().expect("flush");
+    }
+
+    pub(super) fn context(namespace: &str, scopes: &[Scope]) -> AuthContext {
         AuthContext {
             key_id: "agent".to_string(),
             namespace: namespace.to_string(),
@@ -748,5 +839,164 @@ mod tests {
         let rendered = format!("{:?}", authority);
         assert!(!rendered.contains(&private_hex));
         assert!(rendered.contains(&authority.root_public_key_hex()));
+    }
+}
+
+#[cfg(test)]
+mod revocation_tests {
+    use super::tests::*;
+    use super::*;
+
+    #[test]
+    fn a_revoked_root_token_stops_authenticating() {
+        let (authority, path) = authority_with_revocations("root");
+        let minted = authority
+            .mint(&context("team", &[Scope::Read]), None)
+            .expect("mint");
+        authority
+            .authenticate(&minted.token)
+            .expect("valid before revocation");
+
+        revoke(&path, &minted.revocation_id);
+
+        assert!(
+            matches!(
+                authority.authenticate(&minted.token),
+                Err(TokenError::Revoked)
+            ),
+            "the listed id must end the token it names"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn revoking_a_root_revokes_every_token_attenuated_from_it() {
+        let (authority, path) = authority_with_revocations("subtree");
+        let root = authority
+            .mint(&context("team", &[Scope::Read, Scope::Write]), None)
+            .expect("mint");
+        let public = biscuit_auth::PublicKey::from_bytes_hex(
+            &authority.root_public_key_hex(),
+            Algorithm::Ed25519,
+        )
+        .expect("parse the public key");
+
+        let child = attenuate(
+            &root.token,
+            public,
+            &Attenuation {
+                scopes: Some(vec![Scope::Read]),
+                ..Attenuation::default()
+            },
+        )
+        .expect("attenuate");
+        let grandchild = attenuate(
+            &child,
+            public,
+            &Attenuation {
+                namespace: Some("team:sub".to_string()),
+                ..Attenuation::default()
+            },
+        )
+        .expect("attenuate again");
+
+        authority.authenticate(&grandchild).expect("valid so far");
+
+        // One line, naming the root, ends the whole delegation subtree. This is
+        // the property that makes a revocation list usable at all: an operator
+        // revoking a leaked root does not have to enumerate its delegates.
+        revoke(&path, &root.revocation_id);
+
+        for (label, token) in [
+            ("root", &root.token),
+            ("child", &child),
+            ("grandchild", &grandchild),
+        ] {
+            assert!(
+                matches!(authority.authenticate(token), Err(TokenError::Revoked)),
+                "{} should be revoked with its root",
+                label
+            );
+        }
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn revoking_a_delegate_leaves_its_parent_alone() {
+        let (authority, path) = authority_with_revocations("delegate");
+        let root = authority
+            .mint(&context("team", &[Scope::Read]), None)
+            .expect("mint");
+        let public = biscuit_auth::PublicKey::from_bytes_hex(
+            &authority.root_public_key_hex(),
+            Algorithm::Ed25519,
+        )
+        .expect("parse the public key");
+        let child = attenuate(
+            &root.token,
+            public,
+            &Attenuation {
+                namespace: Some("team:sub".to_string()),
+                ..Attenuation::default()
+            },
+        )
+        .expect("attenuate");
+
+        let ids = revocation_ids(&child).expect("read the child's ids");
+        assert_eq!(ids.len(), 2, "authority block plus one attenuation");
+        assert_eq!(
+            ids[0], root.revocation_id,
+            "the first id is the root's, which is why revoking it kills the subtree"
+        );
+
+        revoke(&path, &ids[1]);
+
+        assert!(
+            matches!(authority.authenticate(&child), Err(TokenError::Revoked)),
+            "the delegate is revoked"
+        );
+        authority
+            .authenticate(&root.token)
+            .expect("the parent it was attenuated from is not");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn an_unrelated_identifier_revokes_nothing() {
+        let (authority, path) = authority_with_revocations("unrelated");
+        let minted = authority
+            .mint(&context("team", &[Scope::Read]), None)
+            .expect("mint");
+        revoke(&path, "00112233445566778899aabbccddeeff");
+        authority
+            .authenticate(&minted.token)
+            .expect("a list naming someone else must not bite");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn revocation_ids_refuses_a_token_that_is_not_one() {
+        assert!(revocation_ids("not-a-token").is_err());
+    }
+
+    #[test]
+    fn two_mints_of_the_same_grant_have_different_revocation_ids() {
+        // Biscuit's ids are per-signature, not per-content: revoking one grant
+        // must not revoke another token minted from the same authority.
+        let (authority, path) = authority_with_revocations("distinct");
+        let ctx = context("team", &[Scope::Read]);
+        let first = authority.mint(&ctx, None).expect("mint");
+        let second = authority.mint(&ctx, None).expect("mint again");
+        assert_ne!(first.revocation_id, second.revocation_id);
+
+        revoke(&path, &first.revocation_id);
+        assert!(matches!(
+            authority.authenticate(&first.token),
+            Err(TokenError::Revoked)
+        ));
+        authority
+            .authenticate(&second.token)
+            .expect("the other token is untouched");
+        let _ = std::fs::remove_file(path);
     }
 }

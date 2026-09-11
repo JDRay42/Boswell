@@ -118,8 +118,8 @@ token that verifies for a subject listed nowhere is authenticated and unauthoriz
 `401`. Boswell still ships no identity provider, and the device-code grant runs between the
 caller and the provider with the gateway not in it (#68).
 
-This is the top half of ADR-022. The bottom half — attenuable tokens — is built too, as of #70;
-revocation is not.
+This is the top half of ADR-022. The bottom half — attenuable tokens (#70) and the revocation
+list that ends one early (#71) — is built too.
 
 ### The gateway mints and verifies attenuable tokens
 
@@ -152,9 +152,9 @@ Three things are worth stating because they are easy to assume otherwise:
   calls `require_namespace` is not narrowed by a namespace attenuation, exactly as an API key
   scoped to a namespace is not restricted there today. This is a property of the handler layer,
   not of the token.
-- **Verification is offline, so a token's expiry is the only thing that ends it early.**
-  `max_ttl_secs` is the ceiling on a requested lifetime; keep it as short as the deployment
-  tolerates until revocation exists.
+- **Verification is offline, so expiry and the revocation list are the only two things that end
+  a token.** `max_ttl_secs` is the ceiling on a requested lifetime; keep it as short as the
+  deployment tolerates, because it bounds how long the list has to remember anything.
 
 The attenuation vocabulary is written as `reject if` rather than `check if`. The gateway
 authorizes one dimension at a time, so a restriction must pass when its dimension is absent from
@@ -273,10 +273,31 @@ authorization logic in it is not reviewable by reading Rust.
 
 ### Revocation
 
-Offline verification means a revoked grant is invisible until something checks. The gateway
-needs a revocation list keyed by token identifier, and every token needs a bounded lifetime so
-the list stays small. A long grant and fast revocation are only compatible as separate
-mechanisms.
+Offline verification means a revoked grant is invisible until something checks. A long grant and
+fast revocation are only compatible as separate mechanisms, so they are separate here: a token
+is bounded by `max_ttl_secs`, and ended before that by a **revocation list**.
+
+The list is a file the gateway re-reads, named by `revocation_list_path` in `[tokens]`. Each
+line is one hex revocation identifier — biscuit's per-block signature — with `#` comments
+allowed. `POST /v1/tokens` returns the `revocation_id` of every token it mints, and
+`boswell-gateway revocation-ids <token>` prints the identifiers of any token an operator holds,
+without needing the root key.
+
+A token is revoked when **any** of its blocks is listed. That is the property that makes the
+list usable: every token attenuated from a root still carries the root's authority block, so one
+line ends the root and its whole delegation subtree, and an operator responding to a leak does
+not have to enumerate the delegates. Revoking an attenuation block instead ends that delegate
+and its descendants while leaving its parent alone.
+
+The file is re-`stat`ed at most once per `revocation_refresh_secs` (default 15), which is the
+delay between appending a line and the gateway honoring it. Nothing else is on the path: no
+restart, no network call, no store. A file that becomes unreadable leaves the entries already
+loaded in force, and a line that is not hex is skipped and logged rather than discarding the
+file around it.
+
+A revoked token gets `401` and is told it was revoked, unlike every other rejection at that
+layer. The holder already holds the token, so naming its fate discloses nothing — and a delegate
+whose *root* was revoked would otherwise read "invalid key" and go looking for a typo.
 
 ### Corroboration must follow the delegation chain
 
@@ -308,7 +329,7 @@ independence; the code catches up when subagents exist.
 | Network eavesdropping | TLS at the operator's proxy or tunnel. | operator's |
 | Hostile local process on the host | None. Everything inside the boundary is one trust domain. | accepted |
 | Subagent holding its parent's full authority | Attenuated tokens, narrowed locally. | decided (ADR-022) |
-| Compromised agent with a long-lived grant | Revocation list plus bounded token lifetimes. | decided (ADR-022) |
+| Compromised agent with a long-lived grant | Revocation list plus bounded token lifetimes. | built |
 | Sybil corroboration by cloned reporters | Corroboration counts the authenticated principal (#33); provenance diversity requires distinct roots (#18). | built |
 | Sybil corroboration by sibling subagents | Resolve each token to its delegation root. | decided (ADR-022) |
 | Claim poisoning by an over-trusted reporter | Assurance-gated tier ceilings; the Gatekeeper evaluates promotion independently. | built, but inert without an identity adapter |
