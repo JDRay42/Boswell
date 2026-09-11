@@ -307,6 +307,30 @@ Still open, and now sharper for having a decided model to sit in:
   is a liveness check for the router alone and always answers `healthy`, and the unmeasured
   memory and CPU figures were removed rather than replaced. *shipped* (#61)
 
+- **A CLI subcommand that appends to the revocation list.** #71 made revocation possible and
+  left revoking itself as `echo <id> >> revoked.txt`. `boswell-gateway revocation-ids` only
+  reads ids out of a token; nothing writes one. A subcommand that appends, refuses duplicates
+  and creates the file if absent closes that. Deliberately **not** an HTTP endpoint: revoking
+  over the wire needs an admin scope the gateway does not have, and granting one is a separate
+  decision, not a detail of this item. *open*
+- **Validate the identity shape `authenticated_principal` assumes.** It splits on the first
+  `/` and nothing checks the result. An identity of `""` returns `""`, and an OIDC `sub`
+  containing a `/` is truncated to its first segment. Truncation is fail-*closed* for Sybil
+  purposes — it collapses more identities onto one witness, never fewer — so this is not a
+  hole, it is an unenforced assumption. Validate the shape at config load, where a bad value
+  can still be reported, rather than at use. *open*
+- **Ship defaults that actually use the brake.** `max_ttl_secs` defaults to 30 days and
+  revocation is off, so a config with `[tokens]` and no `revocation_list_path` is exactly the
+  pre-#71 situation. The brake exists and nothing makes an operator pull it. Shorten the
+  default TTL and have the starter config name a revocation path, so the default posture is
+  the one the security work was for. *open*
+- **Audit which routes bind namespace attenuation.** Attenuation narrows a token only where a
+  handler calls `require_namespace`, which is four call sites in `handlers.rs`; a route that
+  never calls it is not narrowed, the same limit an API key's namespace has today. This item
+  is **the audit, not the fix**: enumerate every route, record which bind and which do not,
+  and write the result into `10-security.md`. Fixing the gaps is a separate slice, and sizing
+  it is the point of doing this one first. *open*
+
 ## Transport and interfaces
 
 Every way in: gRPC, the router, the SDK, the HTTP gateway, MCP, the CLI.
