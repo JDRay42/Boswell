@@ -301,43 +301,67 @@ max_body_bytes = 1048576      # 1 MiB request-body cap
 request_timeout_secs = 30
 rate_limit_per_minute = 120   # per key; 0 disables
 
-# API keys. Store the SHA-256 hash of each key, never the raw key. Generate one:
-#   KEY=$(openssl rand -hex 32); echo "raw:   $KEY"; \
-#     printf '%s' "$KEY" | sha256sum | cut -d' ' -f1
-# Give the raw KEY to the client (Authorization: Bearer <key>); put the hash here.
+# ---------------------------------------------------------------------------
+# Authentication
 #
-# namespace: the key may only read/write within this namespace (or its children,
-#            i.e. "<namespace>:..."). Empty or "*" means unrestricted.
-# scopes:    any of "read", "write", "delete".
-[[api_keys]]
-id = "example-agent"
-key_hash = "0000000000000000000000000000000000000000000000000000000000000000"
-namespace = "agent"
-scopes = ["read", "write"]
+# Two credentials let a caller in, and they are alternatives — configure either,
+# or both, but not neither, because nothing else authenticates:
+#
+#   OIDC        a caller presents a JWT from an identity provider you already
+#               run. Recommended, because authority is granted and withdrawn
+#               where the rest of your accounts already are.
+#   API keys    a shared secret you generate and store hashed. Fully supported
+#               and needs no identity provider; it is the shorter route to a
+#               gateway that works.
+#
+# Attenuable tokens, further down, are neither of those. They are what a caller
+# trades an accepted credential for so it can narrow authority for a subagent.
+# ---------------------------------------------------------------------------
 
-# OIDC (ADR-022). Optional: leave the whole section out to accept API keys only.
-#
-# Boswell ships no identity provider. Point this at one you already run (Pocket
-# ID is a reasonable local choice). A caller obtains a token from that provider
-# — the device-code grant needs no browser on the agent's side — and presents it
-# as Authorization: Bearer <token>. The gateway verifies it against the
-# provider's published keys, which it caches, so no request costs a round trip.
+# OIDC (ADR-022). Boswell ships no identity provider. Point this at one you
+# already run (Pocket ID is a reasonable local choice). A caller obtains a token
+# from that provider — the device-code grant needs no browser on the agent's
+# side — and presents it as Authorization: Bearer <token>. The gateway verifies
+# it against the provider's published keys, which it caches, so no request costs
+# a round trip.
 #
 # Verification establishes who is asking. What they may do comes from the
-# principals below, exactly as it comes from api_keys above: a token that
-# verifies for a subject listed nowhere here is refused with 403.
+# principals below: a token that verifies for a subject listed nowhere here is
+# refused with 403.
 #
-# [oidc]
-# issuer = "https://id.example.com"
-# audiences = ["boswell"]           # empty disables the audience check
-# jwks_uri = ""                     # empty = discover it from the issuer
-# jwks_refresh_secs = 3600
-# leeway_secs = 60                  # clock-skew tolerance
+# The issuer and subject below are placeholders. Replace both, or delete this
+# whole section and use API keys — an unreachable issuer fails every JWT.
+[oidc]
+issuer = "https://id.example.com"
+audiences = ["boswell"]           # empty disables the audience check
+jwks_uri = ""                     # empty = discover it from the issuer
+jwks_refresh_secs = 3600
+leeway_secs = 60                  # clock-skew tolerance
+
+# subject:   the provider's stable `sub` claim, not an email address.
+# namespace: the principal may only read/write within this namespace (or its
+#            children, i.e. "<namespace>:..."). Empty or "*" means unrestricted.
+# scopes:    any of "read", "write", "delete".
+[[oidc.principals]]
+subject = "01234567-89ab-cdef-0123-456789abcdef"
+namespace = "team"
+scopes = ["read", "write"]
+
+# API keys. A supported alternative to OIDC, not a deprecated one: with no
+# identity provider to point at, this is the whole authentication story and it
+# works. Uncomment the block below to use it; keep both sections to run them
+# side by side.
 #
-# subject: the provider's stable `sub` claim, not an email address.
-# [[oidc.principals]]
-# subject = "01234567-89ab-cdef-0123-456789abcdef"
-# namespace = "team"
+# Store the SHA-256 hash of each key, never the raw key. Generate one:
+#   KEY=$(openssl rand -hex 32); echo "raw:   $KEY"; \
+#     printf '%s' "$KEY" | sha256sum | cut -d' ' -f1
+# Give the raw KEY to the client (Authorization: Bearer <key>); put the hash
+# here. `namespace` and `scopes` mean what they mean for a principal above.
+#
+# [[api_keys]]
+# id = "example-agent"
+# key_hash = "0000000000000000000000000000000000000000000000000000000000000000"
+# namespace = "agent"
 # scopes = ["read", "write"]
 
 # Attenuable tokens (ADR-022). Optional: leave the section out and the gateway
@@ -408,28 +432,61 @@ mod tests {
     #[test]
     fn test_starter_toml_is_valid() {
         let c: GatewayConfig = toml::from_str(GatewayConfig::starter_toml()).unwrap();
-        assert_eq!(c.api_keys.len(), 1);
-        assert_eq!(c.api_keys[0].namespace, "agent");
         // The config an operator is handed must itself pass the check the
         // loader applies to theirs.
         c.validate_identities().unwrap();
     }
 
-    /// Uncomment the starter's `[tokens]` example and it must parse. Nothing
-    /// else checks the commented half of the file, so a typo there ships.
-    fn starter_tokens_example() -> TokenConfig {
+    /// The starter steers an operator at OIDC: that section is live, and the
+    /// API-key one is commented beside it. Either credential is supported, so
+    /// this test is about which one the file presents, not which one works.
+    #[test]
+    fn the_starter_leads_with_oidc_and_ships_no_live_api_key() {
+        let c: GatewayConfig = toml::from_str(GatewayConfig::starter_toml()).unwrap();
+        let oidc = c.oidc.expect("the starter must configure [oidc]");
+        assert_eq!(oidc.issuer, "https://id.example.com");
+        assert_eq!(oidc.principals.len(), 1);
+        assert_eq!(oidc.principals[0].namespace, "team");
+        assert!(
+            c.api_keys.is_empty(),
+            "the starter must not ship a live [[api_keys]] entry"
+        );
+    }
+
+    /// Uncomment a commented example out of the starter and it must parse.
+    /// Nothing else checks the commented half of the file, so a typo there
+    /// ships to whichever operator uncomments it.
+    fn starter_commented_block(marker: &str) -> GatewayConfig {
         let src = GatewayConfig::starter_toml();
         let start = src
-            .find("# [tokens]")
-            .expect("the starter must carry a [tokens] example");
+            .find(marker)
+            .unwrap_or_else(|| panic!("the starter must carry a {marker} example"));
         let block: String = src[start..]
             .lines()
             .take_while(|l| l.starts_with('#'))
             .map(|l| format!("{}\n", l.trim_start_matches('#').trim_start()))
             .collect();
-        let c: GatewayConfig =
-            toml::from_str(&block).expect("the [tokens] example must be valid TOML");
-        c.tokens.expect("the example must populate [tokens]")
+        toml::from_str(&block)
+            .unwrap_or_else(|e| panic!("the {marker} example must be valid TOML: {e}"))
+    }
+
+    fn starter_tokens_example() -> TokenConfig {
+        starter_commented_block("# [tokens]")
+            .tokens
+            .expect("the example must populate [tokens]")
+    }
+
+    /// API keys are a supported path, not a deprecated one, so the example an
+    /// operator uncomments has to parse and has to survive the load-time
+    /// identity check — the same guarantee the live OIDC block gets above.
+    #[test]
+    fn the_starter_s_api_key_example_works_when_uncommented() {
+        let c = starter_commented_block("# [[api_keys]]");
+        assert_eq!(c.api_keys.len(), 1);
+        assert_eq!(c.api_keys[0].id, "example-agent");
+        assert_eq!(c.api_keys[0].namespace, "agent");
+        assert_eq!(c.api_keys[0].scopes, vec!["read", "write"]);
+        c.validate_identities().unwrap();
     }
 
     /// The point of the item that produced this test: an operator who enables

@@ -193,18 +193,66 @@ authenticated HTTP/JSON API so remote agents (e.g. Claude on the web) can use
 Boswell over HTTPS. It reuses the SDK internally and keeps the gRPC instance
 private; serve TLS and public reach via a reverse proxy or tunnel in front of it.
 
-It is the only component with real request authentication: SHA-256-hashed bearer
-API keys, per-key scopes and rate limits, and namespace isolation. Its surface
-covers claims (including batch writes and `learn`), relationships, search and
-recall, extraction, hook ingest, and the goal/procedure/receipt endpoints.
+It is the only component with real request authentication. Its surface covers
+claims (including batch writes and `learn`), relationships, search and recall,
+extraction, hook ingest, and the goal/procedure/receipt endpoints.
 
 ```bash
-# Write a starter config and add your API-key hashes (see the file's comments)
+# Write a starter config, then edit it (see the file's comments)
 cargo run -p boswell-gateway -- init config/gateway.toml
 
 # Start the gateway (defaults to 127.0.0.1:8081)
 cargo run -p boswell-gateway -- --config config/gateway.toml
 ```
+
+#### Authenticating to the gateway
+
+Two credentials get a caller in, and they are alternatives. Configure one or
+both; configure neither and nothing can authenticate.
+
+**OIDC ([ADR-022](docs/ADRs/022-delegated-credentials.md)) — the recommended
+path, and the one the starter config leads with.** A caller presents a JWT from
+an identity provider you already run, and the gateway verifies it against that
+provider's published keys, which it caches. Boswell ships no identity provider;
+[Pocket ID](https://pocket-id.org) is a reasonable local choice, and `boswell
+login` runs the device-code grant against any issuer, so a headless agent needs
+no browser. Verification says *who* is asking. *What* they may do comes from an
+`[[oidc.principals]]` entry matching the token's `sub`; a token that verifies
+for a subject listed nowhere gets `403`. Prefer this because authority is
+granted and withdrawn in your identity provider, alongside your other accounts.
+
+**API keys — fully supported, and the shorter route to a working gateway.** Not
+deprecated and not going away: with no identity provider to point at, this is
+the whole authentication story. Keys are stored as SHA-256 hashes, never in
+plaintext, and carry the same per-key namespace and scopes an OIDC principal
+does. Uncomment the `[[api_keys]]` block the starter config ships and fill it
+in. Generate a key and its hash:
+
+```bash
+KEY=$(openssl rand -hex 32)
+echo "raw:  $KEY"                                  # give this to the client
+printf '%s' "$KEY" | sha256sum | cut -d' ' -f1     # put this in key_hash
+```
+
+```toml
+[[api_keys]]
+id = "example-agent"          # audit-log identifier, never the secret
+key_hash = "…"                # the hash printed above
+namespace = "agent"           # "" or "*" = unrestricted
+scopes = ["read", "write"]    # any of read | write | delete
+```
+
+**Attenuable tokens** are neither of those; they are what a caller trades an
+accepted credential for. With a `[tokens]` section configured, an authenticated
+caller `POST`s to `/v1/tokens` and gets a token holding exactly the authority it
+already had, then narrows copies of it for subagents offline — fewer scopes, a
+deeper namespace, a shorter life. Narrowing is enforced by the signature, so a
+holder can only remove. Verification is offline too, which makes expiry and the
+revocation list the only two things that end a token early.
+
+Per-key rate limits and namespace isolation apply the same way whichever
+credential was presented. The [HTTP API guide](docs/integrations/http-api.md)
+has the full detail on all three.
 
 Server-side LLM extraction (`POST /v1/extract` and LLM-mode `/v1/hooks/ingest`)
 requires enabling `[extraction]` in the instance config. See the full
@@ -329,8 +377,11 @@ for the following.
   speaks the `device_code`, `refresh_token` and `client_credentials` grants a headless agent
   needs to hold a credential without a browser in the loop. WebAuthn requires a secure context,
   so give it a locally-trusted certificate (`mkcert`) rather than plain HTTP. **Boswell ships no
-  adapter for it.** Wiring one is yours to write against the `IdentityProvider` port, and until
-  you do, writes are stamped `Assurance::None` exactly as described above.
+  `IdentityProvider` adapter for it.** Wiring one is yours to write against that port, and until
+  you do, writes are stamped `Assurance::None` exactly as described above. That port is separate
+  from the gateway's own OIDC verification, which needs no adapter: point `[oidc]` at the same
+  issuer and the gateway verifies its tokens directly. The two answer different questions —
+  the port sets a write's assurance tier, `[oidc]` decides whether the request is let in at all.
 - **The gRPC instance does not authenticate, and it now refuses to bind anywhere but
   loopback.** Per [ADR-021](docs/ADRs/021-gateway-is-the-security-boundary.md) the instance sits
   *inside* the boundary the gateway draws, so a routable `bind_address` is a startup error
@@ -339,11 +390,13 @@ for the following.
   authentication, and worse than none. That field and its checks are gone. Anything that can
   reach the instance's loopback port still has full write access to every tier. Reach memory
   from remote agents only through [`boswell-gateway`](docs/integrations/http-api.md), which
-  **does** authenticate: SHA-256-hashed bearer API keys, per-key scopes and rate limits, and
-  namespace isolation. Put TLS in front of the gateway with a reverse proxy or tunnel — the
+  **does** authenticate: OIDC tokens verified against an identity provider you run, or
+  SHA-256-hashed bearer API keys, either one carrying per-key scopes, rate limits, and namespace
+  isolation. Agents narrow their own authority for subagents with attenuable tokens
+  ([ADR-022](docs/ADRs/022-delegated-credentials.md)). Put TLS in front of the gateway with a reverse proxy or tunnel — the
   gateway does not terminate it, and neither does the instance (setting `enable_tls` on the
-  instance refuses to start rather than pretending). Rotate gateway API keys and the router
-  `jwt_secret`; never ship the placeholder secrets. The router still mints a signed session JWT
+  instance refuses to start rather than pretending). Rotate any gateway API keys you configure, the
+  `[tokens]` root key, and the router `jwt_secret`; never ship the placeholder secrets. The router still mints a signed session JWT
   for topology discovery ([ADR-019](docs/ADRs/019-stateless-sessions.md)); no instance
   reads it, and it is not an authorization credential. See the
   [security model](docs/architecture/10-security.md) and the

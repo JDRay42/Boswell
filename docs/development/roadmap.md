@@ -360,6 +360,21 @@ Still open, and now sharper for having a decided model to sit in:
   is **the audit, not the fix**: enumerate every route, record which bind and which do not,
   and write the result into `10-security.md`. Fixing the gaps is a separate slice, and sizing
   it is the point of doing this one first. *open*
+- **Lead the starter config with OIDC, keep API keys documented.** `auth_middleware` tries
+  an API key, an OIDC JWT, and a biscuit as peers, and whichever wins produces the same
+  `AuthContext` — so the starter config deciding which credential an operator reaches for
+  first is the only thing steering the deployment toward the ADR-022 model, where a human
+  authorizes an agent through an IdP and biscuits attenuate from there. `starter_toml()`
+  now ships `[oidc]` and `[[oidc.principals]]` live and `[[api_keys]]` commented beside
+  them, reversing what it did before. API keys are **not** deprecated and **not** removed:
+  a gateway with no identity provider to point at authenticates entirely on keys, so the
+  README and the HTTP API guide now present both routes with the key-generation recipe
+  spelled out rather than left in a config comment. Both README sections that called API
+  keys the gateway's only authentication predated #68 and #70 and are corrected. A test
+  parses the commented `[[api_keys]]` example the way #76's test parses the `[tokens]` one,
+  so a typo in the half an operator uncomments cannot ship. Deliberately **no** runtime
+  change: gating `mint_token` on the credential type, so a static key cannot start a
+  delegation tree, is a real question and a separate slice. *shipped* (#78)
 
 ## Transport and interfaces
 

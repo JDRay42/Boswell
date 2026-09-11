@@ -21,7 +21,7 @@ Cloud agent ──HTTPS──> [reverse proxy / tunnel: TLS] ──HTTP──> b
 ## Running
 
 ```bash
-# Write a starter config, then edit it to add API-key hashes.
+# Write a starter config, then fill in [oidc] or uncomment [[api_keys]].
 cargo run -p boswell-gateway -- init config/gateway.toml
 cargo run -p boswell-gateway -- --config config/gateway.toml
 ```
@@ -40,11 +40,23 @@ max_body_bytes = 1048576      # request-body cap
 request_timeout_secs = 30
 rate_limit_per_minute = 120   # per key; 0 disables
 
+# The starter ships this section live: OIDC is the path it leads with.
+[oidc]
+issuer = "https://id.example.com"
+audiences = ["boswell"]       # empty disables the audience check
+
+[[oidc.principals]]
+subject = "01234567-…"        # the provider's stable `sub` claim
+namespace = "team"            # "" or "*" = unrestricted
+scopes = ["read", "write"]    # any of read | write | delete
+
+# The starter ships this one commented, as the alternative. Uncomment to use
+# it; keep both and they are checked independently.
 [[api_keys]]
 id = "example-agent"          # audit-log identifier, never the secret
 key_hash = "…"                # lowercase hex SHA-256 of the raw key
-namespace = "agent"           # "" or "*" = unrestricted
-scopes = ["read", "write"]    # any of read | write | delete
+namespace = "agent"
+scopes = ["read", "write"]
 ```
 
 ## Authentication
@@ -55,7 +67,13 @@ Every `/v1` request except `GET /v1/health` requires a bearer token:
 Authorization: Bearer <key>
 ```
 
-Keys are stored as **SHA-256 hashes**, never in plaintext. The gateway hashes the
+Two credentials are accepted and they are alternatives: an **OIDC token** from an identity
+provider you run, or an **API key** you generate. Configure either or both. Neither is
+deprecated; the starter config leads with OIDC because authority is then granted and
+withdrawn where your other accounts already are, but an API-key-only gateway is a supported
+deployment.
+
+API keys are stored as **SHA-256 hashes**, never in plaintext. The gateway hashes the
 presented key and matches it against `key_hash`. Generate a key and its hash:
 
 ```bash
