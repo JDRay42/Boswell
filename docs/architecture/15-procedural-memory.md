@@ -584,6 +584,13 @@ store counts independence units, and the transport decides what identity a stamp
 under. Keeping the definition in one place is what makes the agreement checkable instead of
 coincidental. `crates/boswell-gateway/tests/attenuable_tokens.rs` pins the join.
 
+`authenticated_principal` is total: it narrows and never fails, which is what makes it safe, and
+also what makes a mistyped identity invisible. `validate_principal`, beside it, is the input side
+of the same assumption, and the gateway applies it at config load — an `[[api_keys]]` `id` or an
+`[[oidc.principals]]` `subject` that is empty or carries a `/` is refused before the gateway
+starts. That is the only point at which a bad identity can still be reported rather than quietly
+counted as something shorter. See [`10-security.md`](10-security.md).
+
 **Finding 2 — the project leader could not endorse the worker it leads. Resolved.** devAuth's
 module doc states the gradient plainly: "the worker writes task-tier, the project-leader can
 endorse into project tier". Measured, that never happened. The leader's authority covered

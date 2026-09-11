@@ -318,11 +318,17 @@ Still open, and now sharper for having a decided model to sit in:
   over the wire needs an admin scope the gateway does not have, and granting one is a separate
   decision, not a detail of this item. *shipped* (#74)
 - **Validate the identity shape `authenticated_principal` assumes.** It splits on the first
-  `/` and nothing checks the result. An identity of `""` returns `""`, and an OIDC `sub`
-  containing a `/` is truncated to its first segment. Truncation is fail-*closed* for Sybil
-  purposes — it collapses more identities onto one witness, never fewer — so this is not a
-  hole, it is an unenforced assumption. Validate the shape at config load, where a bad value
-  can still be reported, rather than at use. *open*
+  `/` and nothing checked the result. An identity of `""` returned `""`, and an OIDC `sub`
+  containing a `/` was truncated to its first segment. Truncation is fail-*closed* for Sybil
+  purposes — it collapses more identities onto one witness, never fewer — so this was never a
+  hole, it was an unenforced assumption. `boswell_domain::validate_principal` now states the
+  shape beside `authenticated_principal`, and `GatewayConfig::from_file` applies it to the two
+  places an identity can enter: an `[[api_keys]]` `id` and an `[[oidc.principals]]` `subject`.
+  A minted token's principal is copied from the context that minted it, so it inherits one of
+  those two and adds no third source. Empty, blank, or carrying a `/` is refused at load,
+  naming the field and the value. Deliberately **not** a check on the request path: rejecting
+  there would turn a silent narrowing into an outage, and the narrowing is the safe direction.
+  *shipped* (#75)
 - **Ship defaults that actually use the brake.** `max_ttl_secs` defaults to 30 days and
   revocation is off, so a config with `[tokens]` and no `revocation_list_path` is exactly the
   pre-#71 situation. The brake exists and nothing makes an operator pull it. Shorten the

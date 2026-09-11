@@ -4,6 +4,7 @@
 //! presents the raw key as `Authorization: Bearer <key>`; the gateway hashes it
 //! and matches against `key_hash`.
 
+use boswell_domain::{validate_principal, PrincipalShapeError};
 use serde::Deserialize;
 use std::path::Path;
 use thiserror::Error;
@@ -18,6 +19,21 @@ pub enum ConfigError {
     /// The config file was not valid TOML for this schema.
     #[error("Failed to parse config TOML: {0}")]
     TomlParse(#[from] toml::de::Error),
+
+    /// A configured identity is not shaped like an authenticated principal.
+    ///
+    /// Every principal this gateway ever names comes from one of two places in
+    /// this file, so this is the last point at which a bad one can be reported
+    /// rather than silently narrowed. See [`boswell_domain::validate_principal`].
+    #[error("{field} = {value:?} is not an authenticated principal: {source}")]
+    Identity {
+        /// Where in the file the offending value sits, e.g. `api_keys[0].id`.
+        field: String,
+        /// The value as configured.
+        value: String,
+        /// What is wrong with its shape.
+        source: PrincipalShapeError,
+    },
 }
 
 /// Top-level gateway configuration.
@@ -210,7 +226,46 @@ impl GatewayConfig {
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
         let contents = std::fs::read_to_string(path)?;
         let config: GatewayConfig = toml::from_str(&contents)?;
+        config.validate_identities()?;
         Ok(config)
+    }
+
+    /// Check that every identity this file names is shaped like an
+    /// authenticated principal (design §8.3).
+    ///
+    /// `AuthContext::key_id` becomes a receipt's `issued_to`, which becomes a
+    /// stamp's `author`, which is what corroboration counts independence over —
+    /// after `authenticated_principal` has stripped anything past the first
+    /// `/`. That narrowing is total and silent by design, so an identity
+    /// carrying a subagent path is not rejected anywhere downstream; it is just
+    /// counted as something shorter than what was written down. Here is the
+    /// only place left where saying so is still useful.
+    ///
+    /// The two sources are exhaustive: an API key's `id` is used verbatim, and
+    /// an OIDC subject becomes `oidc:<sub>`. A minted token's principal is
+    /// copied from the `AuthContext` that minted it, so it inherits whichever
+    /// of the two it came from and adds no third shape.
+    pub fn validate_identities(&self) -> Result<(), ConfigError> {
+        for (i, key) in self.api_keys.iter().enumerate() {
+            validate_principal(&key.id).map_err(|source| ConfigError::Identity {
+                field: format!("api_keys[{}].id", i),
+                value: key.id.clone(),
+                source,
+            })?;
+        }
+        for (i, principal) in self
+            .oidc
+            .iter()
+            .flat_map(|o| o.principals.iter())
+            .enumerate()
+        {
+            validate_principal(&principal.subject).map_err(|source| ConfigError::Identity {
+                field: format!("oidc.principals[{}].subject", i),
+                value: principal.subject.clone(),
+                source,
+            })?;
+        }
+        Ok(())
     }
 
     /// Full `address:port` the server binds to.
@@ -348,5 +403,119 @@ mod tests {
         let c: GatewayConfig = toml::from_str(GatewayConfig::starter_toml()).unwrap();
         assert_eq!(c.api_keys.len(), 1);
         assert_eq!(c.api_keys[0].namespace, "agent");
+        // The config an operator is handed must itself pass the check the
+        // loader applies to theirs.
+        c.validate_identities().unwrap();
+    }
+
+    /// Writing the config out and loading it back is the path that matters:
+    /// `validate_identities` is only useful if `from_file` actually runs it.
+    fn load(toml: &str) -> Result<GatewayConfig, ConfigError> {
+        let dir = std::env::temp_dir().join(format!(
+            "boswell-cfg-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("gateway.toml");
+        std::fs::write(&path, toml).unwrap();
+        let result = GatewayConfig::from_file(&path);
+        std::fs::remove_dir_all(&dir).ok();
+        result
+    }
+
+    #[test]
+    fn an_api_key_id_carrying_a_subagent_path_is_refused_at_load() {
+        let err = load(
+            r#"
+            [[api_keys]]
+            id = "agent:orch-7/sub:explore-3"
+            key_hash = "abc"
+        "#,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                ConfigError::Identity { field, source, .. }
+                    if field == "api_keys[0].id"
+                        && *source == PrincipalShapeError::SubagentPath
+            ),
+            "unexpected error: {err}"
+        );
+        // The offending value is named, so the operator does not have to guess
+        // which of several entries it was.
+        assert!(err.to_string().contains("agent:orch-7/sub:explore-3"));
+    }
+
+    #[test]
+    fn an_empty_api_key_id_is_refused_at_load() {
+        let err = load(
+            r#"
+            [[api_keys]]
+            id = ""
+            key_hash = "abc"
+        "#,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&err, ConfigError::Identity { source, .. }
+                if *source == PrincipalShapeError::Empty),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn an_oidc_subject_carrying_a_slash_is_refused_at_load() {
+        let err = load(
+            r#"
+            [oidc]
+            issuer = "https://idp.example"
+
+            [[oidc.principals]]
+            subject = "alice"
+
+            [[oidc.principals]]
+            subject = "tenant-a/alice"
+        "#,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                ConfigError::Identity { field, source, .. }
+                    if field == "oidc.principals[1].subject"
+                        && *source == PrincipalShapeError::SubagentPath
+            ),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn a_config_naming_only_bare_principals_loads() {
+        let c = load(
+            r#"
+            [[api_keys]]
+            id = "example-agent"
+            key_hash = "abc"
+
+            [oidc]
+            issuer = "https://idp.example"
+
+            [[oidc.principals]]
+            subject = "01234567-89ab-cdef-0123-456789abcdef"
+        "#,
+        )
+        .unwrap();
+        assert_eq!(c.api_keys.len(), 1);
+        assert_eq!(c.oidc.unwrap().principals.len(), 1);
+    }
+
+    #[test]
+    fn a_config_with_no_identities_at_all_loads() {
+        load("bind_port = 9099").unwrap();
     }
 }

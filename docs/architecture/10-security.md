@@ -104,6 +104,19 @@ to reach gRPC to use Boswell.
 The gateway defaults to binding `127.0.0.1:8081`. Exposing it is the operator's deliberate act,
 and is where TLS enters — see [TLS](#tls-is-somebody-elses-job).
 
+**Configured identities are shape-checked when the file loads.** Every principal the gateway
+ever names comes from one of two places in `gateway.toml` — an `[[api_keys]]` `id`, used
+verbatim, or an `[[oidc.principals]]` `subject`, which becomes `oidc:<sub>`. A minted token's
+principal is copied from whichever of the two authenticated the mint, so it adds no third
+shape. That value travels: it becomes a receipt's `issued_to`, then a stamp's `author`, and
+corroboration counts independence over it *after* `authenticated_principal` has discarded
+everything past the first `/` (design §8.3). The narrowing is total and deliberately silent —
+it can only collapse identities onto one witness, never split one into several, so it is
+fail-closed — which means a misconfigured identity is never rejected downstream, merely counted
+as something shorter than what was written. `GatewayConfig::from_file` therefore refuses an
+identity that is empty or carries a `/`, naming the offending field and value. It is the last
+point at which saying so is useful.
+
 ### The gateway verifies OIDC tokens
 
 Optional, and off unless the config carries an `[oidc]` section. The gateway accepts a JWT from
