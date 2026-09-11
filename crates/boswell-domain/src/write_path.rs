@@ -331,6 +331,61 @@ pub fn authenticated_principal(identity: &str) -> &str {
     }
 }
 
+/// Why a configured identity is not usable as an authenticated principal.
+///
+/// Hand-written rather than derived: `boswell-domain` is the dependency-light
+/// core and carries no error crate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrincipalShapeError {
+    /// The identity is empty, or nothing but whitespace. It names no one, and
+    /// [`authenticated_principal`] would hand the empty string to the counting
+    /// end as if it were a witness.
+    Empty,
+
+    /// The identity carries a `/`. That is the *derived* shape — a principal
+    /// plus a self-declared subagent path — and everything after the first `/`
+    /// is silently discarded wherever independence is counted.
+    SubagentPath,
+}
+
+impl std::fmt::Display for PrincipalShapeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => write!(f, "an authenticated principal may not be empty"),
+            Self::SubagentPath => write!(
+                f,
+                "an authenticated principal may not contain '/': everything after the first '/' \
+                 is a self-declared subagent path and is stripped wherever independence is counted"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PrincipalShapeError {}
+
+/// Whether `identity` is shaped like an authenticated principal — the *input*
+/// side of the assumption [`authenticated_principal`] makes about its output.
+///
+/// [`authenticated_principal`] is total: it never fails, it just narrows. That
+/// is deliberate and fail-*closed* for Sybil purposes, because collapsing two
+/// identities onto one witness undercounts independence and never overcounts
+/// it. The cost is that a misconfigured identity is never reported — a subject
+/// of `alice/team` is quietly counted as `alice`, and an empty one is quietly
+/// counted as nothing.
+///
+/// So the shape is checked where a bad value can still be *reported*: at config
+/// load, on the identities an operator writes down, and not on the request
+/// path, where a rejection would turn a narrowing into an outage.
+pub fn validate_principal(identity: &str) -> Result<(), PrincipalShapeError> {
+    if identity.trim().is_empty() {
+        return Err(PrincipalShapeError::Empty);
+    }
+    if identity.contains('/') {
+        return Err(PrincipalShapeError::SubagentPath);
+    }
+    Ok(())
+}
+
 /// The tier a stamped write may **enter** at (design §5.2):
 /// `min(requested, author.max_tier, evidence_ceiling, assurance_ceiling)`.
 ///
@@ -579,6 +634,44 @@ mod tests {
             "agent:orch-7"
         );
         assert_eq!(authenticated_principal(""), "");
+    }
+
+    #[test]
+    fn a_bare_principal_is_the_shape_config_must_carry() {
+        assert_eq!(validate_principal("agent:orch-7"), Ok(()));
+        assert_eq!(validate_principal("human:jd"), Ok(()));
+    }
+
+    #[test]
+    fn an_empty_or_blank_identity_names_no_one() {
+        assert_eq!(validate_principal(""), Err(PrincipalShapeError::Empty));
+        assert_eq!(validate_principal("   "), Err(PrincipalShapeError::Empty));
+    }
+
+    #[test]
+    fn a_derived_identity_is_not_a_principal() {
+        assert_eq!(
+            validate_principal("agent:orch-7/sub:explore-3"),
+            Err(PrincipalShapeError::SubagentPath)
+        );
+        // A trailing slash still loses everything after it, so it is still the
+        // derived shape even though the suffix is empty.
+        assert_eq!(
+            validate_principal("agent:orch-7/"),
+            Err(PrincipalShapeError::SubagentPath)
+        );
+    }
+
+    /// The two functions are input and output sides of one assumption: anything
+    /// `validate_principal` accepts must survive `authenticated_principal`
+    /// unchanged, or config validation would be checking a different rule from
+    /// the one the counting end applies.
+    #[test]
+    fn what_validate_principal_accepts_authenticated_principal_leaves_alone() {
+        for id in ["agent:orch-7", "human:jd", "oidc:01234-abcd", "a"] {
+            assert_eq!(validate_principal(id), Ok(()));
+            assert_eq!(authenticated_principal(id), id);
+        }
     }
 
     #[test]
