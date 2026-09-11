@@ -1263,6 +1263,10 @@ pub struct MintTokenResponse {
     /// Root public key, hex. A holder needs it to parse its own token before
     /// attenuating it; it cannot mint, so publishing it costs nothing.
     root_public_key: String,
+    /// This token's revocation identifier, hex. Record it: adding this line to
+    /// the gateway's revocation list ends this token and every token attenuated
+    /// from it, which is the only way to end one before it expires.
+    revocation_id: String,
 }
 
 /// Trade an authenticated identity for a root token carrying the same authority.
@@ -1296,7 +1300,8 @@ pub async fn mint_token(
     })?;
 
     tracing::info!(
-        "minted token for '{}' (namespace '{}', expires {})",
+        "minted token {} for '{}' (namespace '{}', expires {})",
+        minted.revocation_id,
         ctx.key_id,
         ctx.namespace,
         minted.expires_at
@@ -1306,5 +1311,6 @@ pub async fn mint_token(
         token: minted.token,
         expires_at: minted.expires_at,
         root_public_key: authority.root_public_key_hex(),
+        revocation_id: minted.revocation_id,
     }))
 }

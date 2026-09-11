@@ -43,6 +43,12 @@ async fn dispatch() -> Result<(), GatewayError> {
             keygen();
             Ok(())
         }
+        Some("revocation-ids") => {
+            let token = args.get(2).ok_or_else(|| {
+                GatewayError::Serve("revocation-ids requires a token argument".to_string())
+            })?;
+            revocation_ids(token)
+        }
         Some("--config") => {
             let path = args.get(2).ok_or_else(|| {
                 GatewayError::Serve("--config requires a path argument".to_string())
@@ -103,6 +109,28 @@ fn keygen() {
     println!("# public_key = \"{}\"", keypair.public().to_bytes_hex());
 }
 
+/// Print every revocation identifier of a token, one per line.
+///
+/// The token is parsed but not verified, so this works without the root key —
+/// an operator handed a token to revoke should not need the gateway's secret to
+/// name it. The first line is the authority block: revoking it ends the root
+/// grant and every token attenuated from it. Each line after it belongs to one
+/// attenuation, and revoking that one ends that delegate alone.
+fn revocation_ids(token: &str) -> Result<(), GatewayError> {
+    let ids = boswell_gateway::tokens::revocation_ids(token.trim())
+        .map_err(|e| GatewayError::Serve(format!("could not read the token: {e}")))?;
+
+    for (index, id) in ids.iter().enumerate() {
+        let role = if index == 0 {
+            "root grant (revoking this ends every token attenuated from it)"
+        } else {
+            "attenuation block"
+        };
+        println!("{id}  # block {index}: {role}");
+    }
+    Ok(())
+}
+
 fn print_help() {
     println!("Boswell Gateway - public HTTP/JSON API in front of the private gRPC instance");
     println!();
@@ -110,6 +138,8 @@ fn print_help() {
     println!("    boswell-gateway --config <path>  Start the gateway with a config file");
     println!("    boswell-gateway init [path]      Write a starter config (default: config/gateway.toml)");
     println!("    boswell-gateway keygen           Print a new attenuable-token root key pair");
+    println!("    boswell-gateway revocation-ids <token>");
+    println!("                                     Print a token's revocation identifiers");
     println!("    boswell-gateway                  Start with built-in defaults (no API keys)");
     println!("    boswell-gateway --help           Print this help");
     println!();
@@ -120,6 +150,9 @@ fn print_help() {
     println!("    [[api_keys]] id, key_hash, namespace, scopes                  bearer keys (hashes only)");
     println!("    [oidc] issuer, principals                                     identity-provider tokens");
     println!("    [tokens] root_private_key, default_ttl_secs, max_ttl_secs     attenuable tokens");
+    println!(
+        "    [tokens] revocation_list_path, revocation_refresh_secs        the revocation file"
+    );
     println!();
     println!("SECURITY:");
     println!("    Serves plain HTTP on localhost. Put a reverse proxy or tunnel in front for TLS");

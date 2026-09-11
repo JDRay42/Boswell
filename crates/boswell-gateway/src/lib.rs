@@ -17,7 +17,8 @@
 //! Where a `[tokens]` section is configured there is a third: an **attenuable
 //! token** minted by `POST /v1/tokens` from either of the other two, which its
 //! holder narrows offline for subagents. It ends in the same `AuthContext` as
-//! well; see [`tokens`].
+//! well; see [`tokens`]. Because that path never asks the issuer anything, a
+//! grant is ended early only by the [`revocation`] list.
 
 pub mod auth;
 pub mod config;
@@ -25,6 +26,7 @@ pub mod error;
 pub mod handlers;
 pub mod metrics;
 pub mod oidc;
+pub mod revocation;
 pub mod state;
 pub mod tokens;
 

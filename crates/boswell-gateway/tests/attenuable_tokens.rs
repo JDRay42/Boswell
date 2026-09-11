@@ -49,6 +49,11 @@ fn app(state: AppState) -> Router {
 
 /// A gateway with one read+write API key and a fresh token root key.
 fn test_state() -> AppState {
+    state_revoking_from("")
+}
+
+/// The same, with a revocation list read from `path` on every check.
+fn state_revoking_from(path: &str) -> AppState {
     let keypair = biscuit_auth::KeyPair::new_with_algorithm(biscuit_auth::Algorithm::Ed25519);
     AppState::from_config(&GatewayConfig {
         api_keys: vec![ApiKeyConfig {
@@ -61,6 +66,8 @@ fn test_state() -> AppState {
             root_private_key: keypair.private().to_bytes_hex(),
             default_ttl_secs: 3600,
             max_ttl_secs: 86400,
+            revocation_list_path: path.to_string(),
+            revocation_refresh_secs: 0,
         }),
         ..GatewayConfig::default()
     })
@@ -223,4 +230,62 @@ async fn an_api_key_still_reads_as_a_bad_key_when_tokens_are_configured() {
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let body = String::from_utf8(body.to_vec()).unwrap();
     assert!(body.contains("Invalid API key"), "got {}", body);
+}
+
+/// A revoked token is refused by the middleware, and told so.
+///
+/// The wire half of what `tokens.rs` proves about the list itself: a token that
+/// authenticated a moment ago stops authenticating once its id is in the file,
+/// with no restart and no second request to anything.
+#[tokio::test]
+async fn a_revoked_token_is_refused_at_the_middleware() {
+    let path = std::env::temp_dir().join(format!(
+        "boswell-wire-revocations-{}.txt",
+        std::process::id()
+    ));
+    std::fs::write(&path, "# revoked tokens\n").expect("create the list");
+    let state = state_revoking_from(path.to_str().unwrap());
+
+    let authority = state.tokens().expect("tokens configured");
+    let ctx = state.lookup_key(&hash_key(WRITE_KEY)).expect("the key");
+    let minted = authority.mint(&ctx, None).expect("mint");
+
+    assert_eq!(
+        status_for(&state, "/read", &minted.token).await,
+        StatusCode::OK,
+        "the token works before it is revoked"
+    );
+
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap();
+    writeln!(file, "{}", minted.revocation_id).unwrap();
+    file.sync_all().unwrap();
+
+    let response = app(state.clone())
+        .oneshot(
+            Request::builder()
+                .uri("/read")
+                .header("authorization", format!("Bearer {}", minted.token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let body = String::from_utf8_lossy(&body);
+    assert!(
+        body.contains("revoked"),
+        "a holder is told its token was revoked rather than that the key is bad: {}",
+        body
+    );
+
+    // The API key behind the same gateway is untouched: revocation ends tokens,
+    // not the identity that minted them.
+    assert_eq!(status_for(&state, "/read", WRITE_KEY).await, StatusCode::OK);
+    let _ = std::fs::remove_file(path);
 }

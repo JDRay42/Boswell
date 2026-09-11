@@ -108,7 +108,8 @@ Content-Type: application/json
 {
   "token": "En0KEwoEMTIzN...",
   "expires_at": 1789084878,
-  "root_public_key": "3f2b...c1"
+  "root_public_key": "3f2b...c1",
+  "revocation_id": "9d1e...44"
 }
 ```
 
@@ -127,8 +128,15 @@ Two behaviors to plan around:
 
 - **A token holder cannot mint.** `POST /v1/tokens` presented with a token gets `403`. Attenuate
   the one you hold; a delegate that could mint could mint away its own attenuation.
-- **Verification is offline.** There is no revocation list yet, so a token's own expiry is the
-  only thing that ends it early. Keep `max_ttl_secs` short.
+- **Verification is offline.** A token's own expiry and the gateway's revocation list are the
+  only two things that end it early. Keep `max_ttl_secs` short.
+
+Every minted token comes back with a `revocation_id`. Record it: adding that line to the file
+named by `revocation_list_path` in `[tokens]` ends the token, and every token attenuated from
+it, within `revocation_refresh_secs`. `boswell-gateway revocation-ids <token>` prints the
+identifiers of a token you hold — the first is the root's, and each one after it belongs to one
+attenuation, so revoking a later id ends that delegate alone. A revoked token gets `401` saying
+so.
 
 A request refused by a token's own restrictions gets `403`, naming the operation or namespace
 and not the Datalog. A token this gateway did not mint gets `401`, as does any bearer token it
@@ -597,5 +605,5 @@ This is Boswell's security boundary, not a step toward a later one
 gRPC instance behind it binds to loopback and does not. [ADR-022](../ADRs/022-delegated-credentials.md)
 is now built on both sides of the human line: OIDC establishes the person, and
 [attenuable tokens](#attenuable-tokens) descend from that identity and narrow for subagents.
-What is still missing is revocation — until it exists, a token's expiry is the only thing that
-ends it early, so keep `max_ttl_secs` short.
+A grant is ended early by the gateway's revocation list; absent an entry there, a token's
+expiry is the only thing that ends it, so keep `max_ttl_secs` short.
