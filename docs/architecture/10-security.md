@@ -289,6 +289,15 @@ line ends the root and its whole delegation subtree, and an operator responding 
 not have to enumerate the delegates. Revoking an attenuation block instead ends that delegate
 and its descendants while leaving its parent alone.
 
+`boswell-gateway revoke <list-path> <token|id> [note]` appends the line. Given a token it
+writes that token's **last** block identifier, which is the one unique to the token in hand:
+revoking this token and its descendants, and leaving the parent it was attenuated from working.
+Ending a whole tree is therefore an explicit act — pass the root identifier, which the command
+prints alongside the one it wrote. It creates the file if absent, refuses an identifier the
+gateway would skip as non-hex, and refuses a duplicate rather than growing the file. It is
+deliberately **not** an HTTP endpoint: revoking over the wire needs an admin scope the gateway
+does not have, and granting one is a separate decision.
+
 The file is re-`stat`ed at most once per `revocation_refresh_secs` (default 15), which is the
 delay between appending a line and the gateway honoring it. Nothing else is on the path: no
 restart, no network call, no store. A file that becomes unreadable leaves the entries already
