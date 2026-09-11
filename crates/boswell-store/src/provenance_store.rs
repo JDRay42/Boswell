@@ -252,23 +252,13 @@ impl SqliteStore {
         let mut best_assurance = Assurance::None;
         let mut cross_authority_endorsement = false;
 
-        // The stamp's *independence unit* (design §8.3): the delegation-chain root,
-        // falling back to the author when there is no chain, and in either case
-        // normalized to the principal that actually authenticated.
-        let root_of = |stamp: &ProvenanceStamp| -> String {
-            principal_of(
-                stamp
-                    .delegation_chain
-                    .root()
-                    .unwrap_or(stamp.author.as_str()),
-            )
-            .to_string()
-        };
-
+        // The independence unit is `ProvenanceStamp::independence_root` (design
+        // §8.3) and is defined in the domain, not here: the transport that
+        // authors a stamp and the counting done below have to agree on it.
         // First pass: gather the writer roots (needed for the cross-authority check).
         for stored in &stamps {
             if stored.kind == StampKind::Write {
-                writer_roots.insert(root_of(&stored.stamp));
+                writer_roots.insert(stored.stamp.independence_root().to_string());
             }
         }
 
@@ -278,7 +268,7 @@ impl SqliteStore {
                     best_evidence = best_evidence.stronger(stored.stamp.evidence);
                     best_assurance = best_assurance.stronger(stored.stamp.assurance);
                     distinct_authors.insert(stored.stamp.author.clone());
-                    let root = root_of(&stored.stamp);
+                    let root = stored.stamp.independence_root().to_string();
                     all_roots.insert(root.clone());
                     evidence_types.insert(stored.stamp.evidence);
                     if let Some(sid) = &stored.stamp.session_id {
@@ -447,28 +437,6 @@ impl SqliteStore {
             })
         };
         Ok(decode(row))
-    }
-}
-
-/// The authenticated principal behind an agent identity: everything before the
-/// first `/` (design §8.3).
-///
-/// `ProvenanceStamp::author` is a *derived* identity — the documented shape is
-/// `agent:orch-7/sub:explore-3`, an authenticated principal plus a subagent path
-/// the principal chose for itself. Corroboration must be counted over what an
-/// identity provider actually established, not over a suffix the caller made up,
-/// or a single credential fanned out into subagents manufactures its own
-/// independence.
-///
-/// This does not *solve* Sybil independence and is not meant to: an adversary
-/// holding several genuinely distinct credentials still counts several times.
-/// That is the irreducible part, and §8.4 accepts it as mitigated rather than
-/// solved. What this closes is the free version — claiming independence by
-/// declining to declare a delegation chain.
-fn principal_of(identity: &str) -> &str {
-    match identity.split_once('/') {
-        Some((principal, _)) => principal,
-        None => identity,
     }
 }
 

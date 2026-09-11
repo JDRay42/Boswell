@@ -569,6 +569,21 @@ from the authenticated principal rather than from caller input; that holds today
 transport exists, and devAuth stamps the principal id directly), and it is the invariant any
 future authoring endpoint must preserve.
 
+**The token case, since #70.** Attenuable tokens are exactly the shape this rule was written
+against: one agent mints a root token and hands each subagent its own narrowed copy, so ten
+subagents hold ten distinct credentials with ten distinct revocation ids. They resolve to one
+independence unit, because `authenticate` reads the token's `principal` fact out of the
+*authority* block, and a block a holder appended cannot restate it. The gateway then stamps that
+principal onto the receipt as `issued_to`, and the instance stamps the receipt's `issued_to` as
+the write's author — so a delegate cannot author under a name of its own choosing anywhere on
+the path.
+
+The rule itself lives in `boswell-domain` (`ProvenanceStamp::independence_root` and
+`authenticated_principal`) rather than in the store, because two layers have to agree on it: the
+store counts independence units, and the transport decides what identity a stamp is authored
+under. Keeping the definition in one place is what makes the agreement checkable instead of
+coincidental. `crates/boswell-gateway/tests/attenuable_tokens.rs` pins the join.
+
 **Finding 2 — the project leader could not endorse the worker it leads. Resolved.** devAuth's
 module doc states the gradient plainly: "the worker writes task-tier, the project-leader can
 endorse into project tier". Measured, that never happened. The leader's authority covered

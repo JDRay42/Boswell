@@ -272,12 +272,16 @@ Still open, and now sharper for having a decided model to sit in:
   table were both rejected: config needs a restart, and a store table would put a network round
   trip on the path whose whole point is not having one. *shipped* (#71)
 - **Corroboration resolves a token to its delegation root**, so ten subagents of one agent do
-  not read as ten independent witnesses. Unblocked by #70 and now concrete: an attenuated token's
-  `AuthContext.key_id` is read from the *authority* block, so it already names the root rather
-  than the delegate — what is missing is a check that the corroboration path uses it knowingly
-  rather than by accident. `CONTEXT.md` already says the root is the unit of
-  independence and #33 counts the authenticated principal; the two diverge the moment subagents
-  hold their own tokens. *open*
+  not read as ten independent witnesses. The property already held — an attenuated token's
+  `AuthContext.key_id` is read from the *authority* block, so it names the root rather than the
+  delegate — but it held by accident, across two crates that cannot see each other. The
+  independence unit is now named in the domain: `ProvenanceStamp::independence_root` is the
+  chain root with any self-declared subagent path stripped by `authenticated_principal`, and
+  `SqliteStore` counts that rather than a private closure of its own. Four tests in
+  `attenuable_tokens.rs` join the halves: ten distinct tokens minted from one root resolve to
+  one independence unit, narrowing a token does not rename its principal, a subagent suffix does
+  not split one principal into many, and two genuinely distinct credentials still count twice —
+  the mitigation narrows corroboration without abolishing it. *shipped* (#72)
 - **Rewrite [`10-security.md`](../architecture/10-security.md).** It specified the mTLS model
   the session rejected. It now describes the decided design and separates three states
   explicitly — built, decided-not-built, and genuinely open — so nothing in it reads as

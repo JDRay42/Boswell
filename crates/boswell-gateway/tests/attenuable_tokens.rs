@@ -12,6 +12,12 @@ use axum::{middleware, Extension, Router};
 use http_body_util::BodyExt; // for `collect`
 use tower::ServiceExt; // for `oneshot`
 
+use std::collections::HashSet;
+use std::time::{Duration, SystemTime};
+
+use boswell_domain::{
+    Assurance, Authority, DelegationChain, EvidenceType, Op, ProvenanceStamp, Tier,
+};
 use boswell_gateway::auth::{auth_middleware, hash_key, AuthContext, Scope};
 use boswell_gateway::config::{ApiKeyConfig, GatewayConfig, TokenConfig};
 use boswell_gateway::error::ApiError;
@@ -288,4 +294,159 @@ async fn a_revoked_token_is_refused_at_the_middleware() {
     // not the identity that minted them.
     assert_eq!(status_for(&state, "/read", WRITE_KEY).await, StatusCode::OK);
     let _ = std::fs::remove_file(path);
+}
+
+// ---------------------------------------------------------------------------
+// The delegation root, as corroboration counts it (design §8.3).
+// ---------------------------------------------------------------------------
+
+/// The stamp the write path produces for a caller the gateway resolved to
+/// `issued_to`.
+///
+/// This reproduces two hops the gateway itself cannot reach from here: the
+/// gateway sets `ExecutionReceipt::issued_to` from `AuthContext::key_id`
+/// (`handlers.rs`), and the instance sets both the stamp's author and its
+/// one-element delegation chain from that receipt (`service.rs`). Only the
+/// identity is under test, so every other field is a constant.
+fn stamp_issued_to(issued_to: &str) -> ProvenanceStamp {
+    ProvenanceStamp {
+        author: issued_to.to_string(),
+        delegation_chain: DelegationChain(vec![issued_to.to_string()]),
+        authority: Authority {
+            namespaces: vec!["team".into()],
+            max_tier: Tier::Ephemeral,
+            ops: vec![Op::Read, Op::Write],
+        },
+        evidence: EvidenceType::ToolOutput,
+        assurance: Assurance::None,
+        task_id: None,
+        session_id: None,
+        timestamp: 1,
+        dev_provider: false,
+    }
+}
+
+/// Mint, then narrow ten ways, then resolve each back to an independence root.
+///
+/// Returns the roots *and* the tokens, because the caller has to be able to
+/// show the ten tokens were ten different credentials. A test that collapsed
+/// ten copies of one string onto one root would pass while proving nothing.
+fn ten_subagent_tokens(state: &AppState) -> (Vec<String>, HashSet<String>) {
+    let root = root_token(state);
+    let authority = state.tokens().expect("tokens configured");
+
+    (0..10)
+        .map(|i| {
+            // Each subagent gets its own token, narrowed its own way. These are
+            // ten distinct credentials, held separately, with distinct
+            // revocation ids — everything except distinct authority.
+            let narrowed = attenuate(
+                &root,
+                public_key(state),
+                &Attenuation {
+                    expires_at: Some(SystemTime::now() + Duration::from_secs(60 + i)),
+                    ..Default::default()
+                },
+            )
+            .expect("attenuate");
+
+            let ctx = authority.authenticate(&narrowed).expect("authenticate");
+            let root = stamp_issued_to(&ctx.key_id).independence_root().to_string();
+            (narrowed, root)
+        })
+        .unzip()
+}
+
+/// Ten subagents of one agent are one witness, not ten.
+///
+/// This is the seam the Sybil defense hangs on, and it spans two crates that
+/// cannot see each other: `boswell-gateway` resolves a presented token to a
+/// principal, and `boswell-store` counts distinct independence roots. Nothing
+/// structural forces the first to be a value the second collapses correctly.
+/// Both halves are covered in their own crates — the token's `principal` comes
+/// from the authority block (`a_block_a_holder_appended_cannot_add_authority`),
+/// and equal roots count once (`subagents_of_one_credential_are_one_delegation_root`)
+/// — but until this test, nothing joined them, so the property held by
+/// accident rather than on purpose.
+#[tokio::test]
+async fn ten_subagent_tokens_are_one_delegation_root() {
+    let (tokens, roots) = ten_subagent_tokens(&test_state());
+
+    // The premise, checked rather than assumed: ten credentials, not one reused.
+    assert_eq!(
+        tokens.iter().collect::<HashSet<_>>().len(),
+        10,
+        "the ten subagents must hold ten different tokens for the collapse to mean anything"
+    );
+
+    assert_eq!(
+        roots,
+        HashSet::from(["writer".to_string()]),
+        "ten delegated tokens must collapse onto the one principal they were minted from"
+    );
+}
+
+/// The same ten tokens, counted the way the pre-#33 code counted: by author.
+///
+/// The contrast is the whole point of the item. If a delegate's token named the
+/// delegate, each of these would be its own author *and* its own root, and ten
+/// subagents would corroborate each other into a promotion. They do not, because
+/// an attenuated token's grant is read from the authority block.
+#[tokio::test]
+async fn a_delegate_cannot_author_under_a_name_of_its_own() {
+    let state = test_state();
+    let root = root_token(&state);
+    let authority = state.tokens().expect("tokens configured");
+
+    let narrowed = attenuate(
+        &root,
+        public_key(&state),
+        &Attenuation {
+            namespace: Some("team:sub".to_string()),
+            scopes: Some(vec![Scope::Read]),
+            ..Default::default()
+        },
+    )
+    .expect("attenuate");
+
+    let ctx = authority.authenticate(&narrowed).expect("authenticate");
+    assert_eq!(
+        ctx.key_id, "writer",
+        "narrowing a token must not rename its principal"
+    );
+}
+
+/// A self-declared subagent path does not buy independence either.
+///
+/// The token half above stops a delegate renaming itself at the gateway. This
+/// is the other half: even where an identity legitimately carries a subagent
+/// suffix, the counting end strips it, so the unit stays the principal an
+/// identity provider actually established.
+#[tokio::test]
+async fn a_subagent_suffix_does_not_split_one_principal_into_many() {
+    let roots: HashSet<String> = ["writer/sub:explore-1", "writer/sub:explore-2", "writer"]
+        .into_iter()
+        .map(|id| stamp_issued_to(id).independence_root().to_string())
+        .collect();
+
+    assert_eq!(roots, HashSet::from(["writer".to_string()]));
+}
+
+/// The defense narrows corroboration; it does not abolish it.
+///
+/// Two genuinely distinct credentials are two independence roots, which is what
+/// keeps §8.3's mitigation from collapsing into "nothing ever corroborates".
+/// ADR-022 accepts an adversary holding two real credentials counting twice.
+#[tokio::test]
+async fn two_distinct_principals_are_two_delegation_roots() {
+    let roots: HashSet<String> = ["writer", "auditor"]
+        .into_iter()
+        .map(|id| stamp_issued_to(id).independence_root().to_string())
+        .collect();
+
+    assert_eq!(
+        roots.len(),
+        2,
+        "distinct credentials must still corroborate"
+    );
 }
