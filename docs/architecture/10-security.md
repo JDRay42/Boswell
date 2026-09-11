@@ -164,13 +164,68 @@ Three things are worth stating because they are easy to assume otherwise:
 - **Namespace attenuation binds only where the handler already checks.** A route that never
   calls `require_namespace` is not narrowed by a namespace attenuation, exactly as an API key
   scoped to a namespace is not restricted there today. This is a property of the handler layer,
-  not of the token.
+  not of the token. The routes are enumerated below — do not assume it from the route's shape.
 - **Verification is offline, so expiry and the revocation list are the only two things that end
   a token.** `max_ttl_secs` is the ceiling on a requested lifetime; keep it as short as the
   deployment tolerates, because it bounds how long the list has to remember anything. It
   defaults to **7 days**, and `default_ttl_secs` — the lifetime a caller that names none gets —
   to one day. The starter config's `[tokens]` example names a `revocation_list_path`, so an
   operator who enables tokens by uncommenting it enables the revocation list at the same time.
+
+#### Which routes bind namespace attenuation
+
+Audited 2026-09-11 against `build_router` in `boswell-gateway/src/lib.rs` and every handler it
+names. The table is the enumeration the bullet above refers to; re-derive it from the code, not
+from this table, when a route is added.
+
+Four mechanisms appear in the handlers, and only one of them evaluates a token's attenuation
+blocks:
+
+- **`require_namespace(target)`** — checks the target against the root grant *and* runs the
+  token's Datalog with `namespace_target` in hand. This is the only call that binds attenuation.
+- **`read_namespace(requested)`** — calls `require_namespace` when the caller names a namespace.
+  When the caller names none and the root grant is unrestricted (`""` or `"*"`), it returns
+  `None` without running any Datalog, so an attenuated token reads across every namespace.
+- **`allows_namespace(ns)`** — a predicate against the root grant only. It runs no Datalog, so
+  it is blind to attenuation. Used to post-filter results and to hide out-of-scope ids behind a
+  404.
+- **Passing `ctx.namespace` down to the instance** as a scope. Also the root grant, also blind
+  to attenuation.
+
+| Route | Handler | Scope | Namespace binding | Binds attenuation |
+|---|---|---|---|---|
+| `POST /v1/claims` | `assert_claim` | Write | `require_namespace(body.namespace)` | yes |
+| `POST /v1/claims/batch` | `batch_learn` | Write | `require_namespace` per input | yes |
+| `POST /v1/extract` | `extract` | Write | `require_namespace(body.namespace)` | yes |
+| `POST /v1/hooks/ingest` | `hooks_ingest` | Write | `require_namespace(resolved)` | yes |
+| `GET /v1/claims` | `query_claims` | Read | `read_namespace` + `allows_namespace` filter | only when the caller names a namespace |
+| `POST /v1/search` | `search` | Read | `read_namespace` + `allows_namespace` filter | only when the caller names a namespace |
+| `POST /v1/recall` | `recall` | Read | `read_namespace` + `allows_namespace` filter | only when the caller names a namespace |
+| `GET /v1/procedures` | `query_procedures` | Read | `read_namespace` | only when the caller names a namespace |
+| `GET /v1/goals` | `query_goals` | Read | `read_namespace` | only when the caller names a namespace |
+| `GET /v1/claims/:id` | `get_claim` | Read | `allows_namespace` on the fetched claim | no |
+| `GET /v1/claims/:id/relationships` | `get_relationships` | Read | `allows_namespace` on the parent claim | no |
+| `DELETE /v1/claims/:id` | `delete_claim` | Delete | `allows_namespace` on the fetched claim | no |
+| `GET /v1/procedures/:id` | `get_procedure` | Read | `ctx.namespace` passed down as a scope | no |
+| `GET /v1/goals/:id` | `get_goal` | Read | `ctx.namespace` passed down as a scope | no |
+| `GET /v1/goals/:id/expand` | `expand_goal` | Read | `ctx.namespace` passed down as a scope | no |
+| `POST /v1/receipts/:id/report` | `report_outcome` | Write | none — the receipt id is the only authorization | no |
+| `POST /v1/tokens` | `mint_token` | none | none — mints from `ctx`, and a token holder is refused | n/a |
+| `GET /metrics` | `metrics::metrics` | Read | none — the metrics are gateway-wide | n/a |
+| `GET /v1/health` | `health` | none (unauthenticated) | none | n/a |
+
+So four of the nineteen bind attenuation unconditionally, five bind it only when the caller
+volunteers a namespace, and seven check the root grant alone. `DELETE /v1/claims/:id` and
+`POST /v1/receipts/:id/report` are the two write-shaped routes in the last group.
+
+`report_outcome` is the one route with no namespace check of any kind. It authorizes on
+possession of the receipt id: the instance resolves the receipt and refuses an unknown one, and
+the gateway audits under `ctx.namespace` regardless of what namespace the receipt's procedure
+belongs to. A holder of a `write`-scoped token that was attenuated to one namespace can report
+an outcome against any receipt id it can produce.
+
+Closing these is a separate piece of work, filed on the roadmap under Identity, trust and
+security. This section records the state; it does not propose the fix.
 
 The attenuation vocabulary is written as `reject if` rather than `check if`. The gateway
 authorizes one dimension at a time, so a restriction must pass when its dimension is absent from

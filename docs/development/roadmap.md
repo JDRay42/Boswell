@@ -178,6 +178,21 @@ Who said it, how well we know that, and what it lets them do.
   config in `10-security.md` is aspirational. *open*
 - **JWT refresh.** The router issues tokens with an expiry and no refresh path; the SDK
   papers over it by reconnecting once on `Unauthenticated`. *open*
+- **Which routes bind namespace attenuation, enumerated.** The nineteen routed endpoints are
+  audited and tabled in [`10-security.md`](../architecture/10-security.md), replacing the prose
+  that stated the limit without counting it. *shipped* (#77)
+- **Bind namespace attenuation on the routes that check the root grant alone.** The audit above
+  found seven: `GET /v1/claims/:id`, `GET /v1/claims/:id/relationships`,
+  `DELETE /v1/claims/:id`, `GET /v1/procedures/:id`, `GET /v1/goals/:id`,
+  `GET /v1/goals/:id/expand` and `POST /v1/receipts/:id/report`. Five more
+  (`GET /v1/claims`, `POST /v1/search`, `POST /v1/recall`, `GET /v1/procedures`,
+  `GET /v1/goals`) bind it only when the caller volunteers a namespace, because
+  `read_namespace` returns `None` without running any Datalog when the root grant is
+  unrestricted. Two decisions come first and neither is obvious: whether `allows_namespace`
+  should run the token's Datalog (which would fold the two mechanisms into one and make every
+  post-filter an authorization check), and what `report_outcome` binds against, given that a
+  receipt is the only thing it has and the receipt's namespace is the instance's to know. Size
+  it as three or four PRs, not one. *open*
 
 ### Security design session
 
