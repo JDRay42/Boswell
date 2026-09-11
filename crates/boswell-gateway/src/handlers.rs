@@ -1239,3 +1239,72 @@ pub async fn expand_goal(
         "factor_readings": result.factor_readings.iter().map(factor_reading_to_json).collect::<Vec<_>>(),
     })))
 }
+
+// ---------------------------------------------------------------------------
+// Attenuable tokens (ADR-022)
+// ---------------------------------------------------------------------------
+
+/// `POST /v1/tokens` body. Every field is optional.
+#[derive(Debug, Deserialize)]
+pub struct MintTokenRequest {
+    /// Lifetime in seconds. Defaults to `default_ttl_secs`, capped at
+    /// `max_ttl_secs`.
+    #[serde(default)]
+    ttl_secs: Option<u64>,
+}
+
+/// `POST /v1/tokens` response.
+#[derive(Debug, Serialize)]
+pub struct MintTokenResponse {
+    /// The token, to be presented as `Authorization: Bearer <token>`.
+    token: String,
+    /// Unix seconds after which it stops verifying.
+    expires_at: u64,
+    /// Root public key, hex. A holder needs it to parse its own token before
+    /// attenuating it; it cannot mint, so publishing it costs nothing.
+    root_public_key: String,
+}
+
+/// Trade an authenticated identity for a root token carrying the same authority.
+///
+/// No scope is required: the token can do nothing its bearer could not already
+/// do, so minting is not an escalation. What it adds is the ability to hand a
+/// *subagent* something narrower, offline.
+///
+/// A caller that authenticated with a token is refused. A delegate that could
+/// mint could mint away its own attenuation.
+pub async fn mint_token(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    body: Option<Json<MintTokenRequest>>,
+) -> Result<Json<MintTokenResponse>, ApiError> {
+    let authority = state
+        .tokens()
+        .ok_or_else(|| ApiError::not_found("this gateway does not issue attenuable tokens"))?;
+
+    let ttl = body
+        .and_then(|Json(b)| b.ttl_secs)
+        .map(std::time::Duration::from_secs);
+
+    let minted = authority.mint(&ctx, ttl).map_err(|e| match e {
+        crate::tokens::TokenError::AlreadyDelegated => ApiError::forbidden(e.to_string()),
+        crate::tokens::TokenError::TtlTooLong { .. } => ApiError::bad_request(e.to_string()),
+        other => ApiError::new(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            other.to_string(),
+        ),
+    })?;
+
+    tracing::info!(
+        "minted token for '{}' (namespace '{}', expires {})",
+        ctx.key_id,
+        ctx.namespace,
+        minted.expires_at
+    );
+
+    Ok(Json(MintTokenResponse {
+        token: minted.token,
+        expires_at: minted.expires_at,
+        root_public_key: authority.root_public_key_hex(),
+    }))
+}

@@ -426,6 +426,9 @@ impl OidcVerifier {
             key_id: format!("oidc:{}", claims.sub),
             namespace: grant.namespace.clone(),
             scopes: grant.scopes.clone(),
+            // A verified subject is a root identity, not a delegate. It is what
+            // a root token is minted *from*; it is never itself attenuated.
+            token: None,
         })
     }
 }

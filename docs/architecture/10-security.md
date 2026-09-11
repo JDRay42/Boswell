@@ -118,8 +118,49 @@ token that verifies for a subject listed nowhere is authenticated and unauthoriz
 `401`. Boswell still ships no identity provider, and the device-code grant runs between the
 caller and the provider with the gateway not in it (#68).
 
-This is the top half of ADR-022 only. Nothing below is built: tokens are not attenuable, there
-is no delegation chain, and there is no revocation list.
+This is the top half of ADR-022. The bottom half — attenuable tokens — is built too, as of #70;
+revocation is not.
+
+### The gateway mints and verifies attenuable tokens
+
+Optional, and off unless the config carries a `[tokens]` section naming an Ed25519
+`root_private_key` (generate one with `boswell-gateway keygen`). An authenticated caller — API
+key or verified OIDC subject alike — `POST`s to `/v1/tokens` and receives a **root token**
+carrying exactly the authority it already had, plus the root public key. No scope is required,
+because the token can do nothing its bearer could not already do; what it adds is something
+narrower to hand a subagent.
+
+The agent attenuates **locally**. Narrowing a token needs the root *public* key and nothing
+else: no gateway call, no issuer, no private key. The narrowing is cryptographic, so a holder
+can only ever remove authority — appending a block naming more scopes than a parent block does
+not restore them, because the parent's block is still there and is still checked.
+
+Three dimensions can be narrowed: the operations (`read`, `write`, `delete`), the namespace
+(the named namespace and its children, matching `namespace_allows` exactly), and the expiry.
+
+A presented token resolves to the same `AuthContext` an API key does, so every handler, scope
+check and namespace check is untouched. The root grant read out of the authority block fills the
+context's namespace and scopes; the attenuation blocks are Datalog, which only means something
+against a request, so they are evaluated inside `AuthContext::require` and
+`require_namespace` with the operation and the namespace of the request in hand.
+
+Three things are worth stating because they are easy to assume otherwise:
+
+- **A token holder cannot mint.** `POST /v1/tokens` refuses a caller who authenticated with a
+  token — 403. A delegate that could mint could mint away its own attenuation.
+- **Namespace attenuation binds only where the handler already checks.** A route that never
+  calls `require_namespace` is not narrowed by a namespace attenuation, exactly as an API key
+  scoped to a namespace is not restricted there today. This is a property of the handler layer,
+  not of the token.
+- **Verification is offline, so a token's expiry is the only thing that ends it early.**
+  `max_ttl_secs` is the ceiling on a requested lifetime; keep it as short as the deployment
+  tolerates until revocation exists.
+
+The attenuation vocabulary is written as `reject if` rather than `check if`. The gateway
+authorizes one dimension at a time, so a restriction must pass when its dimension is absent from
+the request; both `check` forms fail on an empty match set, including `check all`, which reads
+as universal quantification but is not. `reject if` fires only on a fact that is present *and*
+outside the grant.
 
 ### The instance authenticates nothing, on purpose
 
@@ -186,8 +227,10 @@ settings are waiting for.
 ## Decided, not built
 
 [ADR-022](../ADRs/022-delegated-credentials.md) splits the problem at the human boundary. The
-gateway's half of the top layer is built (see [above](#the-gateway-verifies-oidc-tokens));
-everything below the line is not. Do not deploy as if it is.
+gateway's half of the top layer is built (see [above](#the-gateway-verifies-oidc-tokens)), and
+so is most of the bottom half (see
+[above](#the-gateway-mints-and-verifies-attenuable-tokens)). What remains below is listed here.
+Do not deploy as if it is built.
 
 ### Above the line — OIDC establishes the person
 
@@ -210,13 +253,14 @@ refresh token the provider issues: nothing in Boswell refreshes, so storing one 
 long-lived credential on disk serving a code path that does not exist. Refresh is still open
 below.
 
-### Below the line — attenuable tokens carry delegation
+### Below the line — tier ceilings are not yet a token dimension
 
-The gateway trades a verified OIDC identity for a **root token** scoped to that principal's
-namespaces, tiers and operations. The agent holds it. Spawning a subagent means **attenuating
-the token locally** — narrowing namespace, operations, tier ceiling, or lifetime — with no
-network call and no issuer in the loop. The narrowing is cryptographic: a holder can only ever
-remove authority.
+ADR-022 names four dimensions a token may be narrowed on: namespace, operations, **tier
+ceiling**, and lifetime. Three are built (see
+[above](#the-gateway-mints-and-verifies-attenuable-tokens)); the tier ceiling is not. Nothing at
+the gateway reads a claim's tier at authorization time, so there is no check for a token to
+narrow — the ceiling lives in the Gatekeeper, behind the instance, which the gateway does not
+speak to about authority. Wiring it is a design question, not a missing `if`.
 
 The mechanism is [biscuit](https://www.biscuitsec.org/) (`biscuit-auth`), chosen for two
 properties that are the requirements restated: offline attenuation, and verification that needs

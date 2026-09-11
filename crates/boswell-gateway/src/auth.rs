@@ -6,10 +6,12 @@
 //! enforces a per-key rate limit. `/v1/health` is not behind this layer.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use axum::extract::{Request, State};
 use axum::middleware::Next;
 use axum::response::Response;
+use biscuit_auth::Biscuit;
 use sha2::{Digest, Sha256};
 
 use crate::error::ApiError;
@@ -57,19 +59,27 @@ pub struct AuthContext {
     pub namespace: String,
     /// Scopes granted to the key.
     pub scopes: HashSet<Scope>,
+    /// The attenuable token this context came from, when it came from one.
+    ///
+    /// The three fields above are the *root* grant read out of the token's
+    /// authority block. Any narrowing a holder applied lives in later blocks as
+    /// Datalog, which only means something against the facts of a request — so
+    /// [`Self::require`] and [`Self::require_namespace`] run it, rather than
+    /// trying to fold it back into a namespace and a scope set here. `None` for
+    /// an API key or a verified OIDC subject, which cannot be attenuated.
+    pub token: Option<Arc<Biscuit>>,
 }
 
 impl AuthContext {
     /// Require a scope, returning 403 if the key lacks it.
     pub fn require(&self, scope: Scope) -> Result<(), ApiError> {
-        if self.scopes.contains(&scope) {
-            Ok(())
-        } else {
-            Err(ApiError::forbidden(format!(
+        if !self.scopes.contains(&scope) {
+            return Err(ApiError::forbidden(format!(
                 "missing required scope: {}",
                 scope.as_str()
-            )))
+            )));
         }
+        self.check_token(&[("operation", scope.as_str())])
     }
 
     /// Whether this key may act on `namespace`.
@@ -79,14 +89,36 @@ impl AuthContext {
 
     /// Enforce that a write target `namespace` is within the key's scope.
     pub fn require_namespace(&self, namespace: &str) -> Result<(), ApiError> {
-        if self.allows_namespace(namespace) {
-            Ok(())
-        } else {
-            Err(ApiError::forbidden(format!(
+        if !self.allows_namespace(namespace) {
+            return Err(ApiError::forbidden(format!(
                 "namespace '{}' is outside this key's scope '{}'",
                 namespace, self.namespace
-            )))
+            )));
         }
+        self.check_token(&[("namespace_target", namespace)])
+    }
+
+    /// Run any attenuation this context's token carries against one request fact.
+    ///
+    /// A no-op for an API key or an OIDC subject. The reason a token was refused
+    /// is a Datalog failure the caller cannot act on and an attacker can probe
+    /// with, so it goes to the log and the caller gets the dimension only.
+    fn check_token(&self, facts: &[(&str, &str)]) -> Result<(), ApiError> {
+        let Some(token) = &self.token else {
+            return Ok(());
+        };
+        crate::tokens::authorize(token, facts).map_err(|e| {
+            tracing::debug!("token authorization failed for {:?}: {}", facts, e);
+            ApiError::forbidden(match facts.first() {
+                Some(("namespace_target", ns)) => {
+                    format!("namespace '{}' is outside this token's grant", ns)
+                }
+                Some(("operation", op)) => {
+                    format!("operation '{}' is outside this token's grant", op)
+                }
+                _ => "outside this token's grant".to_string(),
+            })
+        })
     }
 
     /// Resolve the effective namespace filter for a read.
@@ -149,7 +181,18 @@ pub async fn auth_middleware(
         // otherwise it is simply a bad key, and saying so is not a disclosure.
         None => match (state.oidc(), looks_like_a_jwt(&token)) {
             (Some(verifier), true) => verifier.authenticate(&token).await?,
-            _ => return Err(ApiError::unauthorized("Invalid API key")),
+            // An attenuable token shares its character set with a hex API key,
+            // so there is no shape test to gate on the way `looks_like_a_jwt`
+            // gates OIDC. Parsing settles it: the signature either chains to
+            // this gateway's root key or it does not. A failure is reported as a
+            // bad key, which is what an unparseable bearer token is.
+            _ => match state.tokens() {
+                Some(authority) => authority.authenticate(&token).map_err(|e| {
+                    tracing::debug!("bearer token is not a valid grant: {}", e);
+                    ApiError::unauthorized("Invalid API key")
+                })?,
+                None => return Err(ApiError::unauthorized("Invalid API key")),
+            },
         },
     };
 
@@ -229,6 +272,7 @@ mod tests {
             key_id: "k".into(),
             namespace: "team".into(),
             scopes: HashSet::new(),
+            token: None,
         };
         assert_eq!(ctx.read_namespace(None).unwrap(), Some("team".to_string()));
         assert_eq!(
