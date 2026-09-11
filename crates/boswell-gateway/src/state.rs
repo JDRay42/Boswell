@@ -12,6 +12,7 @@ use tokio::sync::Mutex as TokioMutex;
 use crate::auth::{AuthContext, Scope};
 use crate::config::GatewayConfig;
 use crate::oidc::OidcVerifier;
+use crate::tokens::TokenAuthority;
 
 /// Cloneable handle to gateway state (cheap `Arc` clone).
 #[derive(Clone)]
@@ -28,6 +29,10 @@ struct Inner {
     /// OIDC verifier, present only when the config declares an `[oidc]`
     /// section. `None` means bearer tokens are API keys and nothing else.
     oidc: Option<OidcVerifier>,
+    /// Attenuable-token authority, present only when the config declares a
+    /// `[tokens]` section. `None` means the gateway neither mints nor accepts
+    /// them, and `POST /v1/tokens` is not routed.
+    tokens: Option<TokenAuthority>,
     /// key_id → token bucket.
     buckets: StdMutex<HashMap<String, Bucket>>,
     /// Requests per minute per key; 0 disables limiting.
@@ -66,18 +71,36 @@ impl AppState {
                 key_id: key.id.clone(),
                 namespace: key.namespace.clone(),
                 scopes,
+                token: None,
             };
             keys.insert(key.key_hash.trim().to_ascii_lowercase(), ctx);
         }
 
         let client = BoswellClient::new(&config.router_endpoint);
         let oidc = config.oidc.as_ref().map(OidcVerifier::new);
+        // A bad root key disables minting rather than failing startup, the same
+        // way one malformed OIDC principal does: an operator who mistypes a key
+        // still gets a gateway that serves its API keys, and a loud warning.
+        let tokens = config
+            .tokens
+            .as_ref()
+            .and_then(|c| match TokenAuthority::new(c) {
+                Ok(authority) => Some(authority),
+                Err(e) => {
+                    tracing::error!(
+                        "[tokens] is configured but unusable ({}); attenuable tokens are disabled",
+                        e
+                    );
+                    None
+                }
+            });
 
         Self {
             inner: Arc::new(Inner {
                 client: TokioMutex::new(client),
                 keys,
                 oidc,
+                tokens,
                 buckets: StdMutex::new(HashMap::new()),
                 rate_limit_per_minute: config.rate_limit_per_minute,
                 dev_auth: AtomicBool::new(false),
@@ -116,6 +139,11 @@ impl AppState {
     /// an identity provider.
     pub fn oidc(&self) -> Option<&OidcVerifier> {
         self.inner.oidc.as_ref()
+    }
+
+    /// The attenuable-token authority, if this gateway mints and accepts them.
+    pub fn tokens(&self) -> Option<&TokenAuthority> {
+        self.inner.tokens.as_ref()
     }
 
     /// Look up an [`AuthContext`] by the SHA-256 hash of the presented key.

@@ -26,6 +26,11 @@ sha2 = "0.10"
 # OIDC verification (ADR-022): JWT checking, and fetching the provider's JWKS.
 jsonwebtoken = "9.3"
 reqwest = { version = "0.12", features = ["json"] }
+# Attenuable tokens (ADR-022). PEM key parsing and the full regex engine are
+# unused here and off. `datalog-macro` is not used either, but 6.0 does not
+# compile without it — `ToAnyParam` is gated on the feature and imported
+# unconditionally by the builder. Drop it when that is fixed upstream.
+biscuit-auth = { version = "6.0", default-features = false, features = ["datalog-macro"] }
 
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }

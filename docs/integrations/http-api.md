@@ -90,6 +90,53 @@ Verification says who is asking, not what they may do. Authority comes from an
 that fails verification gets `401`, with no detail about which check failed. API keys keep
 working alongside, and where no `[oidc]` section exists a JWT is simply an unrecognized key.
 
+### Attenuable tokens
+
+Where the config carries a `[tokens]` section, an authenticated caller can trade its identity
+for an **attenuable token** and narrow copies of it for subagents, offline. This is the bottom
+half of [ADR-022](../ADRs/022-delegated-credentials.md).
+
+```
+POST /v1/tokens
+Authorization: Bearer <api key or OIDC JWT>
+Content-Type: application/json
+
+{ "ttl_secs": 86400 }        # optional; defaults to default_ttl_secs, capped at max_ttl_secs
+```
+
+```json
+{
+  "token": "En0KEwoEMTIzN...",
+  "expires_at": 1789084878,
+  "root_public_key": "3f2b...c1"
+}
+```
+
+The token carries **exactly** the authority the caller already had — the same `namespace` and
+`scopes` — so minting needs no scope and is not an escalation. Present it as
+`Authorization: Bearer <token>` anywhere an API key works.
+
+What it adds is narrowing. The holder appends a restriction block using the `root_public_key`
+above and nothing else: no call to the gateway, no call to the identity provider, no private
+key. Three dimensions can be narrowed — operations, namespace (the named namespace and its
+children, the same rule as [namespace isolation](#namespace-isolation)), and expiry — and the
+narrowing is enforced by the signature, so a holder can only ever remove authority. A block
+naming more than its parent allowed restores nothing.
+
+Two behaviors to plan around:
+
+- **A token holder cannot mint.** `POST /v1/tokens` presented with a token gets `403`. Attenuate
+  the one you hold; a delegate that could mint could mint away its own attenuation.
+- **Verification is offline.** There is no revocation list yet, so a token's own expiry is the
+  only thing that ends it early. Keep `max_ttl_secs` short.
+
+A request refused by a token's own restrictions gets `403`, naming the operation or namespace
+and not the Datalog. A token this gateway did not mint gets `401`, as does any bearer token it
+cannot make sense of.
+
+Generate a root key with `boswell-gateway keygen`. Anything holding the private half can mint a
+token for any principal, so it belongs in a file only the gateway can read.
+
 ### Scopes
 
 Each key grants a set of scopes:
@@ -127,6 +174,7 @@ exposition format carries its own version.
 | Method & path | Scope | Purpose |
 |---|---|---|
 | `GET /v1/health` | — | Gateway liveness + best-effort instance health |
+| `POST /v1/tokens` | — | Mint an attenuable token for the caller's own authority |
 | `POST /v1/claims` | write | Assert one claim |
 | `POST /v1/claims/batch` | write | Bulk-learn many claims |
 | `GET /v1/claims` | read | Query claims by filter |
@@ -546,6 +594,8 @@ Every mutation is audit-logged with the key id, namespace, operation, and count.
 This is Boswell's security boundary, not a step toward a later one
 ([`docs/architecture/10-security.md`](../architecture/10-security.md),
 [ADR-021](../ADRs/021-gateway-is-the-security-boundary.md)): the gateway authenticates, and the
-gRPC instance behind it binds to loopback and does not. What changes next is how keys come to
-exist — [ADR-022](../ADRs/022-delegated-credentials.md) replaces hand-placed hashes with tokens
-that descend from a verified OIDC grant and attenuate for subagents.
+gRPC instance behind it binds to loopback and does not. [ADR-022](../ADRs/022-delegated-credentials.md)
+is now built on both sides of the human line: OIDC establishes the person, and
+[attenuable tokens](#attenuable-tokens) descend from that identity and narrow for subagents.
+What is still missing is revocation — until it exists, a token's expiry is the only thing that
+ends it early, so keep `max_ttl_secs` short.

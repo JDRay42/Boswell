@@ -52,6 +52,11 @@ pub struct GatewayConfig {
     /// keys only.
     #[serde(default)]
     pub oidc: Option<OidcConfig>,
+
+    /// Attenuable tokens. Absent means the gateway neither mints nor accepts
+    /// them, and `POST /v1/tokens` is 404.
+    #[serde(default)]
+    pub tokens: Option<TokenConfig>,
 }
 
 impl Default for GatewayConfig {
@@ -65,6 +70,39 @@ impl Default for GatewayConfig {
             rate_limit_per_minute: 120,
             api_keys: Vec::new(),
             oidc: None,
+            tokens: None,
+        }
+    }
+}
+
+/// Attenuable-token settings (ADR-022).
+///
+/// The root key is the whole grant: anything holding it can mint a token for
+/// any principal. It belongs in a file the gateway alone can read, alongside
+/// the API-key hashes it already lives beside.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct TokenConfig {
+    /// Hex-encoded Ed25519 private key, 32 bytes. Generate one with
+    /// `boswell-gateway keygen`; there is deliberately no default, because a
+    /// default root key is no root key.
+    pub root_private_key: String,
+
+    /// Lifetime of a minted root token when the caller names none.
+    pub default_ttl_secs: u64,
+
+    /// Ceiling on a requested lifetime. Verification is offline, so a token's
+    /// own expiry is the only thing that stops it being useful; the shorter it
+    /// is, the smaller the revocation problem ADR-022 leaves open.
+    pub max_ttl_secs: u64,
+}
+
+impl Default for TokenConfig {
+    fn default() -> Self {
+        Self {
+            root_private_key: String::new(),
+            default_ttl_secs: 24 * 60 * 60,
+            max_ttl_secs: 30 * 24 * 60 * 60,
         }
     }
 }
@@ -228,6 +266,27 @@ scopes = ["read", "write"]
 # subject = "01234567-89ab-cdef-0123-456789abcdef"
 # namespace = "team"
 # scopes = ["read", "write"]
+
+# Attenuable tokens (ADR-022). Optional: leave the section out and the gateway
+# neither mints nor accepts them.
+#
+# An authenticated caller POSTs to /v1/tokens and gets back a root token holding
+# exactly the authority it already had. The agent keeps that token and, when it
+# spawns a subagent, narrows a copy locally — fewer scopes, a deeper namespace,
+# a shorter life — with no call to the gateway and no call to the identity
+# provider. Narrowing is enforced by the signature: a holder can only remove.
+#
+# root_private_key is the whole grant. Anything holding it can mint a token for
+# any principal, so it belongs in a file only the gateway can read. Generate:
+#   boswell-gateway keygen
+#
+# Verification is offline, so a token's own expiry is the only thing that ends
+# it early. Keep max_ttl_secs as short as the deployment tolerates.
+#
+# [tokens]
+# root_private_key = "0000000000000000000000000000000000000000000000000000000000000000"
+# default_ttl_secs = 86400      # 1 day
+# max_ttl_secs = 2592000        # 30 days
 "#;
 
 #[cfg(test)]

@@ -39,6 +39,10 @@ async fn dispatch() -> Result<(), GatewayError> {
                 .unwrap_or("config/gateway.toml");
             init_config(path)
         }
+        Some("keygen") => {
+            keygen();
+            Ok(())
+        }
         Some("--config") => {
             let path = args.get(2).ok_or_else(|| {
                 GatewayError::Serve("--config requires a path argument".to_string())
@@ -80,12 +84,32 @@ fn init_config(path: &str) -> Result<(), GatewayError> {
     Ok(())
 }
 
+/// Print a fresh Ed25519 root key pair for the `[tokens]` section.
+///
+/// To stdout and nowhere else — the gateway does not write the key into a config
+/// file, because the file it would write to is the one an operator is most
+/// likely to commit.
+fn keygen() {
+    let keypair = biscuit_auth::KeyPair::new_with_algorithm(biscuit_auth::Algorithm::Ed25519);
+    println!("# Attenuable-token root key (ADR-022). Keep the private half secret:");
+    println!("# anything holding it can mint a token for any principal.");
+    println!("[tokens]");
+    println!(
+        "root_private_key = \"{}\"",
+        keypair.private().to_bytes_hex()
+    );
+    println!();
+    println!("# Public half, for reference. A verifier needs only this, and it cannot mint.");
+    println!("# public_key = \"{}\"", keypair.public().to_bytes_hex());
+}
+
 fn print_help() {
     println!("Boswell Gateway - public HTTP/JSON API in front of the private gRPC instance");
     println!();
     println!("USAGE:");
     println!("    boswell-gateway --config <path>  Start the gateway with a config file");
     println!("    boswell-gateway init [path]      Write a starter config (default: config/gateway.toml)");
+    println!("    boswell-gateway keygen           Print a new attenuable-token root key pair");
     println!("    boswell-gateway                  Start with built-in defaults (no API keys)");
     println!("    boswell-gateway --help           Print this help");
     println!();
@@ -94,6 +118,8 @@ fn print_help() {
     println!("    router_endpoint                  Router URL for the SDK (default http://127.0.0.1:8080)");
     println!("    max_body_bytes, request_timeout_secs, rate_limit_per_minute   hardening knobs");
     println!("    [[api_keys]] id, key_hash, namespace, scopes                  bearer keys (hashes only)");
+    println!("    [oidc] issuer, principals                                     identity-provider tokens");
+    println!("    [tokens] root_private_key, default_ttl_secs, max_ttl_secs     attenuable tokens");
     println!();
     println!("SECURITY:");
     println!("    Serves plain HTTP on localhost. Put a reverse proxy or tunnel in front for TLS");

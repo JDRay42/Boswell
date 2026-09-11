@@ -13,6 +13,11 @@
 //! provider — a JWT from that provider, verified against locally cached JWKS.
 //! Both paths end in the same [`AuthContext`](auth::AuthContext); see
 //! [`oidc`] for what verification does and does not grant.
+//!
+//! Where a `[tokens]` section is configured there is a third: an **attenuable
+//! token** minted by `POST /v1/tokens` from either of the other two, which its
+//! holder narrows offline for subagents. It ends in the same `AuthContext` as
+//! well; see [`tokens`].
 
 pub mod auth;
 pub mod config;
@@ -21,6 +26,7 @@ pub mod handlers;
 pub mod metrics;
 pub mod oidc;
 pub mod state;
+pub mod tokens;
 
 use std::time::Duration;
 
@@ -99,6 +105,7 @@ pub fn build_router(config: &GatewayConfig, state: AppState) -> Router {
             "/v1/claims/:id/relationships",
             get(handlers::get_relationships),
         )
+        .route("/v1/tokens", post(handlers::mint_token))
         .route("/v1/search", post(handlers::search))
         .route("/v1/recall", post(handlers::recall))
         .route("/v1/extract", post(handlers::extract))

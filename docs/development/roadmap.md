@@ -246,13 +246,29 @@ Still open, and now sharper for having a decided model to sit in:
   in `10-security.md`. `boswell login --status` describes the stored token without printing it;
   `boswell logout` deletes it. The gateway is not in the grant and the CLI does not read the
   gateway's config, so the same issuer has to be named in both. *shipped* (#69)
-- **Attenuable tokens** (`biscuit-auth`): root token minted from a verified OIDC identity,
-  attenuation for subagents, and the Datalog authorization policy. *open*
+- **Attenuable tokens** (`biscuit-auth`). A `[tokens]` section names an Ed25519 root key
+  (`boswell-gateway keygen`). Any authenticated caller — API key or verified OIDC subject —
+  `POST`s to `/v1/tokens` and gets a root token carrying exactly the authority it already had,
+  plus the root public key. The holder narrows copies locally with that public key alone: no
+  gateway call, no issuer, no private key. Three dimensions narrow — operations, namespace
+  (matching `namespace_allows` exactly), and expiry — and the narrowing is cryptographic, so a
+  later block cannot restore what an earlier one removed. A presented token resolves to the same
+  `AuthContext` an API key does; the root grant fills its namespace and scopes, and the
+  attenuation blocks are evaluated inside `require`/`require_namespace` against the request.
+  Minting is refused to a caller who authenticated with a token, so a delegate cannot mint away
+  its own attenuation. The tier ceiling ADR-022 also names is *not* a dimension: nothing at the
+  gateway reads a claim's tier at authorization time, so there is no check to narrow. *shipped*
+  (#70)
 - **Revocation list.** Offline verification means a revoked grant is invisible until something
   checks; the gateway needs a revocation table keyed by token id, and every token needs a
-  bounded lifetime so the list stays small. *open*
+  bounded lifetime so the list stays small. Now the next item rather than a distant one: #70
+  ships tokens with a `max_ttl_secs` ceiling and nothing else that ends one early.
+  `Biscuit::revocation_identifiers` is the key to check against. *open*
 - **Corroboration resolves a token to its delegation root**, so ten subagents of one agent do
-  not read as ten independent witnesses. `CONTEXT.md` already says the root is the unit of
+  not read as ten independent witnesses. Unblocked by #70 and now concrete: an attenuated token's
+  `AuthContext.key_id` is read from the *authority* block, so it already names the root rather
+  than the delegate — what is missing is a check that the corroboration path uses it knowingly
+  rather than by accident. `CONTEXT.md` already says the root is the unit of
   independence and #33 counts the authenticated principal; the two diverge the moment subagents
   hold their own tokens. *open*
 - **Rewrite [`10-security.md`](../architecture/10-security.md).** It specified the mTLS model
