@@ -329,11 +329,16 @@ Still open, and now sharper for having a decided model to sit in:
   naming the field and the value. Deliberately **not** a check on the request path: rejecting
   there would turn a silent narrowing into an outage, and the narrowing is the safe direction.
   *shipped* (#75)
-- **Ship defaults that actually use the brake.** `max_ttl_secs` defaults to 30 days and
-  revocation is off, so a config with `[tokens]` and no `revocation_list_path` is exactly the
-  pre-#71 situation. The brake exists and nothing makes an operator pull it. Shorten the
-  default TTL and have the starter config name a revocation path, so the default posture is
-  the one the security work was for. *open*
+- **Ship defaults that actually use the brake.** `max_ttl_secs` now defaults to **7 days**,
+  down from 30, and the starter config's `[tokens]` example names a `revocation_list_path`, so
+  an operator who enables tokens by uncommenting that block enables the revocation list with
+  them. Seven days is the window a leaked token stays usable with nobody doing anything, and
+  the span a revocation entry has to be retained before it is dead weight; it is long enough
+  that a long-running agent is not re-minting daily, which matters because no client mints
+  yet. `default_ttl_secs` stays at one day — it was already well under the ceiling, and it is
+  the value a caller gets when it names none, not a bound on what it may ask for. Three tests
+  in `config.rs` hold the numbers and parse the commented `[tokens]` example, which nothing
+  checked before. *shipped* (#76)
 - **Audit which routes bind namespace attenuation.** Attenuation narrows a token only where a
   handler calls `require_namespace`, which is four call sites in `handlers.rs`; a route that
   never calls it is not narrowed, the same limit an API key's namespace has today. This item

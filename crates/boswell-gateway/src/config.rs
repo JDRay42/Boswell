@@ -110,6 +110,10 @@ pub struct TokenConfig {
     /// Ceiling on a requested lifetime. Verification is offline, so expiry and
     /// the revocation list are the only two things that end a token; the
     /// shorter this is, the shorter the list has to stay.
+    ///
+    /// Defaults to 7 days. That is the window a leaked token stays usable
+    /// without an operator doing anything, and the span a revocation entry has
+    /// to be kept before it becomes dead weight.
     pub max_ttl_secs: u64,
 
     /// Path to the revocation list — one hex revocation identifier per line,
@@ -130,7 +134,7 @@ impl Default for TokenConfig {
         Self {
             root_private_key: String::new(),
             default_ttl_secs: 24 * 60 * 60,
-            max_ttl_secs: 30 * 24 * 60 * 60,
+            max_ttl_secs: 7 * 24 * 60 * 60,
             revocation_list_path: String::new(),
             revocation_refresh_secs: 15,
         }
@@ -350,19 +354,22 @@ scopes = ["read", "write"]
 #   boswell-gateway keygen
 #
 # Verification is offline, so a token's own expiry and the revocation list are
-# the only two things that end it early. Keep max_ttl_secs as short as the
-# deployment tolerates: it bounds how long the list has to remember anything.
-#
-# [tokens]
-# root_private_key = "0000000000000000000000000000000000000000000000000000000000000000"
-# default_ttl_secs = 86400      # 1 day
-# max_ttl_secs = 2592000        # 30 days
+# the only two things that end it early. max_ttl_secs caps a requested lifetime
+# and so bounds how long the list has to remember anything; keep it as short as
+# the deployment tolerates. The shipped default is 7 days.
 #
 # revocation_list_path names a file of revocation identifiers, one lowercase hex
 # id per line, # comments allowed. Appending a line ends that token, and every
 # token attenuated from it, within revocation_refresh_secs. /v1/tokens returns
 # the id of each token it mints; `boswell-gateway revocation-ids <token>` prints
-# the ids of any token you hold. With no file named, expiry is the only brake.
+# the ids of any token you hold; `boswell-gateway revoke <list> <token>` appends
+# one. Name the file when you enable this section: with no file, expiry is the
+# only brake, and the file need not exist yet.
+#
+# [tokens]
+# root_private_key = "0000000000000000000000000000000000000000000000000000000000000000"
+# default_ttl_secs = 86400          # 1 day
+# max_ttl_secs = 604800             # 7 days
 # revocation_list_path = "config/revoked.txt"
 # revocation_refresh_secs = 15
 "#;
@@ -406,6 +413,58 @@ mod tests {
         // The config an operator is handed must itself pass the check the
         // loader applies to theirs.
         c.validate_identities().unwrap();
+    }
+
+    /// Uncomment the starter's `[tokens]` example and it must parse. Nothing
+    /// else checks the commented half of the file, so a typo there ships.
+    fn starter_tokens_example() -> TokenConfig {
+        let src = GatewayConfig::starter_toml();
+        let start = src
+            .find("# [tokens]")
+            .expect("the starter must carry a [tokens] example");
+        let block: String = src[start..]
+            .lines()
+            .take_while(|l| l.starts_with('#'))
+            .map(|l| format!("{}\n", l.trim_start_matches('#').trim_start()))
+            .collect();
+        let c: GatewayConfig =
+            toml::from_str(&block).expect("the [tokens] example must be valid TOML");
+        c.tokens.expect("the example must populate [tokens]")
+    }
+
+    /// The point of the item that produced this test: an operator who enables
+    /// tokens by uncommenting the example gets the revocation list with them.
+    /// A `[tokens]` section without a path is the posture revocation was for.
+    #[test]
+    fn the_starter_s_tokens_example_names_a_revocation_list() {
+        let t = starter_tokens_example();
+        assert!(
+            !t.revocation_list_path.is_empty(),
+            "the [tokens] example must name a revocation_list_path"
+        );
+        assert!(t.revocation_refresh_secs > 0);
+    }
+
+    /// The ceiling bounds how long the revocation list has to remember a token,
+    /// so it is a deliberate number rather than a value to drift upward. Moving
+    /// it is fine; moving it silently is not.
+    #[test]
+    fn the_default_token_ceiling_is_seven_days() {
+        assert_eq!(TokenConfig::default().max_ttl_secs, 7 * 24 * 60 * 60);
+        // The example an operator copies must not undo the shipped default.
+        assert_eq!(
+            starter_tokens_example().max_ttl_secs,
+            TokenConfig::default().max_ttl_secs
+        );
+    }
+
+    /// The default a caller gets when it names no lifetime stays under the
+    /// ceiling; a default above the cap would be silently clamped on every mint.
+    #[test]
+    fn the_default_lifetime_fits_under_the_ceiling() {
+        let t = TokenConfig::default();
+        assert!(t.default_ttl_secs <= t.max_ttl_secs);
+        assert_eq!(t.default_ttl_secs, 24 * 60 * 60);
     }
 
     /// Writing the config out and loading it back is the path that matters:

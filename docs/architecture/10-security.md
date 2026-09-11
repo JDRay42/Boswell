@@ -167,7 +167,10 @@ Three things are worth stating because they are easy to assume otherwise:
   not of the token.
 - **Verification is offline, so expiry and the revocation list are the only two things that end
   a token.** `max_ttl_secs` is the ceiling on a requested lifetime; keep it as short as the
-  deployment tolerates, because it bounds how long the list has to remember anything.
+  deployment tolerates, because it bounds how long the list has to remember anything. It
+  defaults to **7 days**, and `default_ttl_secs` — the lifetime a caller that names none gets —
+  to one day. The starter config's `[tokens]` example names a `revocation_list_path`, so an
+  operator who enables tokens by uncommenting it enables the revocation list at the same time.
 
 The attenuation vocabulary is written as `reject if` rather than `check if`. The gateway
 authorizes one dimension at a time, so a restriction must pass when its dimension is absent from
