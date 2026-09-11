@@ -224,6 +224,97 @@ fn decode_hex(s: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
+/// What appending an identifier to the list did.
+///
+/// Distinguished because "already revoked" is a success for an operator and a
+/// no-op for the file, and conflating the two would either make a second
+/// `revoke` look like a failure or grow the file a line at a time.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Appended {
+    /// The identifier was not listed and now is.
+    Added,
+    /// The identifier was already listed; the file is unchanged.
+    AlreadyPresent,
+}
+
+/// Why an identifier could not be appended.
+#[derive(Debug, thiserror::Error)]
+pub enum RevokeError {
+    /// The identifier was not even-length hex, so the gateway would skip it.
+    #[error("not a hex revocation identifier: {0}")]
+    NotHex(String),
+
+    /// The file, or a directory on the way to it, could not be read or written.
+    #[error("{0}: {1}")]
+    Io(String, #[source] std::io::Error),
+}
+
+/// Append one revocation identifier to the list, creating the file if absent.
+///
+/// The duplicate check goes through [`parse`], the same function the gateway
+/// loads the file with, so "already present" means what the gateway would
+/// think it means: case and surrounding whitespace do not make a second entry,
+/// and a commented-out line does not count as one.
+///
+/// Appends rather than rewrites. The file is an incident-time record and an
+/// operator may well be editing it by hand at the same moment; a read-modify-
+/// write would be the one operation that can lose someone else's line.
+pub fn append(path: &Path, id: &str, note: Option<&str>) -> Result<Appended, RevokeError> {
+    use std::io::Write;
+
+    let id = id.trim().to_ascii_lowercase();
+    let decoded = decode_hex(&id).ok_or_else(|| RevokeError::NotHex(id.clone()))?;
+
+    let existing = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            return Err(RevokeError::Io(
+                format!("cannot read {}", path.display()),
+                e,
+            ))
+        }
+    };
+    if parse(&existing, &path.display().to_string()).contains(&decoded) {
+        return Ok(Appended::AlreadyPresent);
+    }
+
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| RevokeError::Io(format!("cannot create {}", parent.display()), e))?;
+        }
+    }
+
+    let mut line = String::new();
+    // A file someone edited without a trailing newline would otherwise get the
+    // new id glued onto the end of its last one, revoking neither.
+    if !existing.is_empty() && !existing.ends_with('\n') {
+        line.push('\n');
+    }
+    line.push_str(&id);
+    if let Some(note) = note {
+        // A newline in the note would forge a second line of the file.
+        let note = note.replace(['\n', '\r'], " ");
+        let note = note.trim();
+        if !note.is_empty() {
+            line.push_str("  # ");
+            line.push_str(note);
+        }
+    }
+    line.push('\n');
+
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|e| RevokeError::Io(format!("cannot open {}", path.display()), e))?;
+    file.write_all(line.as_bytes())
+        .map_err(|e| RevokeError::Io(format!("cannot write {}", path.display()), e))?;
+
+    Ok(Appended::Added)
+}
+
 /// Lowercase hex for a revocation identifier, the form the file expects.
 pub fn to_hex(id: &[u8]) -> String {
     let mut out = String::with_capacity(id.len() * 2);
@@ -331,6 +422,118 @@ mod tests {
         let list = RevocationList::new(path.to_str().unwrap(), 0);
         assert!(list.is_empty());
         assert!(!list.is_revoked(&[vec![0xaa]]));
+    }
+
+    /// A path in a per-test temp directory that nothing else writes to.
+    fn scratch(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "boswell-revoke-{}-{}-{:?}.txt",
+            name,
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    #[test]
+    fn appending_to_an_absent_file_creates_it() {
+        let path = scratch("absent");
+        assert_eq!(append(&path, "aabb", None).unwrap(), Appended::Added);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "aabb\n");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn appending_the_same_identifier_twice_leaves_one_line() {
+        let path = scratch("duplicate");
+        assert_eq!(append(&path, "aabb", None).unwrap(), Appended::Added);
+        assert_eq!(
+            append(&path, "aabb", Some("second try")).unwrap(),
+            Appended::AlreadyPresent
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "aabb\n",
+            "the second call must not write, not even the note"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_duplicate_is_judged_the_way_the_gateway_reads_the_file() {
+        // Uppercase and surrounding space are the same entry to `parse`, so
+        // they must be the same entry here too, or the file grows one line per
+        // paste of the same id in a different case.
+        let path = scratch("case");
+        append(&path, "  AABB  ", None).unwrap();
+        assert_eq!(
+            append(&path, "aabb", None).unwrap(),
+            Appended::AlreadyPresent
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "aabb\n");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_note_becomes_a_comment_the_parser_ignores() {
+        let path = scratch("note");
+        append(&path, "aabb", Some("leaked laptop")).unwrap();
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(contents, "aabb  # leaked laptop\n");
+        let ids = parse(&contents, "test");
+        assert!(ids.contains(&vec![0xaa, 0xbb]), "the id still parses");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_newline_in_a_note_cannot_forge_a_second_line() {
+        let path = scratch("injection");
+        append(&path, "aabb", Some("oops\nccdd")).unwrap();
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(contents.lines().count(), 1);
+        let ids = parse(&contents, "test");
+        assert_eq!(ids.len(), 1, "only the id passed as the id is revoked");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_file_without_a_trailing_newline_does_not_get_two_ids_glued_together() {
+        let path = scratch("no-newline");
+        std::fs::write(&path, "aabb").expect("write");
+        append(&path, "ccdd", None).unwrap();
+        let ids = parse(&std::fs::read_to_string(&path).unwrap(), "test");
+        assert!(ids.contains(&vec![0xaa, 0xbb]));
+        assert!(ids.contains(&vec![0xcc, 0xdd]));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn an_identifier_that_is_not_hex_is_refused_rather_than_written() {
+        let path = scratch("not-hex");
+        // The gateway would skip such a line with a warning, so writing it
+        // would report a revocation that never takes effect.
+        assert!(matches!(
+            append(&path, "not-hex", None),
+            Err(RevokeError::NotHex(_))
+        ));
+        assert!(!path.exists(), "a refused id must not create the file");
+    }
+
+    #[test]
+    fn an_appended_identifier_revokes_a_token_carrying_it() {
+        let path = scratch("end-to-end");
+        std::fs::write(&path, "").expect("create");
+        let list = RevocationList::new(path.to_str().unwrap(), 0);
+        assert!(!list.is_revoked(&[vec![0xaa, 0xbb]]));
+
+        append(&path, &to_hex(&[0xaa, 0xbb]), Some("ops")).unwrap();
+
+        assert!(
+            list.is_revoked(&[vec![0xaa, 0xbb]]),
+            "a running gateway must honor what the subcommand wrote"
+        );
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

@@ -138,6 +138,11 @@ identifiers of a token you hold — the first is the root's, and each one after 
 attenuation, so revoking a later id ends that delegate alone. A revoked token gets `401` saying
 so.
 
+`boswell-gateway revoke <list-path> <token|id> [note]` appends the line for you, creating the
+file if it does not exist and refusing a duplicate. Given a token it revokes that token and its
+descendants, not the root it came from; to end a whole tree, pass the root identifier, which the
+command prints.
+
 A request refused by a token's own restrictions gets `403`, naming the operation or namespace
 and not the Datalog. A token this gateway did not mint gets `401`, as does any bearer token it
 cannot make sense of.

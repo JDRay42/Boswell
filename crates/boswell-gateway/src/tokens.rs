@@ -476,14 +476,10 @@ mod tests {
         (authority, path)
     }
 
+    /// Revoke through the same function `boswell-gateway revoke` calls, so every
+    /// test below is also a test that what the subcommand writes is honored.
     pub(super) fn revoke(path: &std::path::Path, id: &str) {
-        use std::io::Write;
-        let mut file = std::fs::OpenOptions::new()
-            .append(true)
-            .open(path)
-            .expect("reopen the list");
-        writeln!(file, "{}", id).expect("append");
-        file.sync_all().expect("flush");
+        revocation::append(path, id, None).expect("append to the list");
     }
 
     pub(super) fn context(namespace: &str, scopes: &[Scope]) -> AuthContext {

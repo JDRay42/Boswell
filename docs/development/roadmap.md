@@ -308,11 +308,15 @@ Still open, and now sharper for having a decided model to sit in:
   memory and CPU figures were removed rather than replaced. *shipped* (#61)
 
 - **A CLI subcommand that appends to the revocation list.** #71 made revocation possible and
-  left revoking itself as `echo <id> >> revoked.txt`. `boswell-gateway revocation-ids` only
-  reads ids out of a token; nothing writes one. A subcommand that appends, refuses duplicates
-  and creates the file if absent closes that. Deliberately **not** an HTTP endpoint: revoking
+  left revoking itself as `echo <id> >> revoked.txt`. `boswell-gateway revoke <list-path>
+  <token|id> [note]` now writes the line: it creates the file if absent, refuses a duplicate as
+  the gateway's own parser judges one, and refuses an identifier the gateway would skip as
+  non-hex rather than reporting a revocation that never takes effect. Given a token it writes
+  the token's **last** block identifier — the one unique to the token in hand — so revoking a
+  delegate does not silently end the root and its siblings; ending a whole tree means passing
+  the root identifier, which the command prints. Deliberately **not** an HTTP endpoint: revoking
   over the wire needs an admin scope the gateway does not have, and granting one is a separate
-  decision, not a detail of this item. *open*
+  decision, not a detail of this item. *shipped* (#74)
 - **Validate the identity shape `authenticated_principal` assumes.** It splits on the first
   `/` and nothing checks the result. An identity of `""` returns `""`, and an OIDC `sub`
   containing a `/` is truncated to its first segment. Truncation is fail-*closed* for Sybil
