@@ -60,6 +60,6 @@ pub use provenance::ProvenanceEntry;
 pub use relationship::{Relationship, RelationshipType};
 pub use tier::Tier;
 pub use write_path::{
-    entry_tier, Assurance, Authority, CorroborationFacts, DelegationChain, EvidenceType, Op,
-    ProvenanceStamp, StampedReportOutcome, StampedWriteOutcome,
+    authenticated_principal, entry_tier, Assurance, Authority, CorroborationFacts, DelegationChain,
+    EvidenceType, Op, ProvenanceStamp, StampedReportOutcome, StampedWriteOutcome,
 };

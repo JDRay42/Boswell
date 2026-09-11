@@ -157,6 +157,15 @@ Independent backing for an entry, measured by the diversity of its provenance �
 delegation roots — rather than by how many authors it has.
 _Avoid_: consensus, agreement, votes, replication
 
+**Delegation root** (the *independence unit*):
+The one principal a stamp counts as, for corroboration: the root of its delegation chain,
+falling back to its author when it has no chain, with any self-declared subagent path stripped.
+It is what a credential resolves to, not what a caller calls itself — subagents of one agent, and
+holders of tokens attenuated from one root, are all one delegation root.
+`ProvenanceStamp::independence_root` in `boswell-domain` is the definition; everything that
+counts independence calls it.
+_Avoid_: identity, author, witness, source
+
 **Promotion**:
 A tier change. An entry *climbs* on endorsement, corroboration, or effectiveness, and *falls* on
 higher-authority contradiction, repeated failure, or staleness. A fall always beats a climb.

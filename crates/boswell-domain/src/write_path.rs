@@ -273,6 +273,27 @@ pub struct ProvenanceStamp {
 }
 
 impl ProvenanceStamp {
+    /// This stamp's **independence unit** (design §8.3): the authenticated
+    /// principal at the root of its delegation chain, falling back to
+    /// [`ProvenanceStamp::author`] when the stamp carries no chain.
+    ///
+    /// This is the value corroboration counts distinct occurrences of. It is
+    /// deliberately *not* [`ProvenanceStamp::author`]: nine subagents of one
+    /// orchestrator are nine authors and one witness, and counting authors is
+    /// exactly the Sybil hole §8.3 measured.
+    ///
+    /// Both halves of the value are narrowing, and both matter. Taking the
+    /// chain's root rather than its leaf collapses a delegation tree onto the
+    /// principal it hangs from; [`authenticated_principal`] then strips the
+    /// self-declared subagent path off that root, so a caller cannot
+    /// manufacture independence by appending one. An attenuated token is the
+    /// same story one layer down: its grant names the root principal, because
+    /// `principal` is read from the authority block and a holder's own block
+    /// cannot restate it.
+    pub fn independence_root(&self) -> &str {
+        authenticated_principal(self.delegation_chain.root().unwrap_or(self.author.as_str()))
+    }
+
     /// The ceiling this single stamp imposes: the min of the author's authority
     /// `max_tier`, the evidence ceiling, and the assurance ceiling.
     pub fn ceiling(&self) -> Tier {
@@ -280,6 +301,33 @@ impl ProvenanceStamp {
             .max_tier
             .min(self.evidence.tier_ceiling())
             .min(self.assurance.tier_ceiling())
+    }
+}
+
+/// The authenticated principal inside a derived identity (design §8.3).
+///
+/// [`ProvenanceStamp::author`] is a *derived* identity — the documented shape is
+/// `agent:orch-7/sub:explore-3`, an authenticated principal plus a subagent path
+/// the principal chose for itself. Anything counted for independence must be
+/// counted over what an identity provider actually established, not over a
+/// suffix the caller made up, or a single credential fanned out into subagents
+/// manufactures its own independence.
+///
+/// This does not *solve* Sybil independence and is not meant to: an adversary
+/// holding several genuinely distinct credentials still counts several times.
+/// That is the irreducible part, and §8.4 accepts it as mitigated rather than
+/// solved. What this closes is the free version — claiming independence by
+/// declining to declare a delegation chain.
+///
+/// It lives in the domain rather than in the store because two layers have to
+/// agree on it: the store counts independence units, and the transport decides
+/// what identity a stamp is authored under. A gateway that hands down an
+/// `issued_to` carrying a subagent suffix is relying on this function to strip
+/// it back off at the counting end.
+pub fn authenticated_principal(identity: &str) -> &str {
+    match identity.split_once('/') {
+        Some((principal, _)) => principal,
+        None => identity,
     }
 }
 
@@ -515,5 +563,55 @@ mod tests {
         assert_eq!(c.root(), Some("human:jd"));
         assert_eq!(c.leaf(), Some("sub:explore"));
         assert_eq!(DelegationChain::default().root(), None);
+    }
+
+    #[test]
+    fn authenticated_principal_strips_a_self_declared_subagent_path() {
+        assert_eq!(
+            authenticated_principal("agent:orch-7/sub:explore-3"),
+            "agent:orch-7"
+        );
+        assert_eq!(authenticated_principal("agent:orch-7"), "agent:orch-7");
+        // Only the first segment is the principal; the rest is the path, however
+        // deep the caller nests it.
+        assert_eq!(
+            authenticated_principal("agent:orch-7/a/b/c"),
+            "agent:orch-7"
+        );
+        assert_eq!(authenticated_principal(""), "");
+    }
+
+    #[test]
+    fn independence_root_is_the_chain_root_not_the_leaf() {
+        // The delegation tree collapses onto what it hangs from: `human:jd`
+        // delegated to `agent:worker`, and the witness is `human:jd`.
+        let s = stamp(EvidenceType::Observed, Assurance::Asserted, Tier::Task);
+        assert_eq!(s.author, "agent:worker");
+        assert_eq!(s.independence_root(), "human:jd");
+    }
+
+    #[test]
+    fn independence_root_falls_back_to_the_author_with_no_chain() {
+        let mut s = stamp(EvidenceType::Observed, Assurance::Asserted, Tier::Task);
+        s.delegation_chain = DelegationChain::default();
+        assert_eq!(s.independence_root(), "agent:worker");
+    }
+
+    #[test]
+    fn nine_self_rooted_subagents_are_one_independence_root() {
+        // §8.3's finding, at the level the rule is defined. Nine stamps, nine
+        // distinct authors, each declaring itself its own root — and one
+        // witness, because the suffix is the only thing that differs.
+        let roots: std::collections::HashSet<String> = (0..9)
+            .map(|i| {
+                let mut s = stamp(EvidenceType::Observed, Assurance::Asserted, Tier::Task);
+                s.author = format!("agent:orch-7/sub:{}", i);
+                s.delegation_chain = DelegationChain(vec![s.author.clone()]);
+                s.independence_root().to_string()
+            })
+            .collect();
+
+        assert_eq!(roots.len(), 1);
+        assert!(roots.contains("agent:orch-7"));
     }
 }
