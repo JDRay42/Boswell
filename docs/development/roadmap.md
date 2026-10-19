@@ -213,6 +213,21 @@ and what exists to reuse. Integration guide:
   stream.** `boswell-openrig bridge`. Queue claims become announcements that are forgotten
   when the item closes; a finished item leaves a `was completed by` claim. Contradictions,
   promotions and supersessions post to OpenRig's stream with idempotent ids. *shipped* (#84)
+- **Verify against a live OpenRig.** #84 was built by reading OpenRig's source at commit
+  `befd941` (CLI 0.6.11) and tested only against stand-in servers built from what that
+  source documents. Three things it relies on were never observed working:
+  1. OpenRig loads a third-party plugin's hooks into a Claude seat when the seat declares
+     `CLAUDE_CODE_PLUGIN_DIRS`. OpenRig's refocus-channel reference says a seat-declared
+     value is kept; nothing confirmed the hooks then run.
+  2. Codex loads plugin hooks at all. `examples/openrig/plugin/boswell/hooks/codex.json`
+     exists on the assumption that it does.
+  3. Claude Code expands `${VAR:-default}` in a `.mcp.json` merged from an OpenRig
+     fragment. `examples/openrig/runtime/claude-mcp.fragment.json` depends on it.
+
+  Also unobserved: the exact line order of OpenRig's SSE frames (its Hono dependency was
+  not installed to read), and whether a Codex seat's `boswell-mcp` inherits
+  `OPENRIG_SESSION_NAME`. Unblocked by running one rig with two seats; the guide's
+  Troubleshooting section is the checklist. *open*
 
 ## Identity, trust and security
 
@@ -522,6 +537,15 @@ The passes that run without being asked.
   done for some time. *shipped*
 - **Procedure and receipt sweeps** — expiring unanswered receipts, which is the mechanism
   that actually enforces "silence is not success". *shipped* (#13, #17)
+
+## Test suite health
+
+- **`boswell-cli` profile tests race on a shared config directory.** Under `cfg(test)`
+  the CLI's config directory is `boswell-cli-test-<pid>`, one per process, and tests that
+  save a config run in parallel threads of that process. `test_set_and_switch_profile`
+  failed once on macOS during the #84 work and passed on three reruns; CI on Linux has not
+  caught it. The fix is a directory per test, as the gateway's config test helper got in
+  #84. *open*
 
 ## Observability and performance
 
