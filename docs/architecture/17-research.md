@@ -144,7 +144,9 @@ a read scope.
 { subject?: string,          // exact anchor
   topic?: string,            // semantic anchor, embedded at query time
   namespace: string,         // exact, "ns/*", or "ns/*/n", as Query
-  depth?: int,               // relationship hops from anchored claims; default 1, max 3
+  view?: width | depth,      // default width (§5.3)
+  predicate?: string,        // narrow to one group; the usual follow-up to a width read
+  hops?: int,                // relationship hops from anchored claims; default 1, max 3
   kinds?: [claim | procedure | goal | question],   // default all
   limit_per_kind?: int,      // default 50
   min_similarity?: float }
@@ -158,9 +160,10 @@ At least one of `subject` and `topic` is required. With both, the anchor set is 
 { anchors:    [ { subject, matched_by: exact | semantic, score? } ],
   groups:     [ { subject, predicate,
                   standing: contested | stale | thin | settled,
-                  roots: [independence_root],
-                  claims: [ { claim_id, object, confidence, tier, author,
-                              independence_root, evidence, staleness_at } ],
+                  roots: [independence_root], unattributed_count,
+                  claims: [ { claim_id, object, confidence, tier, source_type,
+                              authors: [ { author, independence_root } ],
+                              stale_at } ],
                   contradictions: [ { claim_id, against } ] } ],
   procedures: [ { id, name, version, intent, effectiveness,
                   answered_receipts, unknown_receipts, reporting_roots, tier } ],
@@ -169,8 +172,12 @@ At least one of `subject` and `topic` is required. With both, the anchor set is 
                   pending: [ { author, expires_at } ],
                   attempts: [ { outcome, tried, author } ],
                   answers } ],
-  coverage:   { intent_match: semantic | substring, truncated: [kind] } }
+  coverage:   { intent_match: semantic | substring, truncated: [kind],
+                unavailable: [kind] } }
 ```
+
+`unavailable` lists kinds this instance cannot serve yet — `question`, until the `Question`
+store exists.
 
 **Grouping and standing.** Claims are grouped by `(subject, predicate)`. A group's standing
 is the first of these that holds:
@@ -184,9 +191,15 @@ is the first of these that holds:
 Distinct objects under one predicate are not a contest; many predicates are multi-valued.
 Only a recorded contradiction is.
 
-**Attribution and independence.** Each claim shows its `author` and its
-`independence_root`. A group's `roots` counts the latter. Five agents of one grant agreeing
-show five authors and one root, and the group reads `thin`.
+**Attribution and independence.** Each claim shows its `authors` and their
+`independence_root`s. A group's `roots` counts the latter. Five agents of one grant agreeing
+show five authors and one root, and the group reads `thin`. A claim written before claim
+writes were stamped has no author; it counts toward `unattributed_count` and toward no root.
+
+An author is the authenticated principal, optionally followed by a self-declared agent
+label: `writer/sub:explore-3`. The label comes from the `X-Boswell-Agent` request header and
+is never trusted — `authenticated_principal` strips it wherever independence is counted —
+so a caller can only mislabel which of its own agents wrote something.
 
 **Procedures and goals** join by intent match against `topic`, or against `subject` when no
 topic is given. Procedures appear as signatures with effectiveness; bodies are not
@@ -197,7 +210,28 @@ through `GET /v1/procedures/{id}`, which issues the receipt.
 answers; the standing of the group those answers fall in tells the reader whether the
 answer has been corroborated.
 
-### 5.3 Narrative
+### 5.3 Width and depth
+
+A team of agents needs a view a mile wide and an inch deep: enough to know what exists,
+what is in dispute and what is open, without paying for the detail of every claim. The
+default `view: width` returns the same structure with the detail removed:
+
+- each group carries `subject`, `predicate`, `standing`, `claim_count`, `root_count`,
+  `unattributed_count`, and `lead` — the object of its highest-confidence claim — but no
+  `claims` or `contradictions`;
+- each procedure carries `id`, `name`, `intent` and `effectiveness`;
+- each goal carries `id`, `name` and `accomplish_children`;
+- each question carries `id`, `text`, `status` and `demand`.
+
+Going deeper is a second call. `view: depth` with the same anchor returns everything in
+§5.2; adding `predicate` narrows it to one group. Procedures and goals have their own
+routes for depth: `GET /v1/procedures/{id}` (which issues a receipt) and
+`GET /v1/goals/{id}/expand`.
+
+The vocabulary matches OpenRig's context packs, whose atoms are labeled
+`purpose: width | depth`; see [`docs/integrations/openrig.md`](../integrations/openrig.md).
+
+### 5.4 Narrative
 
 `POST /v1/dossier/narrate` takes the same request, builds the dossier, and asks the
 configured LLM provider for a summary that cites claim, procedure and question ids. The
@@ -262,4 +296,4 @@ question_receipt_ttl_hours = 24
   `independence_root` for counting.
 - **Change feed** (`18-change-feed`) carries question status changes, and uses the dossier
   as its re-sync path.
-- **`Reflect`** (`03-api-surface`) is superseded by §5.3.
+- **`Reflect`** (`03-api-surface`) is superseded by §5.4.
