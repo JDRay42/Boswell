@@ -58,6 +58,13 @@ to an option.
 `author` in the dossier, so a reader sees which agent said what; corroboration still counts
 `ProvenanceStamp::independence_root`. A research team under one grant is one root.
 
+Every agent under one grant authenticates as the same principal — an attenuated token keeps
+its root's `key_id` — so per-agent attribution needs a label the transport cannot verify.
+It comes from an `X-Boswell-Agent` header and is appended as a subagent path,
+`writer/sub:explore-3`, which `authenticated_principal` already strips at the counting
+end. A lying label misattributes work among one principal's own agents and changes no
+count. Claim writes carry no author today; stamping them is a prerequisite of the dossier.
+
 **6. Gaps are persisted, never computed on read.** The Janitor detects them — unresolved
 contradictions, stale claims, thinly backed claims at high tiers, goals with no effective
 procedure under them — and records them as Questions. The dossier only reads. A read that

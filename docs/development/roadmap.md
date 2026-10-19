@@ -140,6 +140,11 @@ held about it, and a record of what is not known. Design of record is
 [ADR-023](../ADRs/023-questions-and-dossiers.md).
 
 - **Design doc and ADR — Questions and dossiers.** *shipped* (#79)
+- **Width and depth views of the dossier, and per-agent attribution labels.** Design
+  amendment: the dossier defaults to a shallow `width` view, and an `X-Boswell-Agent` label
+  attributes work among one principal's agents without affecting any count. *shipped* (#80)
+- **Claim writes stamped with their author.** The dossier counts independence roots per
+  claim group, and today a claim records no author at all. *open*
 - **`Question` entity and store, raising idempotent by meaning.** *open*
 - **Receipts generalized to a target kind; taking and reporting on questions.** *open*
 - **Janitor detection pass and the `unanswerable` lapse.** *open*
@@ -168,6 +173,19 @@ record is [`18-change-feed.md`](../architecture/18-change-feed.md); the decision
 - **Webhooks.** Boswell calling caller-registered URLs is a request-forgery surface and an
   outbound path past the gateway (ADR-021). Unblocked by a decision on allowlisting and
   signing outbound requests. *deferred*
+
+## OpenRig integration
+
+Boswell as the shared memory of an [OpenRig](https://github.com/mvschwarz/openrig) team.
+OpenRig already answers what is being worked and who owns it; Boswell adds what is known
+and what exists to reuse. Integration guide:
+[`docs/integrations/openrig.md`](../integrations/openrig.md).
+
+- **MCP fragments placing Boswell in every seat.** *open*
+- **OpenRig plugin — width dossier at `SessionStart`, feed digest at `UserPromptSubmit`.**
+  Waits on the dossier and the feed. *open*
+- **Bridge — OpenRig queue events into Boswell claims, Boswell feed events into OpenRig's
+  stream.** Waits on the feed. *open*
 
 ## Identity, trust and security
 
