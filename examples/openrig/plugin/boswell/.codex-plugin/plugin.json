@@ -1,0 +1,15 @@
+{
+  "name": "boswell",
+  "version": "0.1.0",
+  "description": "Boswell shared memory for an OpenRig seat: what already exists at session start, what changed at each prompt.",
+  "license": "AGPL-3.0-only",
+  "repository": "github:JDRay42/Boswell",
+  "keywords": ["openrig", "boswell", "memory", "coordination"],
+  "hooks": "./hooks/codex.json",
+  "interface": {
+    "displayName": "Boswell",
+    "shortDescription": "Shared memory for the rig",
+    "category": "Productivity",
+    "capabilities": ["Read"]
+  }
+}

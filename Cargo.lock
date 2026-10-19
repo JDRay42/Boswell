@@ -509,6 +509,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "boswell-openrig"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml",
+]
+
+[[package]]
 name = "boswell-router"
 version = "0.1.0"
 dependencies = [

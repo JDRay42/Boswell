@@ -59,6 +59,7 @@ pub struct LearnResult {
 /// Result containing insertion summary or an error
 pub async fn handle_learn(
     client: &mut BoswellClient,
+    author: &str,
     params: LearnParams,
 ) -> Result<LearnResult, McpError> {
     let total_count = params.claims.len();
@@ -81,7 +82,8 @@ pub async fn handle_learn(
 
         // Assert the claim
         match client
-            .assert(
+            .assert_as(
+                author,
                 &claim.namespace,
                 &claim.subject,
                 &claim.predicate,

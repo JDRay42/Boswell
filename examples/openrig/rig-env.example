@@ -1,0 +1,17 @@
+# Seat environment for the Boswell hooks, set under `env:` on the rig or member
+# in the rig spec. Do not put a token here: OpenRig stores rig-spec env in its
+# database and shows it in tmux arguments. Point BOSWELL_TOKEN_FILE at a file
+# only you can read instead.
+
+BOSWELL_URL=http://127.0.0.1:8081
+BOSWELL_TOKEN_FILE=/Users/you/.openrig/boswell/token
+BOSWELL_NAMESPACE=team
+# Subjects every seat should see the shape of at session start.
+BOSWELL_SUBJECTS=DateParser,Tokenizer
+# Optional: a semantic anchor too (needs vector search on the instance).
+# BOSWELL_TOPIC=date and time handling
+
+# OpenRig loads only its own core plugin's hooks by default. Name this plugin's
+# projected directory here to load its hooks as well (OpenRig's refocus-channel
+# reference documents a seat-declared CLAUDE_CODE_PLUGIN_DIRS as kept).
+# CLAUDE_CODE_PLUGIN_DIRS=.claude/plugins/boswell

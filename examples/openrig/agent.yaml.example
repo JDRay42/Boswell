@@ -1,0 +1,29 @@
+# Add Boswell to an OpenRig agent spec. Merge these into your agent.yaml; the
+# paths are relative to the spec, so copy examples/openrig/ next to it or
+# adjust them.
+
+resources:
+  plugins:
+    - id: boswell
+      source:
+        kind: local
+        path: "openrig-home:plugins/boswell"   # copy plugin/boswell here
+  runtime_resources:
+    - id: boswell-mcp
+      path: runtime/claude-mcp.fragment.json
+      runtime: claude-code
+      type: claude_mcp_fragment
+    - id: boswell-settings
+      path: runtime/claude-settings.fragment.json
+      runtime: claude-code
+      type: claude_settings_fragment
+    - id: boswell-codex
+      path: runtime/codex-config.fragment.toml
+      runtime: codex
+      type: codex_config_fragment
+
+profiles:
+  default:
+    uses:
+      plugins: [boswell]
+      runtime_resources: [boswell-mcp, boswell-settings, boswell-codex]

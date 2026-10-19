@@ -1,0 +1,30 @@
+[package]
+name = "boswell-openrig"
+description = "Boswell as the shared memory of an OpenRig team: hook commands and an event bridge"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "boswell-openrig"
+path = "src/main.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "time", "sync"] }
+# Talks to the Boswell gateway and the OpenRig daemon over HTTP only. `chunk()`
+# reads the SSE body without the `stream` feature.
+reqwest = { version = "0.12", features = ["json"] }
+
+[dev-dependencies]
+axum = "0.7"
+toml = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net"] }
+
+[lints]
+workspace = true

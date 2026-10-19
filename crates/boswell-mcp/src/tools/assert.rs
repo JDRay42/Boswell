@@ -47,6 +47,7 @@ pub struct AssertResult {
 /// Result containing the claim ID or an error
 pub async fn handle_assert(
     client: &mut BoswellClient,
+    author: &str,
     params: AssertParams,
 ) -> Result<AssertResult, McpError> {
     // Parse tier if provided (convert to lowercase string format)
@@ -63,7 +64,8 @@ pub async fn handle_assert(
 
     // Assert the claim
     let claim_id = client
-        .assert(
+        .assert_as(
+            author,
             &params.namespace,
             &params.subject,
             &params.predicate,
