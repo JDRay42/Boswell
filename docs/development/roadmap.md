@@ -132,6 +132,43 @@ reasoning; this section holds the state.
   produces a worse inducer, not an earlier one.
   *deferred*
 
+## Research
+
+What a team of agents needs when it researches a subject together: one read of everything
+held about it, and a record of what is not known. Design of record is
+[`17-research.md`](../architecture/17-research.md); the decision is
+[ADR-023](../ADRs/023-questions-and-dossiers.md).
+
+- **Design doc and ADR — Questions and dossiers.** *shipped* (#79)
+- **`Question` entity and store, raising idempotent by meaning.** *open*
+- **Receipts generalized to a target kind; taking and reporting on questions.** *open*
+- **Janitor detection pass and the `unanswerable` lapse.** *open*
+- **`POST /v1/dossier`.** Useful before semantic intent match ships, at reduced reach for
+  procedures and goals; the response's `coverage` says which match it used. *open*
+- **`POST /v1/dossier/narrate`, superseding `Reflect`.** Sequenced after the dossier, since
+  it narrates one. *open*
+
+## Change feed
+
+Telling agents what memory learned since they last looked, through any harness. Design of
+record is [`18-change-feed.md`](../architecture/18-change-feed.md); the decision is
+[ADR-024](../ADRs/024-change-feed.md).
+
+- **Design doc and ADR — the change feed.** *shipped* (#79)
+- **Event log, appended in every store's write transaction and by Janitor verdicts.**
+  Forget strips summaries from earlier events. *open*
+- **`GET /v1/feed`, polling, with retention and `410` re-sync.** *open*
+- **Server-sent events on the same route, closing on token expiry and rechecking
+  revocation.** *open*
+- **MCP resource adapter.** Needs `boswell-mcp`'s stdio loop to send notifications while
+  serving requests. *open*
+- **Claude Code hook adapter — `SessionStart` dossier, `UserPromptSubmit` digest,
+  `PreToolUse` consult.** The `SessionStart` and `PreToolUse` halves wait on the dossier.
+  *open*
+- **Webhooks.** Boswell calling caller-registered URLs is a request-forgery surface and an
+  outbound path past the gateway (ADR-021). Unblocked by a decision on allowlisting and
+  signing outbound requests. *deferred*
+
 ## Identity, trust and security
 
 Who said it, how well we know that, and what it lets them do.

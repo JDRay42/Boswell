@@ -102,6 +102,66 @@ Traversal of a goal into its children, returning the edge-local signals a caller
 and rank without fetching the children themselves. Expanding is free — it issues no receipt.
 _Avoid_: walk, descend, drill down, list children
 
+## Research
+
+The design of record is `docs/architecture/17-research.md`.
+
+**Question**:
+A recorded unknown: something an agent, or the Janitor, has noted that Boswell does not hold.
+A first-class memory with its own tier and decay, not a claim about the world.
+_Avoid_: gap (except for what the Janitor detects), unknown, todo, ticket
+
+**Take**:
+What an agent does to a question when it sets out to answer it. Taking issues a receipt, so
+the agent owes an outcome report. Several agents may take one question.
+_Avoid_: claim (which is the declarative memory), assign, lock, pick up
+
+**Unanswerable**:
+An outcome report saying the taker looked and could not find out, with what was tried. A
+result, not a failure, and held like any memory: it lapses, and the question reopens.
+_Avoid_: failed, dead end, not found
+
+**Demand**:
+The number of distinct delegation roots that have raised a question. What ranks a question,
+and what lets it climb.
+_Avoid_: votes, priority, popularity
+
+**Dossier**:
+The deterministic read of everything Boswell holds about a subject — claims grouped by
+standing, procedures with their effectiveness, goals, and questions. Free, like `expand`: it
+issues no receipt and calls no LLM.
+_Avoid_: report, summary, reflection, lore
+
+**Standing**:
+A dossier group's state: *contested*, *stale*, *thin* or *settled*, in that order of
+precedence. Thin means fewer independent roots than settling requires, however many authors.
+_Avoid_: status (which belongs to claims and questions), confidence, consensus
+
+## The change feed
+
+The design of record is `docs/architecture/18-change-feed.md`.
+
+**Change event**:
+One entry in the log of what happened to a memory object — created, climbed, fell,
+contradicted, superseded, forgotten, or a question's status changed. A reference with a
+one-line summary, never a copy.
+_Avoid_: notification, message, update, delta
+
+**Feed**:
+The ordered, filtered read of change events, polled or streamed. Harness-neutral; adapters
+translate it for MCP, Claude Code hooks and the rest.
+_Avoid_: stream (which is one transport for it), subscription, inbox, bus
+
+**Cursor**:
+The id of the last change event a client has seen. The client holds it; the store keeps no
+per-reader state.
+_Avoid_: offset, bookmark, watermark
+
+**Announcement**:
+A short-lived task-tier claim that an agent is building something, so another does not start
+the same thing. A predicate convention, not an entity.
+_Avoid_: lock, reservation, intent (which belongs to procedures and goals)
+
 ## Provenance and trust
 
 **Provenance stamp**:
