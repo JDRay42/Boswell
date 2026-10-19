@@ -203,16 +203,16 @@ and what exists to reuse. Integration guide:
 - **MCP fragments placing Boswell in every seat.** Claude and Codex fragments, plus the
   settings fragment that keeps seat startup from stopping at `mcp_gate`. `boswell-mcp` now
   stamps its claim writes with `BOSWELL_MCP_PRINCIPAL` and an agent label from
-  `BOSWELL_MCP_AGENT`, falling back to the seat's `OPENRIG_SESSION_NAME`. *in flight*
+  `BOSWELL_MCP_AGENT`, falling back to the seat's `OPENRIG_SESSION_NAME`. *shipped* (#84)
 - **OpenRig plugin — width dossier at `SessionStart`, feed digest at `UserPromptSubmit`.**
   `boswell-openrig hook …`. Seats share a key, so the hook drops only its own label's
   events, not the principal's, which would drop every teammate's. OpenRig loads
   third-party plugin hooks only through a seat-declared `CLAUDE_CODE_PLUGIN_DIRS`; Codex
-  plugin-hook loading is unconfirmed. *in flight*
+  plugin-hook loading is unconfirmed. *shipped* (#84)
 - **Bridge — OpenRig queue events into Boswell claims, Boswell feed events into OpenRig's
   stream.** `boswell-openrig bridge`. Queue claims become announcements that are forgotten
   when the item closes; a finished item leaves a `was completed by` claim. Contradictions,
-  promotions and supersessions post to OpenRig's stream with idempotent ids. *in flight*
+  promotions and supersessions post to OpenRig's stream with idempotent ids. *shipped* (#84)
 
 ## Identity, trust and security
 
