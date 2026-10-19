@@ -160,7 +160,7 @@ held about it, and a record of what is not known. Design of record is
   `Question` store exists. The store filters namespaces by raw prefix, so the dossier
   scopes everything it gathers to the namespace and its children itself — a stray claim
   from `teamwork` would otherwise change a `team` group's counts and standing.
-  *in flight*
+  *shipped* (#82)
 - **`POST /v1/dossier/narrate`, superseding `Reflect`.** Sequenced after the dossier, since
   it narrates one. *open*
 
