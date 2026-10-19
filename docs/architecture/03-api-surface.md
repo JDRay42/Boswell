@@ -380,6 +380,10 @@ message LearnResponse {
 
 ### Reflect
 
+> **Superseded** by the dossier and its optional narrative in
+> [`17-research.md`](17-research.md) ([ADR-023](../ADRs/023-questions-and-dossiers.md)).
+> Never built. Kept for the record.
+
 Request a synthesized summary of knowledge about a topic.
 
 **Request:**
