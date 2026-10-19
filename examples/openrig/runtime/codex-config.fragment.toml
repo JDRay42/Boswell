@@ -1,0 +1,6 @@
+[mcp_servers.boswell]
+command = "boswell-mcp"
+env = { BOSWELL_ROUTER = "http://127.0.0.1:8080", BOSWELL_MCP_PRINCIPAL = "openrig" }
+# boswell-mcp labels each seat's writes with the seat's OPENRIG_SESSION_NAME.
+# If your Codex version starts MCP servers without the seat's environment, add
+# a fixed label per seat instead, e.g. BOSWELL_MCP_AGENT = "impl-2@build" in env.

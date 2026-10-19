@@ -21,6 +21,10 @@ pub struct McpServer {
     /// Server-side, never a tool argument: a caller that names itself on a
     /// receipt is not accountable for answering it (design 15 §3.3).
     principal: String,
+    /// The agent label appended to the principal on every claim this server
+    /// writes (ADR-023), so a team sharing one principal can tell its agents
+    /// apart. Set by whoever launches the server, never by a tool argument.
+    agent: Option<String>,
 }
 
 /// The principal used when none is configured.
@@ -49,7 +53,39 @@ impl McpServer {
             client,
             runtime,
             principal: DEFAULT_PRINCIPAL.to_string(),
+            agent: None,
         })
+    }
+
+    /// Name the agent this server writes for. Its claims are authored as
+    /// `<principal>/sub:<label>`.
+    ///
+    /// The label follows the gateway's rule for `X-Boswell-Agent`: 1–64
+    /// characters of `[A-Za-z0-9._:@-]`. Anything else is refused, since a `/`
+    /// would forge a deeper derived identity.
+    pub fn with_agent(mut self, label: impl Into<String>) -> Result<Self, McpError> {
+        let label = label.into().trim().to_string();
+        let valid = !label.is_empty()
+            && label.len() <= 64
+            && label
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '@' | '-'));
+        if !valid {
+            return Err(McpError::InvalidRequest(format!(
+                "agent label '{}' must be 1-64 characters of letters, digits, '.', '_', ':', '@' or '-'",
+                label
+            )));
+        }
+        self.agent = Some(label);
+        Ok(self)
+    }
+
+    /// The author this server's claim writes are recorded under.
+    pub fn author(&self) -> String {
+        match &self.agent {
+            Some(label) => format!("{}/sub:{}", self.principal, label),
+            None => self.principal.clone(),
+        }
     }
 
     /// Name the principal this server issues execution receipts to.
@@ -221,9 +257,10 @@ impl McpServer {
     /// Call assert tool
     fn call_assert_tool(&mut self, params: Value) -> Result<Value, McpError> {
         let params: tools::AssertParams = serde_json::from_value(params)?;
-        let result = self
-            .runtime
-            .block_on(tools::handle_assert(&mut self.client, params))?;
+        let author = self.author();
+        let result =
+            self.runtime
+                .block_on(tools::handle_assert(&mut self.client, &author, params))?;
         Ok(serde_json::to_value(result)?)
     }
 
@@ -239,9 +276,10 @@ impl McpServer {
     /// Call learn tool
     fn call_learn_tool(&mut self, params: Value) -> Result<Value, McpError> {
         let params: tools::LearnParams = serde_json::from_value(params)?;
-        let result = self
-            .runtime
-            .block_on(tools::handle_learn(&mut self.client, params))?;
+        let author = self.author();
+        let result =
+            self.runtime
+                .block_on(tools::handle_learn(&mut self.client, &author, params))?;
         Ok(serde_json::to_value(result)?)
     }
 
@@ -737,6 +775,43 @@ mod tests {
                 "{} is advertised but not routed",
                 name
             );
+        }
+    }
+
+    #[test]
+    fn test_author_is_the_principal_plus_any_agent_label() {
+        let server = test_server().with_principal("rig").unwrap();
+        assert_eq!(server.author(), "rig");
+        let server = server.with_agent("impl-2@build").unwrap();
+        assert_eq!(server.author(), "rig/sub:impl-2@build");
+        assert_eq!(
+            boswell_domain::authenticated_principal(&server.author()),
+            "rig",
+            "the label never becomes part of the independence unit"
+        );
+    }
+
+    #[test]
+    fn test_an_agent_label_cannot_forge_a_deeper_identity() {
+        for bad in ["a/b", "", "has space", &"x".repeat(65)] {
+            assert!(test_server().with_agent(bad).is_err(), "{:?} accepted", bad);
+        }
+    }
+
+    /// No tool lets the model name its own author.
+    #[test]
+    fn test_write_tools_do_not_take_an_author() {
+        let mut server = test_server();
+        for tool in advertised_tools(&mut server) {
+            let properties = &tool["inputSchema"]["properties"];
+            for field in ["author", "agent", "principal"] {
+                assert!(
+                    properties.get(field).is_none(),
+                    "{} advertises {}",
+                    tool["name"],
+                    field
+                );
+            }
         }
     }
 

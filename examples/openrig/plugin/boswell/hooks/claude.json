@@ -1,0 +1,10 @@
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "boswell-openrig hook session-start", "timeout": 10 } ] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command", "command": "boswell-openrig hook user-prompt-submit", "timeout": 10 } ] }
+    ]
+  }
+}

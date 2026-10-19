@@ -16,6 +16,7 @@ members = [
     "crates/boswell-server",
     "crates/boswell-gateway",
     "crates/boswell-devauth",
+    "crates/boswell-openrig",
 ]
 
 [workspace.package]

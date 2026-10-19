@@ -147,8 +147,9 @@ held about it, and a record of what is not known. Design of record is
   claim group, and a claim recorded no author at all. Assert, batch, extract and hook
   ingest now stamp the authenticated principal, plus any `X-Boswell-Agent` label, into
   `claim_stamps`; an extraction that corroborates an existing claim stamps that claim too.
-  `GET /v1/claims/{id}` returns `authors`. The MCP server and CLI reach the instance over
-  gRPC without a principal, so their writes stay unattributed. *shipped* (#81)
+  `GET /v1/claims/{id}` returns `authors`. The CLI reaches the instance over gRPC
+  without a principal, so its writes stay unattributed; `boswell-mcp` stamps its own
+  (see OpenRig integration). *shipped* (#81)
 - **`Question` entity and store, raising idempotent by meaning.** *open*
 - **Receipts generalized to a target kind; taking and reporting on questions.** *open*
 - **Janitor detection pass and the `unanswerable` lapse.** *open*
@@ -199,11 +200,19 @@ OpenRig already answers what is being worked and who owns it; Boswell adds what 
 and what exists to reuse. Integration guide:
 [`docs/integrations/openrig.md`](../integrations/openrig.md).
 
-- **MCP fragments placing Boswell in every seat.** *open*
+- **MCP fragments placing Boswell in every seat.** Claude and Codex fragments, plus the
+  settings fragment that keeps seat startup from stopping at `mcp_gate`. `boswell-mcp` now
+  stamps its claim writes with `BOSWELL_MCP_PRINCIPAL` and an agent label from
+  `BOSWELL_MCP_AGENT`, falling back to the seat's `OPENRIG_SESSION_NAME`. *shipped* (#84)
 - **OpenRig plugin — width dossier at `SessionStart`, feed digest at `UserPromptSubmit`.**
-  Waits on the dossier and the feed. *open*
+  `boswell-openrig hook …`. Seats share a key, so the hook drops only its own label's
+  events, not the principal's, which would drop every teammate's. OpenRig loads
+  third-party plugin hooks only through a seat-declared `CLAUDE_CODE_PLUGIN_DIRS`; Codex
+  plugin-hook loading is unconfirmed. *shipped* (#84)
 - **Bridge — OpenRig queue events into Boswell claims, Boswell feed events into OpenRig's
-  stream.** Waits on the feed. *open*
+  stream.** `boswell-openrig bridge`. Queue claims become announcements that are forgotten
+  when the item closes; a finished item leaves a `was completed by` claim. Contradictions,
+  promotions and supersessions post to OpenRig's stream with idempotent ids. *shipped* (#84)
 
 ## Identity, trust and security
 

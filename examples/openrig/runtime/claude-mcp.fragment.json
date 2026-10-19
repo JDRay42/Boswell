@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "boswell": {
+      "type": "stdio",
+      "command": "boswell-mcp",
+      "env": {
+        "BOSWELL_ROUTER": "${BOSWELL_ROUTER:-http://127.0.0.1:8080}",
+        "BOSWELL_MCP_PRINCIPAL": "${BOSWELL_MCP_PRINCIPAL:-openrig}",
+        "OPENRIG_SESSION_NAME": "${OPENRIG_SESSION_NAME:-}"
+      }
+    }
+  }
+}

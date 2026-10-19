@@ -36,9 +36,10 @@ Boswell follows Clean Architecture principles with clear separation of concerns:
 
 ### Interface Layer
 - `boswell-sdk` - Rust client SDK
-- `boswell-mcp` - MCP (Model Context Protocol) server. **Claims only** — five tools (assert, query, learn, forget, semantic search). Goals and procedures are not exposed over MCP; use the CLI or the HTTP gateway for those.
+- `boswell-mcp` - MCP (Model Context Protocol) server: claims (assert, query, learn, forget, semantic search), goals (query, get, expand), procedures (query, get, report outcome), the dossier and the change feed.
 - `boswell-cli` - Command-line interface
 - `boswell-gateway` - Public, authenticated HTTP/JSON API (see [HTTP API guide](docs/integrations/http-api.md))
+- `boswell-openrig` - Hook commands and an event bridge for [OpenRig](https://github.com/mvschwarz/openrig) teams (see [OpenRig guide](docs/integrations/openrig.md))
 
 ### Runtime Binaries
 - `boswell-server` - Instance gRPC daemon (serves the claim store + embedder)
@@ -350,8 +351,18 @@ endpoint.
 
 The [`boswell-gateway`](docs/integrations/http-api.md) serves a public,
 authenticated HTTP/JSON API (`/v1`) over the full memory lifecycle — read, write,
-search, recall, delete, relationships, extract, and hook ingest — so any external
-agent can use Boswell over HTTPS.
+search, recall, delete, relationships, extract, hook ingest, the dossier and the
+change feed — so any external agent can use Boswell over HTTPS.
+
+### OpenRig
+
+Boswell can be the shared memory of an [OpenRig](https://github.com/mvschwarz/openrig)
+team. OpenRig tracks who owns which work; Boswell records what was built and how to use
+it, so one seat does not rebuild what another finished. Every seat gets Boswell's tools.
+Hooks show a seat what exists when it starts and what its teammates changed at each
+prompt, and a bridge announces queue work in Boswell and posts contradictions into the
+rig's stream. The [OpenRig guide](docs/integrations/openrig.md) sets it up; the files are
+in [`examples/openrig/`](examples/openrig/).
 
 ## Running Boswell — what's expected of implementers
 
