@@ -540,12 +540,13 @@ The passes that run without being asked.
 
 ## Test suite health
 
-- **`boswell-cli` profile tests race on a shared config directory.** Under `cfg(test)`
-  the CLI's config directory is `boswell-cli-test-<pid>`, one per process, and tests that
-  save a config run in parallel threads of that process. `test_set_and_switch_profile`
-  failed once on macOS during the #84 work and passed on three reruns; CI on Linux has not
-  caught it. The fix is a directory per test, as the gateway's config test helper got in
-  #84. *open*
+- **`boswell-cli` tests raced on the config directory.** The login tests pointed the
+  process-wide `BOSWELL_CONFIG_DIR` at directories they then deleted, serialized only
+  against each other by a lock the profile and config tests never took. A profile test
+  saving at that moment failed with `NotFound`: once locally, then on CI in #85. Under
+  `cfg(test)` the CLI no longer reads the environment; each test thread gets its own
+  directory, or one it sets through a thread-local. Production still honors
+  `BOSWELL_CONFIG_DIR`. *shipped* (#85)
 
 ## Observability and performance
 
