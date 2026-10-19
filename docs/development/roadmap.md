@@ -176,11 +176,11 @@ record is [`18-change-feed.md`](../architecture/18-change-feed.md); the decision
   forgetting from inside the store, in a savepoint with the change itself, so no call
   site can skip it and a refused write logs nothing. Forget and collection strip subject
   and summary from earlier events. The cursor is an `AUTOINCREMENT` sequence; two ULIDs
-  minted in one millisecond would be unordered. *in flight*
+  minted in one millisecond would be unordered. *shipped* (#83)
 - **`GET /v1/feed`, polling, with retention and `410` re-sync.** Also the `Feed` RPC, the
   SDK call and the `boswell_feed` MCP tool. The Janitor prunes past
   `[feed] retention_days`; a cursor older than the window gets `410` with `head`.
-  `exclude_self` drops every agent of the caller's principal. *in flight*
+  `exclude_self` drops every agent of the caller's principal. *shipped* (#83)
 - **Server-sent events on the same route, closing on token expiry and rechecking
   revocation.** *open*
 - **MCP resource adapter.** Needs `boswell-mcp`'s stdio loop to send notifications while
