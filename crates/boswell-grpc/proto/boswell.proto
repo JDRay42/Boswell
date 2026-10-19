@@ -127,7 +127,11 @@ message AssertRequest {
     ConfidenceInterval confidence = 5;
     Tier tier = 6;                            // Optional tier targeting
     repeated ProvenanceEntry provenance = 7;  // Provenance chain
-    reserved 8;  // was auth_token; deleted by ADR-021
+    reserved 8;  // was auth_token; deleted by ADR-021    // Who wrote this, as the gateway authenticated them: the principal, optionally
+    // followed by a self-declared "/sub:<label>" (ADR-023). The instance trusts it
+    // because the gateway is the security boundary (ADR-021); empty records the
+    // write as unattributed.
+    string author = 9;
 }
 
 message AssertResponse {
@@ -193,7 +197,11 @@ message SearchResponse {
 message LearnRequest {
     repeated Claim claims = 1;           // Batch of claims to insert
     bool skip_duplicates = 2;            // Skip duplicate detection for performance
-    reserved 3;  // was auth_token; deleted by ADR-021
+    reserved 3;  // was auth_token; deleted by ADR-021    // Who wrote these, as the gateway authenticated them: the principal, optionally
+    // followed by a self-declared "/sub:<label>" (ADR-023). The instance trusts it
+    // because the gateway is the security boundary (ADR-021); empty records the
+    // write as unattributed.
+    string author = 4;
 }
 
 message LearnResponse {
@@ -227,6 +235,7 @@ message GetClaimRequest {
 message GetClaimResponse {
     Claim claim = 1;                     // The claim, present only when found
     bool found = 2;                      // True if a claim with this id exists
+    repeated string authors = 3;         // Distinct authors who asserted it, earliest first
 }
 
 // ========== GetRelationships Operation ==========
@@ -247,7 +256,11 @@ message ExtractRequest {
     string namespace = 2;                // Target namespace for extracted claims
     string tier = 3;                     // Optional tier (default: "task")
     string source_id = 4;                // Optional source identifier for provenance
-    reserved 5;  // was auth_token; deleted by ADR-021
+    reserved 5;  // was auth_token; deleted by ADR-021    // Who wrote the extracted claims, as the gateway authenticated them: the principal, optionally
+    // followed by a self-declared "/sub:<label>" (ADR-023). The instance trusts it
+    // because the gateway is the security boundary (ADR-021); empty records the
+    // write as unattributed.
+    string author = 6;
 }
 
 message ExtractResponse {

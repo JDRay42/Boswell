@@ -83,6 +83,11 @@ impl ServerExtractor for SharedExtractor {
         Ok(ExtractOutcome {
             created,
             corroborated_count: result.claims_corroborated.len(),
+            corroborated_ids: result
+                .claims_corroborated
+                .iter()
+                .map(|c| c.claim_id)
+                .collect(),
             failures,
         })
     }

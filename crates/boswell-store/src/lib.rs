@@ -20,6 +20,7 @@
 
 #![warn(missing_docs)]
 
+pub mod claim_stamp_store;
 pub mod embedding;
 pub mod goal_store;
 pub mod ollama_embedding;
@@ -35,6 +36,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 use thiserror::Error;
 
+pub use claim_stamp_store::ClaimStamp;
 pub use embedding::{cosine_similarity, EmbeddingModel, MockEmbeddingModel};
 pub use ollama_embedding::OllamaEmbeddingModel;
 pub use vector_index::{VectorIndex, VectorIndexError};
@@ -685,6 +687,23 @@ impl ClaimStore for SqliteStore {
         // Note: the vector index has no per-id removal; an orphaned vector is
         // harmless because semantic_search filters hits whose claim is gone.
         Ok(affected > 0)
+    }
+
+    fn stamp_claim(
+        &mut self,
+        id: ClaimId,
+        author: &str,
+        timestamp: u64,
+    ) -> Result<bool, Self::Error> {
+        self.insert_claim_stamp(id, author, timestamp)
+    }
+
+    fn claim_authors(&self, id: ClaimId) -> Result<Vec<String>, Self::Error> {
+        Ok(self
+            .claim_stamps(id)?
+            .into_iter()
+            .map(|s| s.author)
+            .collect())
     }
 
     fn update_claim_tier(&mut self, id: ClaimId, new_tier: &str) -> Result<bool, Self::Error> {

@@ -80,6 +80,7 @@ fn assert_request() -> AssertRequest {
         }),
         tier: Tier::Permanent as i32,
         provenance: vec![],
+        author: String::new(),
     }
 }
 

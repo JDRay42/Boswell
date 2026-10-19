@@ -41,6 +41,9 @@ pub struct ExtractOutcome {
     pub created: Vec<Claim>,
     /// Number of extracted claims that corroborated existing ones.
     pub corroborated_count: usize,
+    /// The existing claims those corroborations landed on. A corroboration from
+    /// a new author is a second author for that claim, so it is stamped too.
+    pub corroborated_ids: Vec<ClaimId>,
     /// Human-readable failure reasons for candidates that could not be stored.
     pub failures: Vec<String>,
 }
@@ -412,6 +415,9 @@ where
         let result = store
             .assert_claim(claim.clone())
             .map_err(|e| internal_err("Failed to assert claim", e))?;
+        store
+            .stamp_claim(result, &req.author, created_at)
+            .map_err(|e| internal_err("Failed to stamp claim author", e))?;
 
         tracing::info!(
             claim_id = %result,
@@ -585,7 +591,19 @@ where
                         errors.push(format!("Rejected claim {}: {}", claim.id, reason));
                     }
                     None => match store.assert_claim(claim.clone()) {
-                        Ok(_) => inserted_count += 1,
+                        Ok(id) => {
+                            inserted_count += 1;
+                            // A stamp failure leaves the claim stored but
+                            // unattributed; report it rather than unwinding a
+                            // write the batch already counted.
+                            if let Err(e) = store.stamp_claim(id, &req.author, claim.created_at) {
+                                tracing::warn!(claim_id = %id, error = ?e, "failed to stamp claim author");
+                                errors.push(format!(
+                                    "Inserted claim {} but could not record its author",
+                                    id
+                                ));
+                            }
+                        }
                         Err(_) => {
                             error_count += 1;
                             errors.push(format!("Failed to insert claim {}", claim.id));
@@ -679,9 +697,13 @@ where
         {
             Some(claim) => {
                 tracing::debug!(claim_id = %req.claim_id, found = true, "claim fetched");
+                let authors = store
+                    .claim_authors(claim_id)
+                    .map_err(|e| internal_err("Failed to read claim authors", e))?;
                 Ok(Response::new(GetClaimResponse {
                     claim: Some(claim_to_proto(claim)),
                     found: true,
+                    authors,
                 }))
             }
             None => {
@@ -689,6 +711,7 @@ where
                 Ok(Response::new(GetClaimResponse {
                     claim: None,
                     found: false,
+                    authors: Vec::new(),
                 }))
             }
         }
@@ -767,6 +790,26 @@ where
                 tracing::error!(error = %e, "extraction failed");
                 Status::internal(format!("Extraction failed: {}", e))
             })?;
+
+        if !req.author.trim().is_empty() {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            let mut store = self.store.lock().unwrap();
+            let ids = outcome
+                .created
+                .iter()
+                .map(|c| c.id)
+                .chain(outcome.corroborated_ids.iter().copied());
+            for id in ids {
+                // The claims are already stored, so a stamp failure leaves them
+                // unattributed rather than failing an extraction that happened.
+                if let Err(e) = store.stamp_claim(id, &req.author, now) {
+                    tracing::warn!(claim_id = %id, error = ?e, "failed to stamp claim author");
+                }
+            }
+        }
 
         let created_count = outcome.created.len() as i32;
         let corroborated_count = outcome.corroborated_count as i32;
@@ -1634,11 +1677,86 @@ mod tests {
                 }),
                 tier: Tier::Task as i32,
                 provenance: vec![],
+                author: String::new(),
             }))
             .await
             .unwrap()
             .into_inner();
         resp.claim_id
+    }
+
+    async fn authors_of(service: &BosWellServiceImpl<SqliteStore>, claim_id: &str) -> Vec<String> {
+        service
+            .get_claim(Request::new(GetClaimRequest {
+                claim_id: claim_id.to_string(),
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+            .authors
+    }
+
+    /// The gateway sets `author`; the instance records it against the claim and
+    /// hands it back on a fetch (ADR-023).
+    #[tokio::test]
+    async fn test_assert_records_its_author() {
+        let service = sqlite_service();
+        let mut request = assert_at(Tier::Task, 0.8, 0.9);
+        request.author = "writer/sub:impl-2".to_string();
+        let id = service
+            .assert(Request::new(request))
+            .await
+            .unwrap()
+            .into_inner()
+            .claim_id;
+
+        assert_eq!(authors_of(&service, &id).await, vec!["writer/sub:impl-2"]);
+    }
+
+    /// No principal, no author: an unattributed write stays unattributed rather
+    /// than gaining an author named "".
+    #[tokio::test]
+    async fn test_assert_without_an_author_is_unattributed() {
+        let service = sqlite_service();
+        let id = assert_one(&service, "Alice").await;
+        assert!(authors_of(&service, &id).await.is_empty());
+    }
+
+    /// A batch write stamps every claim it inserts.
+    #[tokio::test]
+    async fn test_learn_records_its_author_on_every_claim() {
+        let service = sqlite_service();
+        let claims: Vec<_> = ["Alice", "Carol"]
+            .iter()
+            .map(|subject| {
+                claim_to_proto(Claim::new(
+                    ClaimId::new(),
+                    "test".to_string(),
+                    subject.to_string(),
+                    "knows".to_string(),
+                    "Bob".to_string(),
+                    (0.8, 0.9),
+                    "task".to_string(),
+                    100,
+                ))
+            })
+            .collect();
+        let ids: Vec<String> = claims.iter().map(|c| c.id.clone()).collect();
+
+        let resp = service
+            .learn(Request::new(LearnRequest {
+                claims,
+                skip_duplicates: false,
+                author: "auditor".to_string(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(resp.inserted_count, 2);
+
+        for id in ids {
+            assert_eq!(authors_of(&service, &id).await, vec!["auditor"]);
+        }
     }
 
     /// An `AssertRequest` at `tier` whose confidence interval is `(lower, upper)`.
@@ -1651,6 +1769,7 @@ mod tests {
             confidence: Some(ConfidenceInterval { lower, upper }),
             tier: tier as i32,
             provenance: vec![],
+            author: String::new(),
         }
     }
 
@@ -1743,6 +1862,7 @@ mod tests {
             .learn(Request::new(LearnRequest {
                 claims: vec![claim_to_proto(good), claim_to_proto(bad)],
                 skip_duplicates: false,
+                author: String::new(),
             }))
             .await
             .unwrap()
@@ -1972,6 +2092,7 @@ mod tests {
                 namespace: "test".to_string(),
                 tier: "task".to_string(),
                 source_id: String::new(),
+                author: String::new(),
             }))
             .await
             .unwrap_err();
@@ -3282,6 +3403,7 @@ mod tests {
                     }),
                     tier: Tier::Task as i32,
                     provenance: vec![],
+                    author: String::new(),
                 }))
                 .await
                 .unwrap();
@@ -3355,6 +3477,7 @@ mod tests {
                 .learn(Request::new(LearnRequest {
                     claims: vec![good, bad],
                     skip_duplicates: false,
+                    author: String::new(),
                 }))
                 .await
                 .unwrap()

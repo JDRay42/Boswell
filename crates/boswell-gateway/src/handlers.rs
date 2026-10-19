@@ -6,6 +6,7 @@
 //! log line (key id, namespace, operation, count).
 
 use axum::extract::{Path, Query, State};
+use axum::http::HeaderMap;
 use axum::{Extension, Json};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -35,6 +36,10 @@ pub struct ClaimDto {
     source_type: String,
     created_at: u64,
     stale_at: Option<u64>,
+    /// Who asserted the claim, earliest first. Present only on a single-claim
+    /// fetch, so list responses do not pay a lookup per row.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    authors: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -59,6 +64,7 @@ impl From<&Claim> for ClaimDto {
             source_type: c.source_type.clone(),
             created_at: c.created_at,
             stale_at: c.stale_at,
+            authors: None,
         }
     }
 }
@@ -190,10 +196,12 @@ pub struct AssertBody {
 pub async fn assert_claim(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
+    headers: HeaderMap,
     Json(body): Json<AssertBody>,
 ) -> Result<Json<Value>, ApiError> {
     ctx.require(Scope::Write)?;
     ctx.require_namespace(&body.namespace)?;
+    let author = ctx.author(&headers)?;
 
     if body.subject.trim().is_empty() || body.predicate.trim().is_empty() {
         return Err(ApiError::bad_request("subject and predicate are required"));
@@ -207,7 +215,8 @@ pub async fn assert_claim(
     let mut client = state.client().lock().await;
     client.ensure_connected().await?;
     let id = client
-        .assert(
+        .assert_as(
+            &author,
             &body.namespace,
             &body.subject,
             &body.predicate,
@@ -250,9 +259,11 @@ pub struct BatchBody {
 pub async fn batch_learn(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
+    headers: HeaderMap,
     Json(body): Json<BatchBody>,
 ) -> Result<Json<Value>, ApiError> {
     ctx.require(Scope::Write)?;
+    let author = ctx.author(&headers)?;
     if body.claims.is_empty() {
         return Err(ApiError::bad_request("claims must not be empty"));
     }
@@ -292,7 +303,7 @@ pub async fn batch_learn(
     let count = domain_claims.len();
     let mut client = state.client().lock().await;
     client.ensure_connected().await?;
-    let result = client.learn(domain_claims).await?;
+    let result = client.learn_as(&author, domain_claims).await?;
 
     audit(&ctx, "batch_learn", "(multiple)", count);
     Ok(Json(json!({
@@ -362,10 +373,14 @@ pub async fn get_claim(
 
     let mut client = state.client().lock().await;
     client.ensure_connected().await?;
-    let claim = client.get_claim(claim_id).await?;
+    let claim = client.get_claim_with_authors(claim_id).await?;
 
     match claim {
-        Some(c) if ctx.allows_namespace(&c.namespace) => Ok(Json(ClaimDto::from(&c))),
+        Some((c, authors)) if ctx.allows_namespace(&c.namespace) => {
+            let mut dto = ClaimDto::from(&c);
+            dto.authors = Some(authors);
+            Ok(Json(dto))
+        }
         // Hide claims outside the key's namespace behind the same 404 as missing.
         _ => Err(ApiError::not_found("claim not found")),
     }
@@ -554,10 +569,12 @@ pub struct ExtractBody {
 pub async fn extract(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
+    headers: HeaderMap,
     Json(body): Json<ExtractBody>,
 ) -> Result<Json<Value>, ApiError> {
     ctx.require(Scope::Write)?;
     ctx.require_namespace(&body.namespace)?;
+    let author = ctx.author(&headers)?;
     if body.text.trim().is_empty() {
         return Err(ApiError::bad_request("text must not be empty"));
     }
@@ -569,7 +586,7 @@ pub async fn extract(
     let mut client = state.client().lock().await;
     client.ensure_connected().await?;
     let result = client
-        .extract(&body.text, &body.namespace, &tier_str, &source_id)
+        .extract_as(&author, &body.text, &body.namespace, &tier_str, &source_id)
         .await?;
 
     audit(&ctx, "extract", &body.namespace, result.created_count);
@@ -623,9 +640,11 @@ pub async fn hooks_ingest(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Query(params): Query<IngestParams>,
+    headers: HeaderMap,
     Json(event): Json<HookEvent>,
 ) -> Result<Json<Value>, ApiError> {
     ctx.require(Scope::Write)?;
+    let author = ctx.author(&headers)?;
 
     // Resolve target namespace: explicit override, else the key's namespace,
     // else a sensible default for unrestricted keys.
@@ -652,7 +671,10 @@ pub async fn hooks_ingest(
                 .clone()
                 .map(|s| format!("hook:{}", s))
                 .unwrap_or_else(|| "hook".to_string());
-            match client.extract(&text, &namespace, "task", &source_id).await {
+            match client
+                .extract_as(&author, &text, &namespace, "task", &source_id)
+                .await
+            {
                 Ok(result) => {
                     audit(&ctx, "hooks_ingest:llm", &namespace, result.created_count);
                     return Ok(Json(json!({
@@ -680,7 +702,7 @@ pub async fn hooks_ingest(
     let count = claims.len();
     let mut client = state.client().lock().await;
     client.ensure_connected().await?;
-    let result = client.learn(claims).await?;
+    let result = client.learn_as(&author, claims).await?;
     audit(&ctx, "hooks_ingest:deterministic", &namespace, count);
     Ok(Json(json!({
         "mode": "deterministic",
