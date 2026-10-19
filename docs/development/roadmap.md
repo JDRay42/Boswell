@@ -139,7 +139,7 @@ held about it, and a record of what is not known. Design of record is
 [`17-research.md`](../architecture/17-research.md); the decision is
 [ADR-023](../ADRs/023-questions-and-dossiers.md).
 
-- **Design doc and ADR — Questions and dossiers.** *in flight*
+- **Design doc and ADR — Questions and dossiers.** *shipped* (#79)
 - **`Question` entity and store, raising idempotent by meaning.** *open*
 - **Receipts generalized to a target kind; taking and reporting on questions.** *open*
 - **Janitor detection pass and the `unanswerable` lapse.** *open*
@@ -154,7 +154,7 @@ Telling agents what memory learned since they last looked, through any harness. 
 record is [`18-change-feed.md`](../architecture/18-change-feed.md); the decision is
 [ADR-024](../ADRs/024-change-feed.md).
 
-- **Design doc and ADR — the change feed.** *in flight*
+- **Design doc and ADR — the change feed.** *shipped* (#79)
 - **Event log, appended in every store's write transaction and by Janitor verdicts.**
   Forget strips summaries from earlier events. *open*
 - **`GET /v1/feed`, polling, with retention and `410` re-sync.** *open*
