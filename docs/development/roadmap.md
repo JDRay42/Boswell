@@ -148,7 +148,7 @@ held about it, and a record of what is not known. Design of record is
   ingest now stamp the authenticated principal, plus any `X-Boswell-Agent` label, into
   `claim_stamps`; an extraction that corroborates an existing claim stamps that claim too.
   `GET /v1/claims/{id}` returns `authors`. The MCP server and CLI reach the instance over
-  gRPC without a principal, so their writes stay unattributed. *in flight*
+  gRPC without a principal, so their writes stay unattributed. *shipped* (#81)
 - **`Question` entity and store, raising idempotent by meaning.** *open*
 - **Receipts generalized to a target kind; taking and reporting on questions.** *open*
 - **Janitor detection pass and the `unanswerable` lapse.** *open*
