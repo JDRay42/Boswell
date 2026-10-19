@@ -2,6 +2,7 @@
 
 mod assert;
 mod dossier;
+mod feed;
 mod forget;
 pub(crate) mod goals;
 mod learn;
@@ -11,6 +12,7 @@ mod search;
 
 pub use assert::{handle_assert, AssertParams};
 pub use dossier::{handle_dossier, DossierParams};
+pub use feed::{handle_feed, FeedParams};
 pub use forget::{handle_forget, ForgetParams};
 pub use goals::{
     handle_expand_goal, handle_get_goal, handle_query_goals, ExpandGoalParams, GetGoalParams,

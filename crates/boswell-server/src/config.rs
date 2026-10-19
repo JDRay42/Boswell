@@ -63,6 +63,9 @@ pub struct InstanceConfig {
 
     /// Server-side LLM extraction settings (backs the `Extract` RPC).
     pub extraction: ExtractionSettings,
+
+    /// Change feed settings (design 18).
+    pub feed: FeedSettings,
 }
 
 impl Default for InstanceConfig {
@@ -76,7 +79,25 @@ impl Default for InstanceConfig {
             synthesizer: SynthesizerSettings::default(),
             contradiction: ContradictionSettings::default(),
             extraction: ExtractionSettings::default(),
+            feed: FeedSettings::default(),
         }
+    }
+}
+
+/// Change feed settings (change feed design §7).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct FeedSettings {
+    /// Days a change event is kept. The Janitor prunes older ones each sweep; a
+    /// reader whose cursor predates the window is told to re-sync from a
+    /// dossier. Pruning runs with the Janitor, so it stops when the Janitor
+    /// is disabled.
+    pub retention_days: u64,
+}
+
+impl Default for FeedSettings {
+    fn default() -> Self {
+        Self { retention_days: 7 }
     }
 }
 

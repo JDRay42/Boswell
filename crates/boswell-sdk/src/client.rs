@@ -1025,6 +1025,22 @@ impl BoswellClient {
         }
     }
 
+    /// Read the change feed after a cursor (change feed design §4).
+    pub async fn feed(
+        &mut self,
+        request: boswell_grpc::proto::FeedRequest,
+    ) -> Result<boswell_grpc::proto::FeedResponse, SdkError> {
+        let mut retry = RetryState::new(self.retry);
+
+        loop {
+            let client = self.grpc_client.as_mut().ok_or(SdkError::NotConnected)?;
+            match client.feed(request.clone()).await {
+                Ok(r) => return Ok(r.into_inner()),
+                Err(e) => self.handle_retry(e, &mut retry, Idempotency::Safe).await?,
+            }
+        }
+    }
+
     /// Whether the client has an established session and gRPC channel.
     pub fn is_connected(&self) -> bool {
         self.grpc_client.is_some() && self.session_token.is_some()

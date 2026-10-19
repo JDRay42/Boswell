@@ -28,6 +28,7 @@ pub mod confidence;
 pub mod confidence_computation;
 pub mod decay;
 pub mod dossier;
+pub mod feed;
 pub mod goal;
 pub mod identity;
 pub mod namespace;
@@ -43,6 +44,7 @@ pub use claim::{Claim, ClaimId};
 pub use confidence::ConfidenceInterval;
 pub use decay::{decay_factor, decayed_confidence, DecayConfig};
 pub use dossier::{group_claims, ClaimGroup, DossierClaim, Standing};
+pub use feed::{namespace_within, Change, ChangeEvent, EntityKind, FeedFilter, FeedPage};
 pub use goal::{
     ChildKind, ChildRef, CollectOutcome, DescentGuard, DescentLimits, DescentStop, EdgeRole,
     ExpandResult, ExpandedCandidate, FactorReading, Goal, GoalEdge, GoalId, GoalQuery,

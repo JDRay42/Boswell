@@ -36,6 +36,7 @@ async fn spawn_server(backend: EmbeddingBackend, model: &str) -> String {
         synthesizer: Default::default(),
         contradiction: Default::default(),
         extraction: Default::default(),
+        feed: Default::default(),
     };
 
     let store = Arc::new(Mutex::new(

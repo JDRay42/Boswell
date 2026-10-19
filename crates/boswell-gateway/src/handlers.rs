@@ -1409,3 +1409,118 @@ pub async fn dossier(
     let r = client.dossier(request).await?;
     Ok(Json(boswell_sdk::dossier_json(&r, depth)))
 }
+
+// ---------------------------------------------------------------------------
+// Change feed (change feed design §4)
+// ---------------------------------------------------------------------------
+
+/// Query string for `GET /v1/feed`.
+#[derive(Debug, Deserialize)]
+pub struct FeedParams {
+    /// Cursor from a previous page's `next`. Absent starts at the oldest
+    /// retained event.
+    since: Option<String>,
+    /// `head` returns no events, only the current cursor: the way to start
+    /// following from now.
+    from: Option<String>,
+    /// Namespace and its children; defaults to the key's own.
+    namespace: Option<String>,
+    /// Comma-separated kinds: `claim`, `procedure`, `goal`.
+    kinds: Option<String>,
+    /// Comma-separated changes.
+    changes: Option<String>,
+    /// Exact subject.
+    subject: Option<String>,
+    /// Lowest tier reported; defaults to `task`, so ephemeral churn stays out.
+    min_tier: Option<String>,
+    /// Leave out the caller's own writes; defaults to `true`.
+    exclude_self: Option<bool>,
+    /// Page size; default 100, max 1000.
+    limit: Option<u32>,
+}
+
+fn comma_list(s: &Option<String>) -> Vec<String> {
+    s.as_deref()
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// `GET /v1/feed` — what memory learned since the caller last looked.
+///
+/// Pull-based: the caller holds the cursor (`next`) and sends it back as
+/// `since`. A cursor older than the retention window gets `410 Gone` with the
+/// current `head`: re-sync from a dossier, then continue from `head`.
+pub async fn feed(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Query(params): Query<FeedParams>,
+) -> Result<axum::response::Response, ApiError> {
+    use axum::response::IntoResponse;
+
+    ctx.require(Scope::Read)?;
+    let namespace = ctx.read_namespace(params.namespace)?;
+    let since = match params.since.as_deref().map(str::trim) {
+        None | Some("") => None,
+        Some(s) => Some(
+            s.parse::<u64>()
+                .map_err(|_| ApiError::bad_request(format!("since is not a cursor: '{}'", s)))?,
+        ),
+    };
+    let from_head = match params.from.as_deref().map(str::trim) {
+        None | Some("") => false,
+        Some("head") => true,
+        Some(other) => {
+            return Err(ApiError::bad_request(format!(
+                "from must be 'head', not '{}'",
+                other
+            )))
+        }
+    };
+
+    let request = boswell_sdk::FeedRequest {
+        since,
+        from_head,
+        namespace,
+        kinds: comma_list(&params.kinds),
+        changes: comma_list(&params.changes),
+        subject: params.subject,
+        min_tier: Some(params.min_tier.unwrap_or_else(|| "task".to_string())),
+        exclude_root: params
+            .exclude_self
+            .unwrap_or(true)
+            .then(|| ctx.key_id.clone()),
+        limit: params.limit.unwrap_or(0),
+    };
+
+    let mut client = state.client().lock().await;
+    client.ensure_connected().await?;
+    let page = client.feed(request).await?;
+
+    if page.gone {
+        return Ok((
+            axum::http::StatusCode::GONE,
+            Json(json!({
+                "error": "cursor_gone",
+                "message": "events after this cursor were pruned; re-sync from a dossier, then continue from head",
+                "head": page.head.to_string(),
+            })),
+        )
+            .into_response());
+    }
+
+    let events: Vec<Value> = page
+        .events
+        .iter()
+        .map(boswell_sdk::change_event_json)
+        .collect();
+    Ok(Json(json!({
+        "events": events,
+        "next": page.next.to_string(),
+        "head": page.head.to_string(),
+    }))
+    .into_response())
+}

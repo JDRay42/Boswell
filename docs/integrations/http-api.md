@@ -238,6 +238,7 @@ exposition format carries its own version.
 | `POST /v1/search` | read | Semantic search |
 | `POST /v1/recall` | read | One-call context: merge structured + semantic |
 | `POST /v1/dossier` | read | Everything held about a subject: width or depth view |
+| `GET /v1/feed` | read | What memory learned since a cursor |
 | `POST /v1/extract` | write | Text → claims via the LLM Extractor |
 | `POST /v1/hooks/ingest` | write | Claude Code hook event → claims |
 | `GET /v1/goals` | read | Find goals by namespace/intent (the entry hop) |
@@ -324,6 +325,45 @@ To go deeper, ask again with `"view": "depth"`, optionally adding `"predicate"` 
 the request to one group. Depth adds `roots`, plus `claims` with their `authors` and each
 author's `independence_root`, plus `contradictions`. It also adds the full counts on
 procedures and goals.
+
+### Feed — `GET /v1/feed`
+
+The change log: claims, procedures and goals that were created, climbed or fell a tier,
+were contradicted or superseded, or were forgotten. The caller holds the cursor. The design
+is [`18-change-feed.md`](../architecture/18-change-feed.md).
+
+```
+GET /v1/feed?from=head                       → { "events": [], "next": "41", "head": "41" }
+GET /v1/feed?since=41&kinds=claim,procedure  → { "events": [...], "next": "57", "head": "57" }
+```
+
+| Parameter | Default |
+|---|---|
+| `since`: the previous page's `next` | the oldest retained event |
+| `from=head`: return no events, only the current cursor | — |
+| `namespace`: that namespace and its children | the key's namespace |
+| `kinds`, `changes`: comma-separated | all |
+| `subject`: exact | — |
+| `min_tier`: leave out events below it | `task` |
+| `exclude_self`: leave out events by any agent of the caller's principal | `true` |
+| `limit` | 100 (max 1000) |
+
+Each event is a reference, not a copy:
+
+```json
+{ "cursor": "57", "at": 1760900000000, "namespace": "team", "kind": "claim",
+  "entity_id": "01J…", "change": "created",
+  "tier": { "before": null, "after": "task" },
+  "subject": "DateParser", "summary": "DateParser provides ISO 8601",
+  "author": "oidc:jd/sub:impl-2", "independence_root": "oidc:jd" }
+```
+
+Fetch the object, or read a dossier, for detail. Forgetting an object strips `subject` and
+`summary` from every event about it.
+
+Events are kept for `[feed] retention_days`, 7 by default, in the instance config. A
+`since` older than that gets `410 Gone` with `{ "error": "cursor_gone", "head": "…" }`.
+Read a dossier for the subjects you follow, then continue from `head`.
 
 ### Search — `POST /v1/search`
 

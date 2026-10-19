@@ -9,8 +9,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use boswell_domain::traits::{ClaimQuery, GoalStore, ProcedureStore};
 use boswell_domain::{
-    group_claims, Claim, ClaimId, DossierClaim, GoalQuery, ProcedureQuery, RelationshipType,
-    TraversalContext,
+    group_claims, namespace_within, Claim, ClaimId, DossierClaim, GoalQuery, ProcedureQuery,
+    RelationshipType, TraversalContext,
 };
 use tonic::Status;
 
@@ -84,7 +84,7 @@ where
         response.unavailable.push("question".to_string());
     }
 
-    let in_namespace = |claim: &Claim| within(namespace.as_deref(), &claim.namespace);
+    let in_namespace = |claim: &Claim| namespace_within(namespace.as_deref(), &claim.namespace);
 
     // ---- Anchors ----
     let mut anchors: BTreeMap<String, DossierAnchor> = BTreeMap::new();
@@ -299,7 +299,7 @@ where
                     now_ms,
                 )
                 .map_err(|e| store_err("Procedure query failed", e))?;
-            found.retain(|p| within(namespace.as_deref(), &p.namespace));
+            found.retain(|p| namespace_within(namespace.as_deref(), &p.namespace));
             if found.len() > limit {
                 found.truncate(limit);
                 response.truncated.push("procedure".to_string());
@@ -333,7 +333,7 @@ where
                     limit: Some(limit + 1),
                 })
                 .map_err(|e| store_err("Goal query failed", e))?;
-            found.retain(|g| within(namespace.as_deref(), &g.namespace));
+            found.retain(|g| namespace_within(namespace.as_deref(), &g.namespace));
             if found.len() > limit {
                 found.truncate(limit);
                 response.truncated.push("goal".to_string());
@@ -360,23 +360,6 @@ where
     }
 
     Ok(response)
-}
-
-/// Whether `namespace` lies within `scope`: equal to it, or a child of it under
-/// either separator in use (`:` at the gateway, `/` in ADR-006).
-///
-/// The store filters namespaces by raw prefix, so `team` also matches
-/// `teamwork`. Other reads can drop a stray row afterward; a dossier cannot,
-/// because a stray claim would already have changed a group's counts, roots and
-/// standing. So the dossier applies this to everything it gathers.
-fn within(scope: Option<&str>, namespace: &str) -> bool {
-    match scope {
-        None => true,
-        Some(scope) => match namespace.strip_prefix(scope) {
-            Some(rest) => rest.is_empty() || rest.starts_with(':') || rest.starts_with('/'),
-            None => false,
-        },
-    }
 }
 
 fn store_err<E: std::fmt::Debug>(context: &'static str, err: E) -> Status {

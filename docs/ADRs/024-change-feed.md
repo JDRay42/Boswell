@@ -43,8 +43,9 @@ events, so the log never preserves what Forget removed.
 
 **3. The core is HTTP, pull first.** `GET /v1/feed?since=<cursor>` returns the events after
 the cursor, filtered by namespace, kind, subject and tier, and scoped by the caller's token
-like any other read. The cursor is the last event's ULID and the client holds it, which keeps
-sessions stateless (ADR-019).
+like any other read. The cursor is the last event's sequence number and the client holds
+it, which keeps sessions stateless (ADR-019). It is a sequence and not a ULID: two ULIDs
+minted in one millisecond are unordered, and a reader holding one could skip the other.
 
 **4. Server-sent events on the same route** for clients that want live delivery: the same
 events, the same filters, with `Last-Event-ID` as the cursor. Polling and streaming cannot

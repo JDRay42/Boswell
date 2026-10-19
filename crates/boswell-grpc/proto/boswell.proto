@@ -60,6 +60,12 @@ service BosWellService {
     // Deterministic, calls no LLM, and issues no receipt.
     rpc Dossier(DossierRequest) returns (DossierResponse);
 
+    // ---- Change feed (design 18, ADR-024) ----
+
+    // Read the change log after a cursor, filtered. Pull-based: the client
+    // holds the cursor and the instance keeps no per-reader state.
+    rpc Feed(FeedRequest) returns (FeedResponse);
+
     // Health check for instance status
     rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
 
@@ -595,6 +601,43 @@ message DossierResponse {
     string intent_match = 5;             // semantic | substring
     repeated string truncated = 6;       // kinds that hit limit_per_kind
     repeated string unavailable = 7;     // kinds this instance cannot serve yet
+}
+
+// ========== Change feed (design 18 §3-4) ==========
+
+message FeedRequest {
+    optional uint64 since = 1;           // cursor; absent starts at the oldest retained event
+    bool from_head = 2;                  // return no events, only the current head as the cursor
+    optional string namespace = 3;       // namespace and its children; absent is unrestricted
+    repeated string kinds = 4;           // claim | procedure | goal; empty means all
+    repeated string changes = 5;         // created | climbed | fell | contradicted | superseded | forgotten
+    optional string subject = 6;         // exact subject
+    optional string min_tier = 7;        // leave out events below this tier
+    optional string exclude_root = 8;    // leave out events whose author's root is this one
+    uint32 limit = 9;                    // page size; 0 means the default (100), max 1000
+}
+
+message ChangeEvent {
+    uint64 seq = 1;                      // the cursor
+    uint64 at = 2;                       // Unix ms
+    string namespace = 3;
+    string kind = 4;
+    string entity_id = 5;
+    string change = 6;
+    optional string tier_before = 7;
+    optional string tier_after = 8;
+    optional string subject = 9;         // claims only; absent once forgotten
+    optional string summary = 10;        // absent once forgotten
+    optional string author = 11;
+}
+
+message FeedResponse {
+    repeated ChangeEvent events = 1;
+    uint64 next = 2;                     // send as `since` next time
+    // True when events after `since` were already pruned, so this page cannot
+    // be complete. The reader re-syncs from a dossier and continues from `head`.
+    bool gone = 3;
+    uint64 head = 4;                     // the newest event's cursor
 }
 
 // ========== Health Check ==========

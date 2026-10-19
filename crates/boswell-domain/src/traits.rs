@@ -4,9 +4,9 @@
 //! Infrastructure implementations live in other crates.
 
 use crate::{
-    Claim, ClaimId, ExecutionReceipt, ExpandResult, Goal, GoalId, GoalQuery, OutcomeReport,
-    Procedure, ProcedureId, ProcedureQuery, ProvenanceStamp, ReceiptReportOutcome, Relationship,
-    StoredReceipt, TraversalContext,
+    Claim, ClaimId, ExecutionReceipt, ExpandResult, FeedFilter, FeedPage, Goal, GoalId, GoalQuery,
+    OutcomeReport, Procedure, ProcedureId, ProcedureQuery, ProvenanceStamp, ReceiptReportOutcome,
+    Relationship, StoredReceipt, TraversalContext,
 };
 
 /// Trait for storing and retrieving claims
@@ -87,6 +87,29 @@ pub trait ClaimStore {
     /// an unattributed claim, and for stores that keep no authorship.
     fn claim_authors(&self, _id: ClaimId) -> Result<Vec<String>, Self::Error> {
         Ok(Vec::new())
+    }
+
+    /// Whether this store keeps a change log ([`ClaimStore::change_feed`]).
+    fn supports_change_feed(&self) -> bool {
+        false
+    }
+
+    /// Read the change log after `since` through `filter` (change feed design
+    /// §4). The default implementation is an empty log.
+    fn change_feed(
+        &self,
+        since: Option<u64>,
+        _filter: &FeedFilter,
+    ) -> Result<FeedPage, Self::Error> {
+        Ok(FeedPage {
+            next: since.unwrap_or(0),
+            ..FeedPage::default()
+        })
+    }
+
+    /// The newest change event's cursor, or 0 for an empty log.
+    fn change_feed_head(&self) -> Result<u64, Self::Error> {
+        Ok(0)
     }
 
     /// Delete a claim by id, returning `true` if a claim was removed.

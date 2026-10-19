@@ -59,6 +59,10 @@ pub enum ConversionError {
     #[error("Invalid goal id: {0}")]
     InvalidGoalId(String),
 
+    /// A feed filter named a kind, change or tier that does not exist
+    #[error("Invalid feed filter: {0}")]
+    InvalidFeedFilter(String),
+
     /// A goal/edge field carried a value outside its stable string set
     #[error("Invalid goal {0}: {1}")]
     InvalidGoalField(&'static str, String),
@@ -593,6 +597,76 @@ pub fn traversal_context_from_proto(c: Option<&proto::TraversalContext>) -> Doma
 pub fn traversal_context_to_proto(c: &DomainTraversalContext) -> proto::TraversalContext {
     proto::TraversalContext {
         context_tags: c.context_tags.clone(),
+    }
+}
+
+/// The default feed page size.
+pub const DEFAULT_FEED_LIMIT: usize = 100;
+/// The largest feed page a request may ask for.
+pub const MAX_FEED_LIMIT: usize = 1_000;
+
+/// Build a domain [`FeedFilter`](boswell_domain::FeedFilter) from a feed request,
+/// refusing unknown kinds, changes and tiers rather than ignoring them: a typo
+/// that silently widened a filter would flood the reader.
+pub fn feed_filter_from_proto(
+    req: &proto::FeedRequest,
+) -> Result<boswell_domain::FeedFilter, ConversionError> {
+    use boswell_domain::{Change, EntityKind, FeedFilter};
+
+    let kinds = req
+        .kinds
+        .iter()
+        .map(|k| {
+            EntityKind::parse(k.trim())
+                .ok_or_else(|| ConversionError::InvalidFeedFilter(format!("unknown kind '{}'", k)))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let changes = req
+        .changes
+        .iter()
+        .map(|c| {
+            Change::parse(c.trim()).ok_or_else(|| {
+                ConversionError::InvalidFeedFilter(format!("unknown change '{}'", c))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let min_tier =
+        match req.min_tier.as_deref().map(str::trim) {
+            None | Some("") => None,
+            Some(t) => Some(DomainTier::parse(t).ok_or_else(|| {
+                ConversionError::InvalidFeedFilter(format!("unknown tier '{}'", t))
+            })?),
+        };
+    let blank = |s: &Option<String>| s.clone().filter(|v| !v.trim().is_empty());
+
+    Ok(FeedFilter {
+        namespace: blank(&req.namespace).filter(|n| n != "*"),
+        kinds,
+        changes,
+        subject: blank(&req.subject),
+        min_tier,
+        exclude_root: blank(&req.exclude_root),
+        limit: match req.limit {
+            0 => DEFAULT_FEED_LIMIT,
+            n => (n as usize).min(MAX_FEED_LIMIT),
+        },
+    })
+}
+
+/// Convert a domain change event to its wire form.
+pub fn change_event_to_proto(e: &boswell_domain::ChangeEvent) -> proto::ChangeEvent {
+    proto::ChangeEvent {
+        seq: e.seq,
+        at: e.at,
+        namespace: e.namespace.clone(),
+        kind: e.kind.as_str().to_string(),
+        entity_id: e.entity_id.clone(),
+        change: e.change.as_str().to_string(),
+        tier_before: e.tier_before.map(|t| t.as_str().to_string()),
+        tier_after: e.tier_after.map(|t| t.as_str().to_string()),
+        subject: e.subject.clone(),
+        summary: e.summary.clone(),
+        author: e.author.clone(),
     }
 }
 

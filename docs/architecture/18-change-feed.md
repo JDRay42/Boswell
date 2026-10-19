@@ -1,6 +1,7 @@
 # The Change Feed
 
-**Status:** Design. Nothing here is built; status lives in
+**Status:** The event log, polling (§4.1) and the MCP `boswell_feed` tool are built;
+streaming (§4.2) and the adapters in §5 are design. Status lives in
 [`docs/development/roadmap.md`](../development/roadmap.md). The decision is
 [ADR-024](../ADRs/024-change-feed.md).
 
@@ -35,7 +36,7 @@ Code; the write conventions that give the feed something to carry.
 ## 3. The event
 
 ```
-event: { id,               // ULID; the cursor
+event: { cursor,           // the log's sequence number, as a string
          at,
          namespace,
          kind:   claim | procedure | goal | question,
@@ -50,8 +51,16 @@ event: { id,               // ULID; the cursor
          independence_root }
 ```
 
+The cursor is a sequence number, not a ULID. Two ULIDs minted in the same millisecond
+are not ordered, so a reader holding one could skip an event written just after it. An
+`AUTOINCREMENT` sequence only increases and is never reused, even after pruning. Clients
+treat it as an opaque string.
+
+`author` is the principal and any agent label on the write that created the object, and is
+absent for changes the store makes on its own: Janitor verdicts, collection, expiry.
+
 `summary` is the claim's `raw_expression`, the procedure's or goal's `name` and `intent`, or
-the question's `text`, truncated to `feed.summary_chars`. When an entity is forgotten, its
+the question's `text`, truncated to 160 characters. When an entity is forgotten, its
 `forgotten` event carries no summary or subject, and the same transaction strips them from
 its earlier events.
 
@@ -74,24 +83,27 @@ be a silent hole in the feed.
 
 | Parameter | Meaning | Default |
 |---|---|---|
-| `since` | Cursor: return events after this id | the oldest retained event |
-| `namespace` | Exact, `ns/*` or `ns/*/n`, as Query | the token's namespaces |
+| `since` | Cursor: return events after this one | the oldest retained event |
+| `from` | `head`: return no events, only the current cursor | — |
+| `namespace` | The namespace and its children (`:` or `/`), never a raw prefix | the token's namespace |
 | `kinds` | Comma-separated kinds | all |
 | `changes` | Comma-separated change types | all |
 | `subject` | Exact subject | — |
 | `min_tier` | Lowest tier reported | `task` |
-| `exclude_self` | Omit events whose root is the caller's | `true` |
+| `exclude_self` | Omit events whose author's root is the caller's principal | `true` |
 | `limit` | Page size | 100 |
 
-The response is the events plus `next`, the cursor to send next time. An empty page returns
-the cursor unchanged.
+The response is `{ events, next, head }`. `next` is the cursor to send next time. It moves
+past every event scanned, including those the filter dropped, so a narrow reader does not
+rescan the same rows. `head` is the newest event's cursor. A reader that wants only what
+happens from now on starts with `from=head`.
 
 The token's scope filters before anything else: an attenuated token sees only events in
 namespaces it may read, whatever `namespace` asks for.
 
-A `since` older than the retention window returns `410 Gone` with the oldest retained
-cursor. The client re-syncs by reading a dossier for its subjects, then continues from that
-cursor.
+A `since` older than the retention window returns `410 Gone` with `head`. The client
+re-syncs by reading a dossier for its subjects, then continues from `head`. The instance
+records the highest pruned cursor, so it can tell a stale cursor from a quiet log.
 
 ### 4.2 Streaming
 
@@ -184,14 +196,17 @@ listed here because it is the event most likely to matter to whoever receives it
 
 ```toml
 [feed]
-retention_days = 7
-summary_chars = 160
-heartbeat_seconds = 30
-revocation_check_seconds = 60
+retention_days = 7           # built: pruned on each Janitor sweep
+heartbeat_seconds = 30       # design: streaming
+revocation_check_seconds = 60  # design: streaming
 
 [feed.digest]
-max_items = 20
+max_items = 20               # design: the hook adapter's digest
 ```
+
+`retention_days` belongs to the instance config, since pruning runs with the instance's
+Janitor and stops if the Janitor is off. The streaming settings will belong to the
+gateway, which holds the connections.
 
 ## 8. Open problems
 
