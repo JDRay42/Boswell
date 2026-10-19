@@ -96,6 +96,11 @@ impl SqliteStore {
         let mut to_write = procedure.clone();
         to_write.tier = entered;
         self.upsert_procedure(&to_write)?;
+        self.attribute_created_event(
+            boswell_domain::EntityKind::Procedure,
+            &procedure.id.to_string(),
+            &stamp.author,
+        )?;
 
         self.append_stamp(
             "procedure",

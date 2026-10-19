@@ -14,8 +14,9 @@
 //! that would close a cycle (§8, open problem #6).
 
 use crate::procedure_store::{from_json, like_escape, to_json, PreconditionDto};
-use crate::{SqliteStore, StoreError};
+use crate::{change_feed, SqliteStore, StoreError};
 use boswell_domain::traits::{ClaimQuery, ClaimStore, GoalStore};
+use boswell_domain::{Change, EntityKind};
 use boswell_domain::{
     ChildKind, ChildRef, Claim, CollectOutcome, EdgeRole, ExpandResult, ExpandedCandidate,
     FactorReading, Goal, GoalEdge, GoalId, GoalQuery, GraphIntegrity, Precondition, ProcedureId,
@@ -50,6 +51,22 @@ impl SqliteStore {
     /// This persists only the skinny node; its decomposition is managed
     /// separately via [`SqliteStore::add_goal_edge`]. Returns the goal's id.
     pub fn upsert_goal(&mut self, goal: &Goal) -> Result<GoalId, StoreError> {
+        self.atomically(|s| {
+            let before = s.get_goal(goal.id)?;
+            let id = s.upsert_goal_row(goal)?;
+            match before {
+                None => s.append_event(goal_event(goal, Change::Created, None))?,
+                Some(before) => {
+                    if let Some(change) = Change::for_tier_move(before.tier, goal.tier) {
+                        s.append_event(goal_event(goal, change, Some(before.tier)))?;
+                    }
+                }
+            }
+            Ok(id)
+        })
+    }
+
+    fn upsert_goal_row(&mut self, goal: &Goal) -> Result<GoalId, StoreError> {
         let id_bytes = Self::goal_id_to_bytes(goal.id);
         let dod = to_json(&goal.definition_of_done)?;
 
@@ -547,6 +564,23 @@ impl SqliteStore {
         policy: GraphIntegrity,
         now: u64,
     ) -> Result<CollectOutcome, StoreError> {
+        self.atomically(|s| {
+            let before = s.get_goal(id)?;
+            let outcome = s.collect_goal_rows(id, policy, now)?;
+            if let Some(goal) = before.filter(|_| outcome.collected) {
+                s.scrub_events(EntityKind::Goal, &id.to_string())?;
+                s.append_event(goal_event(&goal, Change::Forgotten, None))?;
+            }
+            Ok(outcome)
+        })
+    }
+
+    fn collect_goal_rows(
+        &mut self,
+        id: GoalId,
+        policy: GraphIntegrity,
+        now: u64,
+    ) -> Result<CollectOutcome, StoreError> {
         if self.get_goal(id)?.is_none() {
             return Ok(CollectOutcome::default());
         }
@@ -630,6 +664,26 @@ impl SqliteStore {
     /// obligation someone already took on, and the report path already handles a
     /// procedure that no longer exists.
     pub fn collect_procedure(
+        &mut self,
+        id: ProcedureId,
+        policy: GraphIntegrity,
+    ) -> Result<CollectOutcome, StoreError> {
+        self.atomically(|s| {
+            let before = s.get_procedure(id)?;
+            let outcome = s.collect_procedure_rows(id, policy)?;
+            if let Some(procedure) = before.filter(|_| outcome.collected) {
+                s.scrub_events(EntityKind::Procedure, &id.to_string())?;
+                s.append_event(crate::procedure_store::procedure_event(
+                    &procedure,
+                    Change::Forgotten,
+                    None,
+                ))?;
+            }
+            Ok(outcome)
+        })
+    }
+
+    fn collect_procedure_rows(
         &mut self,
         id: ProcedureId,
         policy: GraphIntegrity,
@@ -732,6 +786,27 @@ impl SqliteStore {
             }
         }
         Ok(orphans)
+    }
+}
+
+/// A goal's change event. `tier_before` is set for a tier move.
+fn goal_event(goal: &Goal, change: Change, tier_before: Option<Tier>) -> change_feed::NewEvent<'_> {
+    let forgotten = change == Change::Forgotten;
+    change_feed::NewEvent {
+        namespace: &goal.namespace,
+        kind: EntityKind::Goal,
+        entity_id: goal.id.to_string(),
+        change,
+        tier_before: if forgotten {
+            Some(goal.tier)
+        } else {
+            tier_before
+        },
+        tier_after: if forgotten { None } else { Some(goal.tier) },
+        subject: None,
+        summary: (!forgotten)
+            .then(|| change_feed::summarize(&format!("{}: {}", goal.name, goal.intent))),
+        author: None,
     }
 }
 

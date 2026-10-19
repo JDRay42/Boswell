@@ -156,6 +156,7 @@ impl McpServer {
             self.tool_definition_forget(),
             self.tool_definition_search(),
             self.tool_definition_dossier(),
+            self.tool_definition_feed(),
             self.tool_definition_query_goals(),
             self.tool_definition_get_goal(),
             self.tool_definition_expand_goal(),
@@ -192,6 +193,7 @@ impl McpServer {
             "boswell_forget" => self.call_forget_tool(tool_params),
             "boswell_semantic_search" => self.call_search_tool(tool_params),
             "boswell_dossier" => self.call_dossier_tool(tool_params),
+            "boswell_feed" => self.call_feed_tool(tool_params),
             "boswell_query_goals" => self.call_query_goals_tool(tool_params),
             "boswell_get_goal" => self.call_get_goal_tool(tool_params),
             "boswell_expand_goal" => self.call_expand_goal_tool(tool_params),
@@ -293,6 +295,13 @@ impl McpServer {
         let params: tools::DossierParams = serde_json::from_value(params)?;
         self.runtime
             .block_on(tools::handle_dossier(&mut self.client, params))
+    }
+
+    /// Call feed tool
+    fn call_feed_tool(&mut self, params: Value) -> Result<Value, McpError> {
+        let params: tools::FeedParams = serde_json::from_value(params)?;
+        self.runtime
+            .block_on(tools::handle_feed(&mut self.client, params))
     }
 
     /// Call query_procedures tool
@@ -513,6 +522,33 @@ impl McpServer {
         }
     }
 
+    fn tool_definition_feed(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "boswell_feed".to_string(),
+            description: "What shared memory learned since you last looked: claims, procedures \
+                          and goals created, promoted, demoted, contradicted, superseded or \
+                          forgotten, oldest first. Call once with from_head=true to get a cursor, \
+                          then pass the returned `next` as `since` each time. Each event is a \
+                          reference with a one-line summary; fetch the object, or read a \
+                          dossier, for detail. If `gone` is true, events were pruned: read a \
+                          dossier for the subjects you care about and continue from `head`."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "since": {"type": "string", "description": "The `next` cursor from your previous call"},
+                    "from_head": {"type": "boolean", "description": "Return no events, only the current cursor", "default": false},
+                    "namespace": {"type": "string", "description": "Confine to a namespace and its children"},
+                    "kinds": {"type": "array", "items": {"type": "string", "enum": ["claim", "procedure", "goal"]}},
+                    "changes": {"type": "array", "items": {"type": "string", "enum": ["created", "climbed", "fell", "contradicted", "superseded", "forgotten"]}},
+                    "subject": {"type": "string", "description": "Only events about this exact subject"},
+                    "min_tier": {"type": "string", "enum": ["ephemeral", "task", "project", "permanent"], "default": "task"},
+                    "limit": {"type": "integer", "description": "Page size", "default": 100}
+                }
+            }),
+        }
+    }
+
     fn tool_definition_expand_goal(&self) -> ToolDefinition {
         ToolDefinition {
             name: "boswell_expand_goal".to_string(),
@@ -665,6 +701,7 @@ mod tests {
             "boswell_forget",
             "boswell_semantic_search",
             "boswell_dossier",
+            "boswell_feed",
             "boswell_query_goals",
             "boswell_get_goal",
             "boswell_expand_goal",
@@ -674,7 +711,7 @@ mod tests {
         ] {
             assert!(names.contains(&expected), "missing tool: {}", expected);
         }
-        assert_eq!(tools.len(), 12, "advertised: {:?}", names);
+        assert_eq!(tools.len(), 13, "advertised: {:?}", names);
     }
 
     #[test]

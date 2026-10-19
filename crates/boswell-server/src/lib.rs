@@ -351,6 +351,7 @@ fn spawn_janitor(config: &InstanceConfig, store: Arc<Mutex<SqliteStore>>) -> Sha
         config.janitor.dry_run
     );
 
+    let feed_retention_ms = config.feed.retention_days.max(1) * 24 * 60 * 60 * 1000;
     let manage_procedures = janitor_config.auto_manage_procedures;
     let expire_receipts = janitor_config.auto_expire_receipts;
 
@@ -381,6 +382,16 @@ fn spawn_janitor(config: &InstanceConfig, store: Arc<Mutex<SqliteStore>>) -> Sha
                 } else {
                     Ok(0)
                 };
+                // Age out change events past the feed's retention window.
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                match guard.prune_change_events(now_ms.saturating_sub(feed_retention_ms)) {
+                    Ok(n) if n > 0 => tracing::info!("Janitor feed sweep: {} events pruned", n),
+                    Ok(_) => {}
+                    Err(e) => tracing::error!("Janitor feed sweep failed: {}", e),
+                }
                 (claim_outcome, procedure_outcome, receipt_outcome)
             };
             match claim_outcome {

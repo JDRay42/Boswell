@@ -111,6 +111,36 @@ CREATE TABLE IF NOT EXISTS claim_stamps (
     FOREIGN KEY (claim_id) REFERENCES claims(id) ON DELETE CASCADE
 );
 
+-- The change log behind the feed (change feed design §3, ADR-024). Every change
+-- a reader would act on appends one row in the same transaction as the change,
+-- from inside the store, so no call site can forget to. `seq` is the cursor: it
+-- only increases and is never reused (AUTOINCREMENT), which a ULID minted twice
+-- in one millisecond would not guarantee. Events are references: forgetting an
+-- object nulls `subject` and `summary` on every row about it.
+CREATE TABLE IF NOT EXISTS change_events (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    at INTEGER NOT NULL,
+    namespace TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('claim', 'procedure', 'goal')),
+    entity_id TEXT NOT NULL,
+    change TEXT NOT NULL CHECK (change IN
+        ('created', 'climbed', 'fell', 'contradicted', 'superseded', 'forgotten')),
+    tier_before TEXT,
+    tier_after TEXT,
+    subject TEXT,
+    summary TEXT,
+    author TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_change_events_entity ON change_events(kind, entity_id);
+
+-- The highest seq pruned from change_events, so a reader whose cursor predates
+-- it can be told its page is incomplete.
+CREATE TABLE IF NOT EXISTS change_feed_meta (
+    key TEXT PRIMARY KEY NOT NULL,
+    value INTEGER NOT NULL
+);
+
 -- Confidence cache table - stores computed effective confidence for fast reads
 CREATE TABLE IF NOT EXISTS confidence_cache (
     claim_id BLOB PRIMARY KEY NOT NULL,

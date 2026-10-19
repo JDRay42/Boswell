@@ -1,7 +1,8 @@
-//! JSON rendering of a dossier (research design §5), shared by every transport
-//! that hands one to an agent.
+//! JSON rendering of a dossier (research design §5) and of change events
+//! (change feed design §3), shared by every transport that hands them to an
+//! agent, so the gateway and MCP shapes cannot drift.
 
-use boswell_grpc::proto::DossierResponse;
+use boswell_grpc::proto::{ChangeEvent, DossierResponse};
 use serde_json::{json, Value};
 
 /// Render a dossier as the JSON `17-research.md` §5.2–5.3 specifies.
@@ -123,6 +124,24 @@ fn tier_name(tier: i32) -> &'static str {
         4 => "permanent",
         _ => "unspecified",
     }
+}
+
+/// One change event as the feed renders it, with the independence root its
+/// author counts as.
+pub fn change_event_json(e: &ChangeEvent) -> Value {
+    json!({
+        "cursor": e.seq.to_string(),
+        "at": e.at,
+        "namespace": e.namespace,
+        "kind": e.kind,
+        "entity_id": e.entity_id,
+        "change": e.change,
+        "tier": { "before": e.tier_before, "after": e.tier_after },
+        "subject": e.subject,
+        "summary": e.summary,
+        "author": e.author,
+        "independence_root": e.author.as_deref().map(boswell_domain::authenticated_principal),
+    })
 }
 
 #[cfg(test)]

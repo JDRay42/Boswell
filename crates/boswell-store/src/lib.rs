@@ -20,6 +20,7 @@
 
 #![warn(missing_docs)]
 
+pub mod change_feed;
 pub mod claim_stamp_store;
 pub mod embedding;
 pub mod goal_store;
@@ -31,7 +32,7 @@ pub mod vector_index;
 
 use boswell_domain::traits::{ClaimQuery, ClaimStore};
 use boswell_domain::{decayed_confidence, DecayConfig};
-use boswell_domain::{Claim, ClaimId, Relationship, RelationshipType};
+use boswell_domain::{Change, Claim, ClaimId, EntityKind, Relationship, RelationshipType, Tier};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 use thiserror::Error;
@@ -415,75 +416,21 @@ impl ClaimStore for SqliteStore {
     type Error = StoreError;
 
     fn assert_claim(&mut self, claim: Claim) -> Result<ClaimId, Self::Error> {
-        let id_bytes = Self::claim_id_to_bytes(claim.id);
-
-        // Check if the ID already exists
-        let exists: bool = self
-            .conn
-            .query_row(
-                "SELECT 1 FROM claims WHERE id = ?1",
-                params![&id_bytes],
-                |_| Ok(true),
-            )
-            .optional()?
-            .unwrap_or(false);
-
-        if exists {
-            return Err(StoreError::Duplicate);
-        }
-
-        // Embed before the insert so the vector is written in the same row as
-        // the claim. Persisting it is what lets semantic search survive a
-        // restart: the HNSW index is in-memory, and `load_vector_index` rebuilds
-        // it from this column when the store is reopened.
-        let embedding = match (&self.embedding_model, &self.vector_index) {
-            (Some(embedding_model), Some(_)) => {
-                let text = Self::embedding_text(&claim.subject, &claim.predicate, &claim.object);
-                match embedding_model.embed(&text) {
-                    Ok(embedding) => Some(embedding),
-                    Err(e) => {
-                        // Don't fail the write: the claim is still worth storing,
-                        // and `backfill_embeddings` can embed it once the model
-                        // is reachable again.
-                        eprintln!("Warning: Failed to generate embedding: {}", e);
-                        None
-                    }
-                }
-            }
-            _ => None,
-        };
-        let encoded_embedding = embedding
-            .as_deref()
-            .map(Self::encode_embedding)
-            .transpose()?;
-
-        // Insert the claim
-        self.conn.execute(
-            "INSERT INTO claims (id, namespace, subject, predicate, object, source_type, base_lower, base_upper, tier, created_at, stale_at, embedding_vector)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-            params![
-                &id_bytes,
-                &claim.namespace,
-                &claim.subject,
-                &claim.predicate,
-                &claim.object,
-                &claim.source_type,
-                claim.confidence.0,
-                claim.confidence.1,
-                &claim.tier,
-                claim.created_at as i64,
-                claim.stale_at.map(|t| t as i64),
-                encoded_embedding,
-            ],
-        )?;
-
-        if let (Some(vector_index), Some(embedding)) = (&self.vector_index, &embedding) {
-            // An index insert failure leaves the claim stored and its embedding
-            // persisted, so the next open reconstructs it.
-            let _ = vector_index.add(claim.id, embedding);
-        }
-
-        Ok(claim.id)
+        self.atomically(|s| {
+            let id = s.insert_claim_row(claim.clone())?;
+            s.append_event(change_feed::NewEvent {
+                namespace: &claim.namespace,
+                kind: EntityKind::Claim,
+                entity_id: id.to_string(),
+                change: Change::Created,
+                tier_before: None,
+                tier_after: Tier::parse(&claim.tier),
+                subject: Some(&claim.subject),
+                summary: Some(claim_summary(&claim)),
+                author: None,
+            })?;
+            Ok(id)
+        })
     }
 
     fn get_claim(&self, id: ClaimId) -> Result<Option<Claim>, Self::Error> {
@@ -583,25 +530,32 @@ impl ClaimStore for SqliteStore {
     }
 
     fn add_relationship(&mut self, relationship: Relationship) -> Result<(), Self::Error> {
-        let from_bytes = Self::claim_id_to_bytes(relationship.from_claim);
-        let to_bytes = Self::claim_id_to_bytes(relationship.to_claim);
-        let rel_type = Self::relationship_type_to_str(relationship.relationship_type);
-
-        self.conn.execute(
-            "INSERT INTO relationships (from_claim_id, to_claim_id, relationship_type, strength, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(from_claim_id, to_claim_id, relationship_type) DO UPDATE SET
-             strength = excluded.strength, created_at = excluded.created_at",
-            params![
-                &from_bytes,
-                &to_bytes,
-                rel_type,
-                relationship.strength,
-                relationship.created_at as i64,
-            ],
-        )?;
-
-        Ok(())
+        self.atomically(|s| {
+            let is_new_contradiction = relationship.relationship_type
+                == RelationshipType::Contradicts
+                && !s.relationship_exists(&relationship)?;
+            s.insert_relationship_row(relationship.clone())?;
+            if is_new_contradiction {
+                // Both ends are contradicted; each gets its own event so a
+                // reader filtering on either subject sees it.
+                for id in [relationship.from_claim, relationship.to_claim] {
+                    if let Some(claim) = s.get_claim(id)? {
+                        s.append_event(change_feed::NewEvent {
+                            namespace: &claim.namespace,
+                            kind: EntityKind::Claim,
+                            entity_id: id.to_string(),
+                            change: Change::Contradicted,
+                            tier_before: None,
+                            tier_after: Tier::parse(&claim.tier),
+                            subject: Some(&claim.subject),
+                            summary: Some(claim_summary(&claim)),
+                            author: None,
+                        })?;
+                    }
+                }
+            }
+            Ok(())
+        })
     }
 
     fn get_relationships(&self, id: ClaimId) -> Result<Vec<Relationship>, Self::Error> {
@@ -679,14 +633,28 @@ impl ClaimStore for SqliteStore {
     }
 
     fn delete_claim(&mut self, id: ClaimId) -> Result<bool, Self::Error> {
-        let id_bytes = Self::claim_id_to_bytes(id);
-        // ON DELETE CASCADE removes relationships, provenance, and confidence_cache.
-        let affected = self
-            .conn
-            .execute("DELETE FROM claims WHERE id = ?1", params![&id_bytes])?;
-        // Note: the vector index has no per-id removal; an orphaned vector is
-        // harmless because semantic_search filters hits whose claim is gone.
-        Ok(affected > 0)
+        self.atomically(|s| {
+            let Some(claim) = s.get_claim(id)? else {
+                return Ok(false);
+            };
+            let deleted = s.delete_claim_row(id)?;
+            if deleted {
+                let entity_id = id.to_string();
+                s.scrub_events(EntityKind::Claim, &entity_id)?;
+                s.append_event(change_feed::NewEvent {
+                    namespace: &claim.namespace,
+                    kind: EntityKind::Claim,
+                    entity_id,
+                    change: Change::Forgotten,
+                    tier_before: Tier::parse(&claim.tier),
+                    tier_after: None,
+                    subject: None,
+                    summary: None,
+                    author: None,
+                })?;
+            }
+            Ok(deleted)
+        })
     }
 
     fn stamp_claim(
@@ -695,7 +663,29 @@ impl ClaimStore for SqliteStore {
         author: &str,
         timestamp: u64,
     ) -> Result<bool, Self::Error> {
-        self.insert_claim_stamp(id, author, timestamp)
+        self.atomically(|s| {
+            let added = s.insert_claim_stamp(id, author, timestamp)?;
+            if added {
+                s.attribute_created_event(EntityKind::Claim, &id.to_string(), author.trim())?;
+            }
+            Ok(added)
+        })
+    }
+
+    fn supports_change_feed(&self) -> bool {
+        true
+    }
+
+    fn change_feed(
+        &self,
+        since: Option<u64>,
+        filter: &boswell_domain::FeedFilter,
+    ) -> Result<boswell_domain::FeedPage, Self::Error> {
+        self.feed(since, filter)
+    }
+
+    fn change_feed_head(&self) -> Result<u64, Self::Error> {
+        self.feed_head()
     }
 
     fn claim_authors(&self, id: ClaimId) -> Result<Vec<String>, Self::Error> {
@@ -707,6 +697,140 @@ impl ClaimStore for SqliteStore {
     }
 
     fn update_claim_tier(&mut self, id: ClaimId, new_tier: &str) -> Result<bool, Self::Error> {
+        self.atomically(|s| {
+            let before = s.get_claim(id)?;
+            let updated = s.update_claim_tier_row(id, new_tier)?;
+            if let Some(claim) = before.filter(|_| updated) {
+                if let (Some(from), Some(to)) = (Tier::parse(&claim.tier), Tier::parse(new_tier)) {
+                    if let Some(change) = Change::for_tier_move(from, to) {
+                        s.append_event(change_feed::NewEvent {
+                            namespace: &claim.namespace,
+                            kind: EntityKind::Claim,
+                            entity_id: id.to_string(),
+                            change,
+                            tier_before: Some(from),
+                            tier_after: Some(to),
+                            subject: Some(&claim.subject),
+                            summary: Some(claim_summary(&claim)),
+                            author: None,
+                        })?;
+                    }
+                }
+            }
+            Ok(updated)
+        })
+    }
+}
+
+/// The bare row operations behind [`ClaimStore`]'s write methods, which wrap
+/// each in a savepoint together with its change event.
+impl SqliteStore {
+    fn insert_claim_row(&mut self, claim: Claim) -> Result<ClaimId, StoreError> {
+        let id_bytes = Self::claim_id_to_bytes(claim.id);
+
+        // Check if the ID already exists
+        let exists: bool = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM claims WHERE id = ?1",
+                params![&id_bytes],
+                |_| Ok(true),
+            )
+            .optional()?
+            .unwrap_or(false);
+
+        if exists {
+            return Err(StoreError::Duplicate);
+        }
+
+        // Embed before the insert so the vector is written in the same row as
+        // the claim. Persisting it is what lets semantic search survive a
+        // restart: the HNSW index is in-memory, and `load_vector_index` rebuilds
+        // it from this column when the store is reopened.
+        let embedding = match (&self.embedding_model, &self.vector_index) {
+            (Some(embedding_model), Some(_)) => {
+                let text = Self::embedding_text(&claim.subject, &claim.predicate, &claim.object);
+                match embedding_model.embed(&text) {
+                    Ok(embedding) => Some(embedding),
+                    Err(e) => {
+                        // Don't fail the write: the claim is still worth storing,
+                        // and `backfill_embeddings` can embed it once the model
+                        // is reachable again.
+                        eprintln!("Warning: Failed to generate embedding: {}", e);
+                        None
+                    }
+                }
+            }
+            _ => None,
+        };
+        let encoded_embedding = embedding
+            .as_deref()
+            .map(Self::encode_embedding)
+            .transpose()?;
+
+        // Insert the claim
+        self.conn.execute(
+            "INSERT INTO claims (id, namespace, subject, predicate, object, source_type, base_lower, base_upper, tier, created_at, stale_at, embedding_vector)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                &id_bytes,
+                &claim.namespace,
+                &claim.subject,
+                &claim.predicate,
+                &claim.object,
+                &claim.source_type,
+                claim.confidence.0,
+                claim.confidence.1,
+                &claim.tier,
+                claim.created_at as i64,
+                claim.stale_at.map(|t| t as i64),
+                encoded_embedding,
+            ],
+        )?;
+
+        if let (Some(vector_index), Some(embedding)) = (&self.vector_index, &embedding) {
+            // An index insert failure leaves the claim stored and its embedding
+            // persisted, so the next open reconstructs it.
+            let _ = vector_index.add(claim.id, embedding);
+        }
+
+        Ok(claim.id)
+    }
+
+    fn insert_relationship_row(&mut self, relationship: Relationship) -> Result<(), StoreError> {
+        let from_bytes = Self::claim_id_to_bytes(relationship.from_claim);
+        let to_bytes = Self::claim_id_to_bytes(relationship.to_claim);
+        let rel_type = Self::relationship_type_to_str(relationship.relationship_type);
+
+        self.conn.execute(
+            "INSERT INTO relationships (from_claim_id, to_claim_id, relationship_type, strength, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(from_claim_id, to_claim_id, relationship_type) DO UPDATE SET
+             strength = excluded.strength, created_at = excluded.created_at",
+            params![
+                &from_bytes,
+                &to_bytes,
+                rel_type,
+                relationship.strength,
+                relationship.created_at as i64,
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    fn delete_claim_row(&mut self, id: ClaimId) -> Result<bool, StoreError> {
+        let id_bytes = Self::claim_id_to_bytes(id);
+        // ON DELETE CASCADE removes relationships, provenance, and confidence_cache.
+        let affected = self
+            .conn
+            .execute("DELETE FROM claims WHERE id = ?1", params![&id_bytes])?;
+        // Note: the vector index has no per-id removal; an orphaned vector is
+        // harmless because semantic_search filters hits whose claim is gone.
+        Ok(affected > 0)
+    }
+
+    fn update_claim_tier_row(&mut self, id: ClaimId, new_tier: &str) -> Result<bool, StoreError> {
         let id_bytes = Self::claim_id_to_bytes(id);
         let affected = self.conn.execute(
             "UPDATE claims SET tier = ?1 WHERE id = ?2",
@@ -721,6 +845,32 @@ impl ClaimStore for SqliteStore {
         }
         Ok(affected > 0)
     }
+
+    /// Whether this exact relationship is already recorded.
+    fn relationship_exists(&self, relationship: &Relationship) -> Result<bool, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT 1 FROM relationships
+                 WHERE from_claim_id = ?1 AND to_claim_id = ?2 AND relationship_type = ?3",
+                params![
+                    Self::claim_id_to_bytes(relationship.from_claim),
+                    Self::claim_id_to_bytes(relationship.to_claim),
+                    Self::relationship_type_to_str(relationship.relationship_type),
+                ],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+}
+
+/// A claim's one-line summary for the change log.
+fn claim_summary(claim: &Claim) -> String {
+    change_feed::summarize(&format!(
+        "{} {} {}",
+        claim.subject, claim.predicate, claim.object
+    ))
 }
 
 /// Default HNSW `ef_search` quality parameter for trait-level semantic search.

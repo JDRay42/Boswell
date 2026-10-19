@@ -852,6 +852,49 @@ where
     }
 
     #[tracing::instrument(level = "debug", skip_all)]
+    async fn feed(&self, request: Request<FeedRequest>) -> Result<Response<FeedResponse>, Status> {
+        let req = request.into_inner();
+        let store = self.store.lock().unwrap();
+        if !store.supports_change_feed() {
+            return Err(Status::unimplemented("This instance keeps no change log"));
+        }
+        let head = store
+            .change_feed_head()
+            .map_err(|e| internal_err("Failed to read the feed head", e))?;
+        if req.from_head {
+            return Ok(Response::new(FeedResponse {
+                events: Vec::new(),
+                next: head,
+                gone: false,
+                head,
+            }));
+        }
+
+        let filter = crate::conversions::feed_filter_from_proto(&req)
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        let page = store
+            .change_feed(req.since, &filter)
+            .map_err(|e| internal_err("Failed to read the feed", e))?;
+        tracing::debug!(
+            since = req.since.unwrap_or(0),
+            events = page.events.len(),
+            next = page.next,
+            gone = page.gone,
+            "feed served"
+        );
+        Ok(Response::new(FeedResponse {
+            events: page
+                .events
+                .iter()
+                .map(crate::conversions::change_event_to_proto)
+                .collect(),
+            next: page.next,
+            gone: page.gone,
+            head,
+        }))
+    }
+
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn health_check(
         &self,
         _request: Request<HealthCheckRequest>,
@@ -1775,6 +1818,70 @@ mod tests {
         for id in ids {
             assert_eq!(authors_of(&service, &id).await, vec!["auditor"]);
         }
+    }
+
+    fn feed_req() -> FeedRequest {
+        FeedRequest {
+            limit: 50,
+            ..FeedRequest::default()
+        }
+    }
+
+    /// A stamped assert shows up in the feed with the author who made it.
+    #[tokio::test]
+    async fn test_feed_reports_an_attributed_creation() {
+        let service = sqlite_service();
+        let mut request = assert_at(Tier::Task, 0.8, 0.9);
+        request.author = "jd/sub:impl-2".to_string();
+        service.assert(Request::new(request)).await.unwrap();
+
+        let page = service
+            .feed(Request::new(feed_req()))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(page.events.len(), 1);
+        let e = &page.events[0];
+        assert_eq!(e.change, "created");
+        assert_eq!(e.kind, "claim");
+        assert_eq!(e.author.as_deref(), Some("jd/sub:impl-2"));
+        assert_eq!(page.next, e.seq);
+        assert_eq!(page.head, e.seq);
+    }
+
+    /// Excluding a root drops every agent of that principal.
+    #[tokio::test]
+    async fn test_feed_excludes_the_callers_own_writes() {
+        let service = sqlite_service();
+        let mut request = assert_at(Tier::Task, 0.8, 0.9);
+        request.author = "jd/sub:impl-2".to_string();
+        service.assert(Request::new(request)).await.unwrap();
+
+        let mut req = feed_req();
+        req.exclude_root = Some("jd".to_string());
+        let page = service.feed(Request::new(req)).await.unwrap().into_inner();
+        assert!(page.events.is_empty());
+        assert_eq!(page.next, page.head, "the cursor still moves past it");
+    }
+
+    #[tokio::test]
+    async fn test_feed_from_head_returns_only_a_cursor() {
+        let service = sqlite_service();
+        assert_one(&service, "Alice").await;
+        let mut req = feed_req();
+        req.from_head = true;
+        let page = service.feed(Request::new(req)).await.unwrap().into_inner();
+        assert!(page.events.is_empty());
+        assert_eq!(page.next, 1);
+    }
+
+    #[tokio::test]
+    async fn test_feed_refuses_an_unknown_kind() {
+        let service = sqlite_service();
+        let mut req = feed_req();
+        req.kinds = vec!["rumor".to_string()];
+        let err = service.feed(Request::new(req)).await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
     }
 
     /// An `AssertRequest` at `tier` whose confidence interval is `(lower, upper)`.

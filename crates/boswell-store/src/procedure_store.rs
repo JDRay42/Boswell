@@ -12,13 +12,14 @@
 //! preconditions do not hold against the claim store, then rank the survivors by
 //! derived effectiveness.
 
-use crate::{SqliteStore, StoreError};
+use crate::{change_feed, SqliteStore, StoreError};
 use boswell_domain::traits::{ClaimQuery, ClaimStore, ProcedureStore};
 use boswell_domain::{
     BodyFormat, ClaimMatch, ExecutionReceipt, Expect, OutcomeReport, Parameter, Precondition,
     PreconditionCheck, Procedure, ProcedureId, ProcedureQuery, ProcedureSource, ProvenanceStamp,
     ReceiptReportOutcome, ReportEffect, StoredReceipt, Tier,
 };
+use boswell_domain::{Change, EntityKind};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
@@ -160,6 +161,30 @@ impl SqliteStore {
     ///
     /// Returns the procedure's id.
     pub fn upsert_procedure(&mut self, procedure: &Procedure) -> Result<ProcedureId, StoreError> {
+        self.atomically(|s| {
+            let before = s.get_procedure(procedure.id)?;
+            let id = s.upsert_procedure_row(procedure)?;
+            match before {
+                None => {
+                    s.append_event(procedure_event(procedure, Change::Created, None))?;
+                    // A new version that names its predecessor retires it.
+                    if let Some(old) = procedure.supersedes {
+                        if let Some(old) = s.get_procedure(old)? {
+                            s.append_event(procedure_event(&old, Change::Superseded, None))?;
+                        }
+                    }
+                }
+                Some(before) => {
+                    if let Some(change) = Change::for_tier_move(before.tier, procedure.tier) {
+                        s.append_event(procedure_event(procedure, change, Some(before.tier)))?;
+                    }
+                }
+            }
+            Ok(id)
+        })
+    }
+
+    fn upsert_procedure_row(&mut self, procedure: &Procedure) -> Result<ProcedureId, StoreError> {
         let id_bytes = Self::procedure_id_to_bytes(procedure.id);
         let supersedes_bytes = procedure.supersedes.map(Self::procedure_id_to_bytes);
 
@@ -400,6 +425,26 @@ impl SqliteStore {
         tier: Tier,
         now: u64,
     ) -> Result<bool, StoreError> {
+        self.atomically(|s| {
+            let before = s.get_procedure(id)?;
+            let updated = s.set_procedure_tier_row(id, tier, now)?;
+            if let Some(before) = before.filter(|_| updated) {
+                if let Some(change) = Change::for_tier_move(before.tier, tier) {
+                    let mut after = before.clone();
+                    after.tier = tier;
+                    s.append_event(procedure_event(&after, change, Some(before.tier)))?;
+                }
+            }
+            Ok(updated)
+        })
+    }
+
+    fn set_procedure_tier_row(
+        &mut self,
+        id: ProcedureId,
+        tier: Tier,
+        now: u64,
+    ) -> Result<bool, StoreError> {
         let id_bytes = Self::procedure_id_to_bytes(id);
         let affected = self.conn.execute(
             "UPDATE procedures SET tier = ?1, updated_at = ?2 WHERE id = ?3",
@@ -573,6 +618,35 @@ impl ProcedureStore for SqliteStore {
         now: u64,
     ) -> Result<Option<ReceiptReportOutcome>, Self::Error> {
         SqliteStore::report_receipt(self, receipt_id, report, stamp, now)
+    }
+}
+
+/// A procedure's change event. `tier_before` is set for a tier move.
+pub(crate) fn procedure_event(
+    procedure: &Procedure,
+    change: Change,
+    tier_before: Option<Tier>,
+) -> change_feed::NewEvent<'_> {
+    let forgotten = change == Change::Forgotten;
+    change_feed::NewEvent {
+        namespace: &procedure.namespace,
+        kind: EntityKind::Procedure,
+        entity_id: procedure.id.to_string(),
+        change,
+        tier_before: if forgotten {
+            Some(procedure.tier)
+        } else {
+            tier_before
+        },
+        tier_after: if forgotten {
+            None
+        } else {
+            Some(procedure.tier)
+        },
+        subject: None,
+        summary: (!forgotten)
+            .then(|| change_feed::summarize(&format!("{}: {}", procedure.name, procedure.intent))),
+        author: None,
     }
 }
 
