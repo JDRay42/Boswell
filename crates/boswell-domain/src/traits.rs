@@ -67,6 +67,28 @@ pub trait ClaimStore {
         false
     }
 
+    /// Record that `author` asserted the claim `id`, returning `true` if this
+    /// author was new to it.
+    ///
+    /// `author` must come from the transport's authenticated principal, never
+    /// from caller input (see [`crate::ProvenanceStamp::author`]). An empty
+    /// author records nothing. The default implementation records nothing, so
+    /// stores that keep no authorship compile unchanged.
+    fn stamp_claim(
+        &mut self,
+        _id: ClaimId,
+        _author: &str,
+        _timestamp: u64,
+    ) -> Result<bool, Self::Error> {
+        Ok(false)
+    }
+
+    /// The distinct authors that asserted claim `id`, earliest first. Empty for
+    /// an unattributed claim, and for stores that keep no authorship.
+    fn claim_authors(&self, _id: ClaimId) -> Result<Vec<String>, Self::Error> {
+        Ok(Vec::new())
+    }
+
     /// Delete a claim by id, returning `true` if a claim was removed.
     ///
     /// The default implementation is a no-op returning `false`, so read-only or

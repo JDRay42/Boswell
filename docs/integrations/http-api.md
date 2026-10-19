@@ -191,6 +191,29 @@ children (`"<namespace>:..."`). An empty namespace or `"*"` is unrestricted.
 - **Get / relationships / delete by id** on a claim outside the key's namespace
   return `404` (existence is not leaked).
 
+### Authorship
+
+Every claim write — assert, batch, extract and hook ingest — records its author: the
+principal the bearer token authenticated as. An API key's principal is its `id`, an OIDC
+subject's is `oidc:<sub>`, and an attenuated token keeps the principal of the root it was
+minted from.
+
+Because every agent holding a token from one grant is the same principal, a write may add
+an `X-Boswell-Agent` header naming which agent made it:
+
+```
+X-Boswell-Agent: impl-2@build-rig
+```
+
+The author becomes `<principal>/sub:<label>`. The label is self-declared and is never
+trusted: wherever Boswell counts independent backing for a claim, it strips the label and
+counts the principal ([ADR-023](../ADRs/023-questions-and-dossiers.md)). It attributes work
+among one principal's own agents and nothing more. A label must be 1–64 characters of
+letters, digits, `.`, `_`, `:`, `@` or `-`; anything else is `400`.
+
+`GET /v1/claims/{id}` returns `authors`, the distinct authors who asserted the claim,
+earliest first. A claim written before authorship was recorded has none.
+
 ### Rate limiting
 
 Each key has a token bucket of `rate_limit_per_minute` requests, refilled

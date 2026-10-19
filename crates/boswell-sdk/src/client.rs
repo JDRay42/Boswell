@@ -420,6 +420,27 @@ impl BoswellClient {
         confidence: Option<(f64, f64)>,
         tier: Option<Tier>,
     ) -> Result<ClaimId, SdkError> {
+        self.assert_as("", namespace, subject, predicate, object, confidence, tier)
+            .await
+    }
+
+    /// Assert a claim on behalf of `author`, which the instance records as the
+    /// claim's author (ADR-023). Empty records the claim as unattributed.
+    ///
+    /// The instance trusts `author` because the gateway is the security
+    /// boundary (ADR-021): a caller on the gateway's side of it sets this from
+    /// the authenticated principal, never from request input.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn assert_as(
+        &mut self,
+        author: &str,
+        namespace: &str,
+        subject: &str,
+        predicate: &str,
+        object: &str,
+        confidence: Option<(f64, f64)>,
+        tier: Option<Tier>,
+    ) -> Result<ClaimId, SdkError> {
         let mut retry = RetryState::new(self.retry);
 
         loop {
@@ -440,6 +461,7 @@ impl BoswellClient {
                 confidence: confidence_interval,
                 tier: tier_i32,
                 provenance: vec![],
+                author: author.to_string(),
             };
 
             match client.assert(request).await {
@@ -545,6 +567,15 @@ impl BoswellClient {
 
     /// Learn multiple claims in batch
     pub async fn learn(&mut self, claims: Vec<Claim>) -> Result<LearnResponse, SdkError> {
+        self.learn_as("", claims).await
+    }
+
+    /// Learn claims in batch on behalf of `author`; see [`Self::assert_as`].
+    pub async fn learn_as(
+        &mut self,
+        author: &str,
+        claims: Vec<Claim>,
+    ) -> Result<LearnResponse, SdkError> {
         let mut retry = RetryState::new(self.retry);
 
         loop {
@@ -558,6 +589,7 @@ impl BoswellClient {
             let request = LearnRequest {
                 claims: grpc_claims,
                 skip_duplicates: false,
+                author: author.to_string(),
             };
 
             match client.learn(request).await {
@@ -605,6 +637,15 @@ impl BoswellClient {
 
     /// Fetch a single claim by id. Returns `None` if no such claim exists.
     pub async fn get_claim(&mut self, claim_id: ClaimId) -> Result<Option<Claim>, SdkError> {
+        Ok(self.get_claim_with_authors(claim_id).await?.map(|(c, _)| c))
+    }
+
+    /// Fetch a single claim by id together with the distinct authors who
+    /// asserted it, earliest first. An unattributed claim has no authors.
+    pub async fn get_claim_with_authors(
+        &mut self,
+        claim_id: ClaimId,
+    ) -> Result<Option<(Claim, Vec<String>)>, SdkError> {
         let mut retry = RetryState::new(self.retry);
 
         loop {
@@ -626,7 +667,7 @@ impl BoswellClient {
                     let claim = grpc_claim_to_domain(&proto_claim).map_err(|e| {
                         SdkError::GrpcError(format!("Failed to convert claim: {}", e))
                     })?;
-                    return Ok(Some(claim));
+                    return Ok(Some((claim, response.authors)));
                 }
                 Err(e) => self.handle_retry(e, &mut retry, Idempotency::Safe).await?,
             }
@@ -675,6 +716,19 @@ impl BoswellClient {
         tier: &str,
         source_id: &str,
     ) -> Result<ExtractResult, SdkError> {
+        self.extract_as("", text, namespace, tier, source_id).await
+    }
+
+    /// Extract claims on behalf of `author`, who is recorded on every claim the
+    /// extraction created or corroborated; see [`Self::assert_as`].
+    pub async fn extract_as(
+        &mut self,
+        author: &str,
+        text: &str,
+        namespace: &str,
+        tier: &str,
+        source_id: &str,
+    ) -> Result<ExtractResult, SdkError> {
         let mut retry = RetryState::new(self.retry);
 
         loop {
@@ -685,6 +739,7 @@ impl BoswellClient {
                 namespace: namespace.to_string(),
                 tier: tier.to_string(),
                 source_id: source_id.to_string(),
+                author: author.to_string(),
             };
 
             match client.extract(request).await {

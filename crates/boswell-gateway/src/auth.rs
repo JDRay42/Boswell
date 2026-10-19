@@ -143,6 +143,50 @@ impl AuthContext {
     }
 }
 
+/// The request header carrying a caller's self-declared agent label (ADR-023).
+pub const AGENT_LABEL_HEADER: &str = "x-boswell-agent";
+
+/// Longest agent label accepted, in bytes.
+const MAX_AGENT_LABEL: usize = 64;
+
+impl AuthContext {
+    /// The author a write is recorded under: the authenticated principal, plus
+    /// `/sub:<label>` when the request carries an [`AGENT_LABEL_HEADER`].
+    ///
+    /// The principal is never taken from the request; the label is, and is not
+    /// trusted. Every agent under one grant authenticates as the same principal,
+    /// so the label is the only way to say which of them wrote something, and
+    /// `authenticated_principal` strips it wherever independence is counted. A
+    /// lying label misattributes work among one principal's own agents and
+    /// changes no count.
+    ///
+    /// A label must be 1–64 characters of `[A-Za-z0-9._:@-]`. Anything else is a
+    /// 400: a `/` would let a caller forge a deeper derived identity, and
+    /// whitespace or control characters have no business in an audit trail.
+    pub fn author(&self, headers: &axum::http::HeaderMap) -> Result<String, ApiError> {
+        let Some(raw) = headers.get(AGENT_LABEL_HEADER) else {
+            return Ok(self.key_id.clone());
+        };
+        let label = raw
+            .to_str()
+            .map_err(|_| ApiError::bad_request("X-Boswell-Agent must be ASCII"))?
+            .trim();
+        if label.is_empty() {
+            return Ok(self.key_id.clone());
+        }
+        let valid = label.len() <= MAX_AGENT_LABEL
+            && label
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '@' | '-'));
+        if !valid {
+            return Err(ApiError::bad_request(
+                "X-Boswell-Agent must be 1-64 characters of letters, digits, '.', '_', ':', '@' or '-'",
+            ));
+        }
+        Ok(format!("{}/sub:{}", self.key_id, label))
+    }
+}
+
 /// Whether `key_ns` (the key's namespace) permits acting on `target`.
 ///
 /// An empty or `"*"` key namespace is unrestricted. Otherwise the target must
@@ -248,6 +292,56 @@ fn bearer_token(req: &Request) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+
+    fn ctx_for(key_id: &str) -> AuthContext {
+        AuthContext {
+            key_id: key_id.to_string(),
+            namespace: "team".to_string(),
+            scopes: HashSet::new(),
+            token: None,
+        }
+    }
+
+    fn with_label(label: &str) -> axum::http::HeaderMap {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(AGENT_LABEL_HEADER, label.parse().unwrap());
+        headers
+    }
+
+    #[test]
+    fn author_is_the_principal_without_a_label() {
+        let headers = axum::http::HeaderMap::new();
+        assert_eq!(ctx_for("writer").author(&headers).unwrap(), "writer");
+        assert_eq!(
+            ctx_for("writer").author(&with_label("  ")).unwrap(),
+            "writer"
+        );
+    }
+
+    #[test]
+    fn a_label_becomes_a_subagent_path_the_counting_end_strips() {
+        let author = ctx_for("oidc:jd")
+            .author(&with_label("impl-2@rig"))
+            .unwrap();
+        assert_eq!(author, "oidc:jd/sub:impl-2@rig");
+        assert_eq!(
+            boswell_domain::authenticated_principal(&author),
+            "oidc:jd",
+            "a label must never become part of the independence unit"
+        );
+    }
+
+    #[test]
+    fn a_label_cannot_forge_a_deeper_identity_or_carry_junk() {
+        for bad in ["a/b", "has space", &"x".repeat(65), "tab\there"] {
+            assert!(
+                ctx_for("writer").author(&with_label(bad)).is_err(),
+                "label {:?} should be refused",
+                bad
+            );
+        }
+    }
+
     use super::*;
 
     #[test]

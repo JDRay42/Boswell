@@ -97,6 +97,20 @@ CREATE TABLE IF NOT EXISTS provenance (
 CREATE INDEX IF NOT EXISTS idx_provenance_claim ON provenance(claim_id);
 CREATE INDEX IF NOT EXISTS idx_provenance_source_type ON provenance(source_type);
 
+-- Claim authorship (research design §5.2, ADR-023). One row per distinct author
+-- that asserted the claim, so a dossier can count the independence roots behind a
+-- group of claims. `author` is set by the transport from the authenticated
+-- principal, optionally followed by a self-declared `/sub:<label>` that
+-- `authenticated_principal` strips wherever independence is counted. A claim with
+-- no row here predates stamping, or came in through a path with no principal.
+CREATE TABLE IF NOT EXISTS claim_stamps (
+    claim_id BLOB NOT NULL,
+    author TEXT NOT NULL,
+    timestamp INTEGER NOT NULL,
+    PRIMARY KEY (claim_id, author),
+    FOREIGN KEY (claim_id) REFERENCES claims(id) ON DELETE CASCADE
+);
+
 -- Confidence cache table - stores computed effective confidence for fast reads
 CREATE TABLE IF NOT EXISTS confidence_cache (
     claim_id BLOB PRIMARY KEY NOT NULL,

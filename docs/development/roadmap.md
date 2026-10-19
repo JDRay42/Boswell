@@ -144,7 +144,11 @@ held about it, and a record of what is not known. Design of record is
   amendment: the dossier defaults to a shallow `width` view, and an `X-Boswell-Agent` label
   attributes work among one principal's agents without affecting any count. *shipped* (#80)
 - **Claim writes stamped with their author.** The dossier counts independence roots per
-  claim group, and today a claim records no author at all. *open*
+  claim group, and a claim recorded no author at all. Assert, batch, extract and hook
+  ingest now stamp the authenticated principal, plus any `X-Boswell-Agent` label, into
+  `claim_stamps`; an extraction that corroborates an existing claim stamps that claim too.
+  `GET /v1/claims/{id}` returns `authors`. The MCP server and CLI reach the instance over
+  gRPC without a principal, so their writes stay unattributed. *in flight*
 - **`Question` entity and store, raising idempotent by meaning.** *open*
 - **Receipts generalized to a target kind; taking and reporting on questions.** *open*
 - **Janitor detection pass and the `unanswerable` lapse.** *open*
