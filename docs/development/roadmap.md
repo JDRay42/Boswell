@@ -142,7 +142,7 @@ held about it, and a record of what is not known. Design of record is
 - **Design doc and ADR — Questions and dossiers.** *shipped* (#79)
 - **Width and depth views of the dossier, and per-agent attribution labels.** Design
   amendment: the dossier defaults to a shallow `width` view, and an `X-Boswell-Agent` label
-  attributes work among one principal's agents without affecting any count. *in flight*
+  attributes work among one principal's agents without affecting any count. *shipped* (#80)
 - **Claim writes stamped with their author.** The dossier counts independence roots per
   claim group, and today a claim records no author at all. *open*
 - **`Question` entity and store, raising idempotent by meaning.** *open*
