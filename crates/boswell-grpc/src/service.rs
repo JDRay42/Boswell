@@ -834,6 +834,24 @@ where
     }
 
     #[tracing::instrument(level = "debug", skip_all)]
+    async fn dossier(
+        &self,
+        request: Request<DossierRequest>,
+    ) -> Result<Response<DossierResponse>, Status> {
+        let req = request.into_inner();
+        let store = self.store.lock().unwrap();
+        let response = crate::dossier::build(&*store, req, now_ms())?;
+        tracing::debug!(
+            anchors = response.anchors.len(),
+            groups = response.groups.len(),
+            procedures = response.procedures.len(),
+            goals = response.goals.len(),
+            "dossier served"
+        );
+        Ok(Response::new(response))
+    }
+
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn health_check(
         &self,
         _request: Request<HealthCheckRequest>,

@@ -237,6 +237,7 @@ exposition format carries its own version.
 | `DELETE /v1/claims/{id}` | delete | Forget (real delete) |
 | `POST /v1/search` | read | Semantic search |
 | `POST /v1/recall` | read | One-call context: merge structured + semantic |
+| `POST /v1/dossier` | read | Everything held about a subject: width or depth view |
 | `POST /v1/extract` | write | Text → claims via the LLM Extractor |
 | `POST /v1/hooks/ingest` | write | Claude Code hook event → claims |
 | `GET /v1/goals` | read | Find goals by namespace/intent (the entry hop) |
@@ -276,6 +277,53 @@ Query-string filters: `namespace`, `subject`, `predicate`, `object`, `tier`,
 ```
 GET /v1/claims?namespace=agent&source_type=extraction
 ```
+
+### Dossier — `POST /v1/dossier`
+
+Everything Boswell holds about a subject in one deterministic read. It calls no LLM and
+issues no receipt. The design is [`17-research.md`](../architecture/17-research.md) §5.
+
+```json
+{ "subject": "DateParser", "topic": "date handling", "namespace": "team",
+  "view": "width", "predicate": null, "hops": 1,
+  "kinds": ["claim", "procedure", "goal"], "limit_per_kind": 50 }
+```
+
+At least one of `subject` (exact) and `topic` (semantic; needs vector search) is
+required. `namespace` defaults to the key's own and confines everything to that
+namespace and its children.
+
+The default **width** view is a mile wide and an inch deep:
+
+```json
+{ "view": "width",
+  "anchors": [ { "subject": "DateParser", "matched_by": "exact", "score": null } ],
+  "groups": [ { "subject": "DateParser", "predicate": "provides", "standing": "thin",
+                "claim_count": 2, "root_count": 1, "unattributed_count": 0,
+                "lead": "ISO 8601" } ],
+  "procedures": [ { "id": "…", "name": "use-date-parser", "intent": "…",
+                    "effectiveness": 0.75 } ],
+  "goals": [ { "id": "…", "name": "parse-dates", "accomplish_children": 2 } ],
+  "questions": [],
+  "coverage": { "intent_match": "substring", "truncated": [],
+                "unavailable": ["question"] } }
+```
+
+Groups come back most urgent first. A group's `standing` is the first of these that
+holds:
+
+1. `contested`: one of its claims has a recorded contradiction.
+2. `stale`: every one of its claims is past `stale_at`.
+3. `thin`: fewer than two independent principals back it.
+4. `settled`: none of the above.
+
+Agents under one grant count as one principal however many of them agree (see
+[Authorship](#authorship)).
+
+To go deeper, ask again with `"view": "depth"`, optionally adding `"predicate"` to narrow
+the request to one group. Depth adds `roots`, plus `claims` with their `authors` and each
+author's `independence_root`, plus `contradictions`. It also adds the full counts on
+procedures and goals.
 
 ### Search — `POST /v1/search`
 

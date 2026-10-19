@@ -54,6 +54,12 @@ service BosWellService {
     // Expand one goal into its ranked candidate surface (a single traversal hop).
     rpc Expand(ExpandRequest) returns (ExpandResponse);
 
+    // ---- Research (design 17, ADR-023) ----
+
+    // Everything held about a subject, grouped and annotated, in one read.
+    // Deterministic, calls no LLM, and issues no receipt.
+    rpc Dossier(DossierRequest) returns (DossierResponse);
+
     // Health check for instance status
     rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
 
@@ -513,6 +519,82 @@ message ExpandResponse {
     repeated ExpandedCandidate decision_aids = 3;   // role = decide
     repeated FactorReading factor_readings = 4;
     string message = 5;
+}
+
+// ========== Dossier (design 17 §5) ==========
+
+message DossierRequest {
+    // Namespace prefix the dossier is confined to; empty means unrestricted.
+    optional string namespace = 1;
+    optional string subject = 2;         // exact anchor
+    optional string topic = 3;           // semantic anchor, embedded at query time
+    optional string predicate = 4;       // narrow claim groups to one predicate
+    // False (the default) is the width view: groups carry counts and a lead
+    // object but no claims. True is the depth view.
+    bool depth = 5;
+    optional uint32 hops = 6;            // relationship hops from anchored claims; default 1, max 3
+    repeated string kinds = 7;           // claim | procedure | goal; empty means all
+    uint32 limit_per_kind = 8;           // 0 means the default (50)
+    double min_similarity = 9;           // for the semantic anchor
+}
+
+message DossierAnchor {
+    string subject = 1;
+    string matched_by = 2;               // exact | semantic
+    optional double score = 3;           // similarity, for a semantic match
+}
+
+message DossierClaim {
+    Claim claim = 1;
+    repeated string authors = 2;         // distinct authors, earliest first
+    optional uint64 stale_at = 3;
+}
+
+message DossierContradiction {
+    string claim_id = 1;                 // the claim in this group
+    string against = 2;                  // the claim it contradicts
+}
+
+message DossierGroup {
+    string subject = 1;
+    string predicate = 2;
+    string standing = 3;                 // contested | stale | thin | settled
+    repeated string roots = 4;           // distinct independence roots
+    uint32 claim_count = 5;
+    uint32 unattributed_count = 6;
+    string lead = 7;                     // object of the most confident claim
+    repeated DossierClaim claims = 8;    // depth view only
+    repeated DossierContradiction contradictions = 9;  // depth view only
+}
+
+message DossierProcedure {
+    string id = 1;
+    string name = 2;
+    uint32 version = 3;
+    string intent = 4;
+    double effectiveness = 5;
+    uint64 success_count = 6;
+    uint64 failure_count = 7;
+    uint64 unknown_count = 8;
+    string tier = 9;
+}
+
+message DossierGoal {
+    string id = 1;
+    string name = 2;
+    string intent = 3;
+    uint32 accomplish_children = 4;      // children whose preconditions hold now
+    optional double best_child_effectiveness = 5;
+}
+
+message DossierResponse {
+    repeated DossierAnchor anchors = 1;
+    repeated DossierGroup groups = 2;
+    repeated DossierProcedure procedures = 3;
+    repeated DossierGoal goals = 4;
+    string intent_match = 5;             // semantic | substring
+    repeated string truncated = 6;       // kinds that hit limit_per_kind
+    repeated string unavailable = 7;     // kinds this instance cannot serve yet
 }
 
 // ========== Health Check ==========

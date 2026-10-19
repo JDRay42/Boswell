@@ -155,6 +155,7 @@ impl McpServer {
             self.tool_definition_learn(),
             self.tool_definition_forget(),
             self.tool_definition_search(),
+            self.tool_definition_dossier(),
             self.tool_definition_query_goals(),
             self.tool_definition_get_goal(),
             self.tool_definition_expand_goal(),
@@ -190,6 +191,7 @@ impl McpServer {
             "boswell_learn" => self.call_learn_tool(tool_params),
             "boswell_forget" => self.call_forget_tool(tool_params),
             "boswell_semantic_search" => self.call_search_tool(tool_params),
+            "boswell_dossier" => self.call_dossier_tool(tool_params),
             "boswell_query_goals" => self.call_query_goals_tool(tool_params),
             "boswell_get_goal" => self.call_get_goal_tool(tool_params),
             "boswell_expand_goal" => self.call_expand_goal_tool(tool_params),
@@ -284,6 +286,13 @@ impl McpServer {
             .runtime
             .block_on(tools::handle_expand_goal(&mut self.client, params))?;
         Ok(serde_json::to_value(result)?)
+    }
+
+    /// Call dossier tool
+    fn call_dossier_tool(&mut self, params: Value) -> Result<Value, McpError> {
+        let params: tools::DossierParams = serde_json::from_value(params)?;
+        self.runtime
+            .block_on(tools::handle_dossier(&mut self.client, params))
     }
 
     /// Call query_procedures tool
@@ -472,6 +481,38 @@ impl McpServer {
         }
     }
 
+    fn tool_definition_dossier(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "boswell_dossier".to_string(),
+            description: "Everything Boswell holds about a subject, in one read. The default \
+                          width view is a mile wide and an inch deep: each (subject, predicate) \
+                          group with its standing — contested, stale, thin or settled — how many \
+                          claims and independent principals back it, and its leading object, plus \
+                          the procedures and goals that match. Use it before building or \
+                          researching something, to find what already exists. Ask again with \
+                          view=depth, optionally narrowed by predicate, for the claims themselves, \
+                          their authors and contradictions. Free: issues no receipt."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "subject": {"type": "string", "description": "Exact subject to anchor on, e.g. \"DateParser\""},
+                    "topic": {"type": "string", "description": "Free text to anchor on semantically, e.g. \"date handling\""},
+                    "namespace": {"type": "string", "description": "Confine the dossier to a namespace and its children"},
+                    "view": {"type": "string", "enum": ["width", "depth"], "default": "width"},
+                    "predicate": {"type": "string", "description": "Narrow claim groups to one predicate (a depth follow-up)"},
+                    "hops": {"type": "integer", "description": "Relationship hops from anchored claims, 0-3", "default": 1},
+                    "kinds": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": ["claim", "procedure", "goal", "question"]},
+                        "description": "Kinds to include; all by default"
+                    },
+                    "limit_per_kind": {"type": "integer", "description": "Maximum results per kind", "default": 50}
+                }
+            }),
+        }
+    }
+
     fn tool_definition_expand_goal(&self) -> ToolDefinition {
         ToolDefinition {
             name: "boswell_expand_goal".to_string(),
@@ -623,6 +664,7 @@ mod tests {
             "boswell_learn",
             "boswell_forget",
             "boswell_semantic_search",
+            "boswell_dossier",
             "boswell_query_goals",
             "boswell_get_goal",
             "boswell_expand_goal",
@@ -632,7 +674,7 @@ mod tests {
         ] {
             assert!(names.contains(&expected), "missing tool: {}", expected);
         }
-        assert_eq!(tools.len(), 11, "advertised: {:?}", names);
+        assert_eq!(tools.len(), 12, "advertised: {:?}", names);
     }
 
     #[test]
