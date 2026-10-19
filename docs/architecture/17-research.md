@@ -166,7 +166,7 @@ At least one of `subject` and `topic` is required. With both, the anchor set is 
                               stale_at } ],
                   contradictions: [ { claim_id, against } ] } ],
   procedures: [ { id, name, version, intent, effectiveness,
-                  answered_receipts, unknown_receipts, reporting_roots, tier } ],
+                  success_count, failure_count, unknown_count, tier } ],
   goals:      [ { id, name, intent, accomplish_children, best_child_effectiveness } ],
   questions:  [ { id, text, status, demand, origin,
                   pending: [ { author, expires_at } ],

@@ -1336,3 +1336,76 @@ pub async fn mint_token(
         revocation_id: minted.revocation_id,
     }))
 }
+
+// ---------------------------------------------------------------------------
+// Dossier (research design §5)
+// ---------------------------------------------------------------------------
+
+/// Body for `POST /v1/dossier`.
+#[derive(Debug, Deserialize)]
+pub struct DossierBody {
+    /// Exact subject anchor.
+    subject: Option<String>,
+    /// Semantic anchor, embedded at query time.
+    topic: Option<String>,
+    /// Namespace to confine the dossier to; defaults to the key's own.
+    namespace: Option<String>,
+    /// `width` (default) or `depth`.
+    view: Option<String>,
+    /// Narrow claim groups to one predicate.
+    predicate: Option<String>,
+    /// Relationship hops from anchored claims; default 1, max 3.
+    hops: Option<u32>,
+    /// Kinds to include: `claim`, `procedure`, `goal`, `question`.
+    kinds: Option<Vec<String>>,
+    limit_per_kind: Option<u32>,
+    min_similarity: Option<f64>,
+}
+
+/// `POST /v1/dossier` — everything held about a subject, in one read.
+///
+/// The default `width` view is a mile wide and an inch deep: every claim group
+/// with its standing and counts, and the procedures, goals and questions that
+/// match, without the claims themselves. `depth` adds the claims, their authors
+/// and the contradictions. Deterministic, calls no LLM, and issues no receipt.
+pub async fn dossier(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Json(body): Json<DossierBody>,
+) -> Result<Json<Value>, ApiError> {
+    ctx.require(Scope::Read)?;
+    let namespace = ctx.read_namespace(body.namespace)?;
+    let depth = match body.view.as_deref().map(str::trim) {
+        None | Some("") | Some("width") => false,
+        Some("depth") => true,
+        Some(other) => {
+            return Err(ApiError::bad_request(format!(
+                "view must be 'width' or 'depth', not '{}'",
+                other
+            )))
+        }
+    };
+    let blank = |s: &Option<String>| s.as_deref().is_none_or(|v| v.trim().is_empty());
+    if blank(&body.subject) && blank(&body.topic) {
+        return Err(ApiError::bad_request(
+            "a dossier needs a subject, a topic, or both",
+        ));
+    }
+
+    let request = boswell_sdk::DossierRequest {
+        namespace,
+        subject: body.subject,
+        topic: body.topic,
+        predicate: body.predicate,
+        depth,
+        hops: body.hops,
+        kinds: body.kinds.unwrap_or_default(),
+        limit_per_kind: body.limit_per_kind.unwrap_or(0),
+        min_similarity: body.min_similarity.unwrap_or(0.0),
+    };
+
+    let mut client = state.client().lock().await;
+    client.ensure_connected().await?;
+    let r = client.dossier(request).await?;
+    Ok(Json(boswell_sdk::dossier_json(&r, depth)))
+}

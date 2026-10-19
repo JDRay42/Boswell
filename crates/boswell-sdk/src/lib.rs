@@ -26,6 +26,7 @@
 #![warn(missing_docs)]
 
 mod client;
+mod dossier;
 mod error;
 mod retry;
 mod session;
@@ -34,6 +35,7 @@ pub use client::{
     BoswellClient, ExtractResult, GoalQuerySpec, HealthStatus, IssuedProcedure, MaintenanceMetrics,
     OutcomeReportSpec, ProcedureQuerySpec, QueryFilter,
 };
+pub use dossier::dossier_json;
 pub use error::SdkError;
 pub use retry::{Idempotency, RetryPolicy};
 
@@ -42,3 +44,10 @@ pub use retry::{Idempotency, RetryPolicy};
 /// Re-exported so callers can name what the client hands back without taking a
 /// direct dependency on the gRPC crate.
 pub use boswell_grpc::proto::ReportOutcomeResponse;
+
+/// The request and response of a [`dossier`](BoswellClient::dossier) read,
+/// re-exported for the same reason.
+pub use boswell_grpc::proto::{
+    DossierAnchor, DossierClaim, DossierContradiction, DossierGoal, DossierGroup, DossierProcedure,
+    DossierRequest, DossierResponse,
+};

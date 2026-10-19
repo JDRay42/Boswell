@@ -110,6 +110,7 @@ pub fn build_router(config: &GatewayConfig, state: AppState) -> Router {
         .route("/v1/tokens", post(handlers::mint_token))
         .route("/v1/search", post(handlers::search))
         .route("/v1/recall", post(handlers::recall))
+        .route("/v1/dossier", post(handlers::dossier))
         .route("/v1/extract", post(handlers::extract))
         .route("/v1/hooks/ingest", post(handlers::hooks_ingest))
         .route("/v1/goals", get(handlers::query_goals))

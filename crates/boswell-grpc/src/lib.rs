@@ -17,6 +17,7 @@ pub mod proto {
 }
 
 pub mod conversions;
+pub mod dossier;
 pub mod server;
 pub mod service;
 

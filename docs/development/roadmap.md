@@ -152,8 +152,15 @@ held about it, and a record of what is not known. Design of record is
 - **`Question` entity and store, raising idempotent by meaning.** *open*
 - **Receipts generalized to a target kind; taking and reporting on questions.** *open*
 - **Janitor detection pass and the `unanswerable` lapse.** *open*
-- **`POST /v1/dossier`.** Useful before semantic intent match ships, at reduced reach for
-  procedures and goals; the response's `coverage` says which match it used. *open*
+- **`POST /v1/dossier`.** Width and depth views over claims, procedures and goals, as a
+  `Dossier` RPC, an SDK call, a gateway route and the `boswell_dossier` MCP tool, all
+  rendering through one `dossier_json`. Grouping and standing are pure functions in
+  `boswell-domain`. Procedures and goals match intent by substring until semantic intent
+  match ships, and `coverage` says so; questions are reported `unavailable` until the
+  `Question` store exists. The store filters namespaces by raw prefix, so the dossier
+  scopes everything it gathers to the namespace and its children itself — a stray claim
+  from `teamwork` would otherwise change a `team` group's counts and standing.
+  *shipped* (#82)
 - **`POST /v1/dossier/narrate`, superseding `Reflect`.** Sequenced after the dossier, since
   it narrates one. *open*
 
