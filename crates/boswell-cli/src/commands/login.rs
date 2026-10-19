@@ -531,15 +531,9 @@ pub async fn execute_logout(formatter: &Formatter) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::set_test_config_dir;
     use crate::config::OutputFormat;
     use std::cell::RefCell;
-    use std::sync::Mutex;
-
-    /// `BOSWELL_CONFIG_DIR` is process-global, and cargo runs a crate's tests
-    /// on threads of one process. Two tests pointing it at different
-    /// directories at once made the token file appear and vanish under each
-    /// other; serializing the ones that touch it is the fix.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn formatter() -> Formatter {
         Formatter::new(OutputFormat::Table, false)
@@ -830,9 +824,8 @@ mod tests {
     fn the_token_file_is_written_owner_only() {
         use std::os::unix::fs::PermissionsExt;
 
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("boswell-token-{}", std::process::id()));
-        std::env::set_var("BOSWELL_CONFIG_DIR", &dir);
+        set_test_config_dir(Some(dir.clone()));
 
         let token = StoredToken {
             issuer: "https://id.example".into(),
@@ -852,20 +845,18 @@ mod tests {
         assert_eq!(load_token().unwrap(), None);
         assert!(!delete_token().unwrap());
 
-        std::env::remove_var("BOSWELL_CONFIG_DIR");
+        set_test_config_dir(None);
         std::fs::remove_dir_all(&dir).ok();
     }
 
     /// `--status` with nothing stored says so instead of failing.
     ///
-    /// Driven through `block_on` rather than `#[tokio::test]`: the env guard
-    /// has to be held across the call, and holding a `std::sync::MutexGuard`
-    /// across an `.await` is a clippy error the workspace denies.
+    /// Driven through `block_on` rather than `#[tokio::test]`: the config
+    /// directory is set per thread, and `block_on` polls the future on this one.
     #[test]
     fn status_with_no_token_is_not_an_error() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("boswell-status-{}", std::process::id()));
-        std::env::set_var("BOSWELL_CONFIG_DIR", &dir);
+        set_test_config_dir(Some(dir.clone()));
         std::fs::create_dir_all(&dir).unwrap();
 
         let args = LoginArgs {
@@ -880,7 +871,7 @@ mod tests {
             .block_on(execute_login(args, &Config::default(), &formatter()))
             .expect("status must work with nothing stored");
 
-        std::env::remove_var("BOSWELL_CONFIG_DIR");
+        set_test_config_dir(None);
         std::fs::remove_dir_all(&dir).ok();
     }
 }

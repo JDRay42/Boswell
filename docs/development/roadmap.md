@@ -213,6 +213,21 @@ and what exists to reuse. Integration guide:
   stream.** `boswell-openrig bridge`. Queue claims become announcements that are forgotten
   when the item closes; a finished item leaves a `was completed by` claim. Contradictions,
   promotions and supersessions post to OpenRig's stream with idempotent ids. *shipped* (#84)
+- **Verify against a live OpenRig.** #84 was built by reading OpenRig's source at commit
+  `befd941` (CLI 0.6.11) and tested only against stand-in servers built from what that
+  source documents. Three things it relies on were never observed working:
+  1. OpenRig loads a third-party plugin's hooks into a Claude seat when the seat declares
+     `CLAUDE_CODE_PLUGIN_DIRS`. OpenRig's refocus-channel reference says a seat-declared
+     value is kept; nothing confirmed the hooks then run.
+  2. Codex loads plugin hooks at all. `examples/openrig/plugin/boswell/hooks/codex.json`
+     exists on the assumption that it does.
+  3. Claude Code expands `${VAR:-default}` in a `.mcp.json` merged from an OpenRig
+     fragment. `examples/openrig/runtime/claude-mcp.fragment.json` depends on it.
+
+  Also unobserved: the exact line order of OpenRig's SSE frames (its Hono dependency was
+  not installed to read), and whether a Codex seat's `boswell-mcp` inherits
+  `OPENRIG_SESSION_NAME`. Unblocked by running one rig with two seats; the guide's
+  Troubleshooting section is the checklist. *open*
 
 ## Identity, trust and security
 
@@ -522,6 +537,16 @@ The passes that run without being asked.
   done for some time. *shipped*
 - **Procedure and receipt sweeps** — expiring unanswered receipts, which is the mechanism
   that actually enforces "silence is not success". *shipped* (#13, #17)
+
+## Test suite health
+
+- **`boswell-cli` tests raced on the config directory.** The login tests pointed the
+  process-wide `BOSWELL_CONFIG_DIR` at directories they then deleted, serialized only
+  against each other by a lock the profile and config tests never took. A profile test
+  saving at that moment failed with `NotFound`: once locally, then on CI in #85. Under
+  `cfg(test)` the CLI no longer reads the environment; each test thread gets its own
+  directory, or one it sets through a thread-local. Production still honors
+  `BOSWELL_CONFIG_DIR`. *shipped* (#85)
 
 ## Observability and performance
 

@@ -95,25 +95,55 @@ pub enum OutputFormat {
     Quiet,
 }
 
+#[cfg(test)]
+thread_local! {
+    static TEST_CONFIG_DIR: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Point this test thread's config directory at `dir`, or back at its default
+/// with `None`. The test-only stand-in for `BOSWELL_CONFIG_DIR`, which is
+/// process-wide and so shared by every test running at once.
+#[cfg(test)]
+pub(crate) fn set_test_config_dir(dir: Option<PathBuf>) {
+    TEST_CONFIG_DIR.with(|d| *d.borrow_mut() = dir);
+}
+
 impl Config {
     /// Directory holding the CLI configuration.
     ///
-    /// Honors `BOSWELL_CONFIG_DIR` so the location can be redirected. Under
-    /// `cfg(test)` it defaults to a process-unique temporary directory: the unit
-    /// tests exercise the real save path, and must never write over a
-    /// developer's own `~/.boswell/config.toml`.
+    /// Honors `BOSWELL_CONFIG_DIR` so the location can be redirected.
+    ///
+    /// Under `cfg(test)` the environment is not consulted at all. The unit tests
+    /// exercise the real save path and must never write over a developer's own
+    /// `~/.boswell/config.toml`, and cargo runs them on threads of one process,
+    /// where an environment variable one test sets is seen by every other. A
+    /// login test pointing `BOSWELL_CONFIG_DIR` at a directory it then deleted
+    /// failed a profile test saving into it mid-run, on CI. So a test gets a
+    /// directory of its own thread's, or the one it sets with
+    /// [`set_test_config_dir`].
     fn config_dir() -> Result<PathBuf> {
-        if let Ok(dir) = std::env::var("BOSWELL_CONFIG_DIR") {
-            return Ok(PathBuf::from(dir));
-        }
-
         #[cfg(test)]
         {
-            Ok(std::env::temp_dir().join(format!("boswell-cli-test-{}", std::process::id())))
+            if let Some(dir) = TEST_CONFIG_DIR.with(|d| d.borrow().clone()) {
+                return Ok(dir);
+            }
+            let thread = format!("{:?}", std::thread::current().id())
+                .chars()
+                .filter(char::is_ascii_digit)
+                .collect::<String>();
+            Ok(std::env::temp_dir().join(format!(
+                "boswell-cli-test-{}-{}",
+                std::process::id(),
+                thread
+            )))
         }
 
         #[cfg(not(test))]
         {
+            if let Ok(dir) = std::env::var("BOSWELL_CONFIG_DIR") {
+                return Ok(PathBuf::from(dir));
+            }
             let home = dirs::home_dir()
                 .ok_or_else(|| CliError::Config("Could not find home directory".into()))?;
             Ok(home.join(".boswell"))
